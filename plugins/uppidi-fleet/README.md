@@ -311,16 +311,14 @@ maintainers' board, producing false "label not found" errors. Follow
 Skills are Markdown instruction sets living in a **skills directory** that
 Paseo/opencode loads on demand. **The plugin does not contain the fleet's
 Skills.** In this repository they live at the repository root under
-`.agents/skills/`, *outside* the plugin package. Alongside them, the repository
-ships **adapted example Skills** you can copy and rewrite for your own
-environment, under [`plugins/forges/examples/skills/`](../forges/examples/skills/):
+`.agents/skills/`, *outside* the plugin package. Treat the ones in this
+repository as *one team's* working copy: read them, then write your own.
 
-| Example file | Role | Style |
-| --- | --- | --- |
-| [`coding-agent/SKILL.md`](../forges/examples/skills/coding-agent/SKILL.md) | coding worker | zero-dependency (plugin surfaces + embedded `/api/v1`) |
-| [`coding-agent-fgjx/SKILL.md`](../forges/examples/skills/coding-agent-fgjx/SKILL.md) | coding worker | CLI wrapper (`teax`/`fgjx`) |
-| [`orchestrator/SKILL.md`](../forges/examples/skills/orchestrator/SKILL.md) | orchestrator | zero-dependency |
-| [`orchestrator-fgjx/SKILL.md`](../forges/examples/skills/orchestrator-fgjx/SKILL.md) | orchestrator | CLI wrapper |
+| Skill | Role |
+| --- | --- |
+| `.agents/skills/orchestrator/` | orchestrator — triage, decompose, dispatch, pre-flight PRs |
+| `.agents/skills/front-desk/` | Front Desk — the operator-facing liaison |
+| `.agents/skills/coding-agent/` | coding worker — implement, verify, open the PR |
 
 > [!NOTE]
 > **CLI tooling ships `teax` (over `tea`).** The fleet's rich CLI variant drives
@@ -329,11 +327,12 @@ environment, under [`plugins/forges/examples/skills/`](../forges/examples/skills
 > token, and performs the raw `/api/v1` calls); `teax` adds board-shaped verbs
 > (label-name resolution, formatted issue/PR views, optional agent-envelope
 > stamping). If the underlying CLI is not found, `teax` prints a download link —
-> `https://gitea.com/gitea/tea/releases` — so you can install it. The
-> zero-dependency example needs no CLI at all.
+> `https://gitea.com/gitea/tea/releases` — so you can install it. A skill that
+> instead uses the plugin's own surfaces and a direct `/api/v1` client needs no
+> CLI at all.
 
-There is **no shipped Front Desk example** — the live `front-desk` skill is one
-team's, and you must author your own (see [§10](#10-gap-analysis--what-the-plugin-does-not-ship)).
+There is **no shipped Front Desk example in the plugin package** — you must
+author your own (see [§10](#10-gap-analysis--what-the-plugin-does-not-ship)).
 
 ### 6.1 The three roles
 
@@ -375,18 +374,18 @@ team's, and you must author your own (see [§10](#10-gap-analysis--what-the-plug
 
 ### 6.2 How to modify them for your environment
 
-1. **Copy** the closest example into your loaded skills directory:
-   `.agents/skills/<name>/SKILL.md` for Paseo.
+1. **Author or adapt a Skill** into your loaded skills directory:
+   `.agents/skills/<name>/SKILL.md` for Paseo. Use the table in
+   [§6](#6-skills-how-the-fleet-thinks) for what each role must cover.
 2. **Rewrite the placeholders** — host, `owner/repo`, provider/model names, CLI
    tool names, issue-link format, and the escalation target's agent id.
 3. **Align the vocabulary.** Match every label and slash-command the Skill
    mentions to the set you actually seeded in [§5](#5-board-labels-taxonomy-and-install).
    If you seeded fewer scopes, delete the references to the missing ones.
-4. **Choose a board-access style.** The zero-dependency examples need nothing
-   installed and use the plugin's surfaces and a direct `/api/v1` client. The
-   `-fgjx` examples assume the shipped `teax` (the board CLI wrapper) over
-   *your* `tea` (the authenticated transport), plus an optional envelope tool;
-   the plugin never loads either.
+4. **Choose a board-access style.** A skill can drive the board through the
+   plugin's own surfaces and a direct `/api/v1` client, which needs nothing
+   installed; or through a board CLI of your choice. The plugin never loads
+   either.
 5. **Pick your models per role** and record them (Cockpit → Agent Role Models,
    or `~/.paseo/uppidi-fleet-role-models.json`). See
    [§12](#12-runtime-state--file-map).
@@ -810,11 +809,10 @@ these gaps yourself.
 - The live `orchestrator`, `front-desk`, and `coding-agent` skills live in this
   repository at the root, under `.agents/skills/` — **in the repository, but
   outside the plugin package**. The plugin itself ships no Skills.
-- The repository ships **adapted example Skills** under
-  [`plugins/forges/examples/skills/`](../forges/examples/skills/)
-  ([§6](#6-skills-how-the-fleet-thinks)), and there is **no Front Desk example**.
-- **Action:** copy the forges examples into your own `.agents/skills/`, adapt
-  them, and author a Front Desk skill.
+- This repository's copies are one team's working set, not redistributable
+  examples; there is **no Front Desk example** in the plugin package.
+- **Action:** read the roles in [§6](#6-skills-how-the-fleet-thinks), author
+  your own Skills for them, and author a Front Desk skill.
 
 ### 10.3 Action workflow YAML is monorepo-level, host-specific
 
@@ -1003,10 +1001,9 @@ for this repository using the forge CLI (fgjx) and Paseo conventions.
 ```
 
 If you pass a custom `prompt`, keep the same contract: name the repo, point at
-the skill file (`fgjx`-flavoured Skills assume `fgjx`/`teax` over `tea`; the
-zero-dependency variant assumes neither), and state the coordinate/supervise
-mandate — see [§6](#6-skills-how-the-fleet-thinks) for the example skills this
-references. The spawn also registers the agent with the router
+the skill file, say whether it expects a board CLI to be installed, and state the
+coordinate/supervise mandate — see [§6](#6-skills-how-the-fleet-thinks) for what
+each role's skill must cover. The spawn also registers the agent with the router
 (`writeOrchestrator` + `enrollRepo`) so webhooks route to it.
 
 `spawnPaseoAgent` also accepts an optional `capabilities` grant (spawn `mode`,
