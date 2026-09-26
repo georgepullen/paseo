@@ -366,6 +366,15 @@ interface SearchInputProps {
     onChangeText: (text: string) => void;
     placeholder?: string;
     onClear?: () => void;
+    /**
+     * Painted box height, opt-in per call site. Unset keeps the original
+     * `isCompact ? 36 : 40` box so no untouched surface changes appearance.
+     * 26 matches the compact `size="sm"` button recipe (~26px) so a search field
+     * can sit beside filter pills in one row without inflating it (#645); a
+     * height of 26 or less also switches the input to the 12px `sm` label size,
+     * anything taller keeps the prior 13/14.
+     */
+    height?: number;
     style?: StyleProp<ViewStyle>;
     inputStyle?: StyleProp<TextStyle>;
     testID?: string;
@@ -373,7 +382,7 @@ interface SearchInputProps {
 /**
  * Standardized search input with search icon, clear button, and theme support.
  */
-declare function SearchInput({ value, onChangeText, placeholder, onClear, style, inputStyle, testID, }: SearchInputProps): React__default.JSX.Element;
+declare function SearchInput({ value, onChangeText, placeholder, onClear, height, style, inputStyle, testID, }: SearchInputProps): React__default.JSX.Element;
 
 interface TextInputProps {
     value: string;
