@@ -18,6 +18,15 @@ export interface SearchInputProps {
   onChangeText: (text: string) => void;
   placeholder?: string;
   onClear?: () => void;
+  /**
+   * Painted box height, opt-in per call site. Unset keeps the original
+   * `isCompact ? 36 : 40` box so no untouched surface changes appearance.
+   * 26 matches the compact `size="sm"` button recipe (~26px) so a search field
+   * can sit beside filter pills in one row without inflating it (#645); a
+   * height of 26 or less also switches the input to the 12px `sm` label size,
+   * anything taller keeps the prior 13/14.
+   */
+  height?: number;
   style?: StyleProp<ViewStyle>;
   inputStyle?: StyleProp<TextStyle>;
   testID?: string;
@@ -31,6 +40,7 @@ export function SearchInput({
   onChangeText,
   placeholder = "Search...",
   onClear,
+  height,
   style,
   inputStyle,
   testID,
@@ -40,6 +50,10 @@ export function SearchInput({
     RNTextInput) as ComponentType<RNTextInputProps & { ref?: Ref<RNTextInputInstance> }>;
   const { colors, resolveRadius, isCompact } = usePluginTheme();
   const radius = resolveRadius("sm");
+  // Unspecified keeps the original compact-aware default so every call site
+  // that does not opt in renders exactly as before (#645's scope was the
+  // uppidi-fleet filter rows only).
+  const resolvedHeight = height ?? (isCompact ? 36 : 40);
 
   const handleClear = () => {
     onChangeText("");
@@ -54,7 +68,7 @@ export function SearchInput({
           backgroundColor: colors.surface1,
           borderColor: colors.border,
           borderRadius: radius,
-          height: isCompact ? 36 : 40,
+          height: resolvedHeight,
         },
         style,
       ]}
@@ -72,7 +86,7 @@ export function SearchInput({
           styles.input,
           {
             color: colors.foreground,
-            fontSize: isCompact ? 13 : 14,
+            fontSize: height !== undefined && height <= 26 ? 12 : isCompact ? 13 : 14,
           },
           inputStyle,
         ]}

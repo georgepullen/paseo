@@ -29,13 +29,13 @@ the easy mistake.
 
 | Label | Parts |
 | --- | ---: |
-| `deterministic` | 43 |
+| `deterministic` | 44 |
 | `hybrid` | 3 |
 | `ai-llm` | 0 |
 | `contested` | 1 |
-| **total** | **47** |
+| **total** | **48** |
 
-Inventory: 41 tracked source files in scope — 32 described above as source (26 files, some carrying several parts) and 15 test suites, which are described by the inventory itself rather than by hand.
+Inventory: 42 tracked source files in scope — 32 described above as source (26 files, some carrying several parts) and 16 test suites, which are described by the inventory itself rather than by hand.
 
 **The `ai-llm` column is empty, and that is the finding rather than a gap.** Nothing in this
 plugin performs model inference: there is no completions call, no provider SDK, no temperature
@@ -97,8 +97,8 @@ See *What this table does not cover* below for the sessions themselves.
 | --- | --- | ---: | ---: | --- | --- | --- |
 | Barrel re-export for surface, tree-view and panel | `client/index.ts` | 0 | 3 | `deterministic` | whole file | client/index.ts:1-3 — three `export *` statements, no code |
 | Workspace panel wrapper, flair, panel registration | `client/panel.tsx` | 7 | 46 | `deterministic` | `UPPIDI_FLEET_FLAIR`, `UppidiFleetPanel`, `registerWorkspacePanel` | panel.tsx:10-18 — flair is a static `VisualFlair` literal<br>panel.tsx:20-30 — the panel delegates to the tree view<br>panel.tsx:37-46 — registration wraps `client.addWorkspacePanel` |
-| Fleet surface: tabs, router status badge, attention card, role-model and metrics dashboards | `client/surface.tsx` | 10 | 1998 | `deterministic` | `UppidiFleetSurface`, `UppidiBrandMark`, `UppidiTopHeaderBar`, `AttentionAgentCard`, `resolveRouterStatusBadge` | surface.tsx:295-306 — router badge is a three-way branch on two booleans<br>surface.tsx:499 — the surface reads every dataset over `useRpc`<br>surface.tsx:1281-1300 — model selection is a `Select` writing the role-model RPC<br>surface.tsx:682-685 — the write reports the server's own message, not a local guess |
-| Agent tree rendering: status lights, health gauges, metrics cards, rows, project groups | `client/tree-view.tsx` | 37 | 2817 | `deterministic` | `UppidiFleetTreeView`, `AgentStatusLight`, `AgentStateDot`, `AgentHealthGauge`, `AgentMetricsCard`, `OrchestratorRow`, +3 more | tree-view.tsx:387-403 — relative time is arithmetic on a timestamp<br>tree-view.tsx:450 — health gauge reads thresholds computed server-side<br>tree-view.tsx:2042 — the tree view is a pure function of the agents array |
+| Fleet surface: tabs, router status badge, attention card, role-model and metrics dashboards | `client/surface.tsx` | 10 | 2002 | `deterministic` | `UppidiFleetSurface`, `UppidiBrandMark`, `UppidiTopHeaderBar`, `AttentionAgentCard`, `resolveRouterStatusBadge` | surface.tsx:295-306 — router badge is a three-way branch on two booleans<br>surface.tsx:499 — the surface reads every dataset over `useRpc`<br>surface.tsx:1281-1300 — model selection is a `Select` writing the role-model RPC<br>surface.tsx:682-685 — the write reports the server's own message, not a local guess |
+| Agent tree rendering: status lights, health gauges, metrics cards, rows, project groups | `client/tree-view.tsx` | 37 | 2818 | `deterministic` | `UppidiFleetTreeView`, `AgentStatusLight`, `AgentStateDot`, `AgentHealthGauge`, `AgentMetricsCard`, `OrchestratorRow`, +3 more | tree-view.tsx:387-403 — relative time is arithmetic on a timestamp<br>tree-view.tsx:450 — health gauge reads thresholds computed server-side<br>tree-view.tsx:2042 — the tree view is a pure function of the agents array |
 | Static fleet fixtures for client tests | `client/testing/fleet-fixtures.ts` | 8 | 387 | `deterministic` | `agentsPayload`, `issuesPayload`, `metricsPayload`, `runnersPayload`, `hookQueuesPayload` | fleet-fixtures.ts:222-370 — seven payload builders returning fixed records<br>fleet-fixtures.ts:32 — one wide-worktree geometry constant |
 | Render harness: host element stubs, rpc stubs, provider wrapper | `client/testing/fleet-harness.ts` | 27 | 219 | `deterministic` | `getFleetHarness`, `useToast`, `Icon`, `useRevealedText` | fleet-harness.ts:28-58 — host components stubbed to inert React elements<br>fleet-harness.ts:70-80 — toast, icon, scroll/flatlist and copyText stubs<br>fleet-harness.ts:111 — the harness is assembled once and awaited |
 | Layout measurement double for mobile/zebra assertions | `client/testing/flex-measure.ts` | 5 | 438 | `deterministic` | `measureText`, `resolveStyle`, `findHorizontalOverflows` | flex-measure.ts:153 — text width is computed from the style, not a real layout pass<br>flex-measure.ts:371 — overflow findings are walked off the resolved style tree |
@@ -155,6 +155,7 @@ that enforces the invariant; this table is the readable view of the same fact.
 | `client/metrics-bar-parity.test.ts` | Parity between the metrics bar and its shared source | `test:node` | 81 | `deterministic` |
 | `client/mobile-layout.test.ts` | Mobile layout behaviour under the measurement double | `test:tsx` | 270 | `deterministic` |
 | `client/role-model-picker.test.ts` | Role-model picker interaction | `test:node` | 62 | `deterministic` |
+| `client/search-height.test.ts` | client/search-height | `test:tsx` | 171 | `deterministic` |
 | `client/tree-zebra.test.tsx` | Tree zebra striping | `test:tsx` | 47 | `deterministic` |
 | `server/agents.test.ts` | Agent normalisation, state derivation, spawn-authority and archive paths | `test:node` | 772 | `deterministic` |
 | `server/fleet.test.ts` | Cross-surface fleet behaviour | `test:node` | 1196 | `deterministic` |
@@ -197,11 +198,12 @@ matrix above is the judgement half.
 | `client/mobile-layout.test.ts` | client | 270 | 0 | — |
 | `client/panel.tsx` | client | 46 | 7 | `UPPIDI_FLEET_FLAIR`, `UPPIDI_FORGE_FLAIR`, `UppidiFleetPanel`, `UppidiFleetWorkspacePanel`, `UppidiForgePanel`, `UppidiForgeWorkspacePanel`, `registerWorkspacePanel` |
 | `client/role-model-picker.test.ts` | client | 62 | 0 | — |
-| `client/surface.tsx` | client | 1998 | 10 | `AttentionAgentCard`, `AttentionAgentCardProps`, `RouterStatusBadge`, `SurfaceTab`, `UppidiBrandMark`, `UppidiFleetSurface`, `UppidiForgeSurface`, `UppidiTopHeaderBar`, `UppidiTopHeaderBarProps`, `resolveRouterStatusBadge` |
+| `client/search-height.test.ts` | client | 171 | 0 | — |
+| `client/surface.tsx` | client | 2002 | 10 | `AttentionAgentCard`, `AttentionAgentCardProps`, `RouterStatusBadge`, `SurfaceTab`, `UppidiBrandMark`, `UppidiFleetSurface`, `UppidiForgeSurface`, `UppidiTopHeaderBar`, `UppidiTopHeaderBarProps`, `resolveRouterStatusBadge` |
 | `client/testing/fleet-fixtures.ts` | client | 387 | 8 | `WIDE_WORKTREE`, `agentsPayload`, `agentsPayloadNoFrontDesk`, `hookQueuesPayload`, `installPayloads`, `issuesPayload`, `metricsPayload`, `runnersPayload` |
 | `client/testing/fleet-harness.ts` | client | 219 | 27 | `ActivityIndicator`, `Animated`, `Appearance`, `Dimensions`, `Easing`, `FlatList`, `FleetRenderHarness`, `Icon`, `Image`, `Linking`, `Modal`, `PanResponder` …+15 more |
 | `client/testing/flex-measure.ts` | client | 438 | 5 | `OverflowFinding`, `StyleValue`, `findHorizontalOverflows`, `measureText`, `resolveStyle` |
-| `client/tree-view.tsx` | client | 2817 | 37 | `AgentAttentionBanner`, `AgentAttentionBannerProps`, `AgentHealthGauge`, `AgentHealthGaugeProps`, `AgentLabelsRow`, `AgentMetricsCard`, `AgentMetricsCardProps`, `AgentStateDot`, `AgentStatusLight`, `AgentStatusLightProps`, `AgentStatusLightsRow`, `AgentStatusLightsRowProps` …+25 more |
+| `client/tree-view.tsx` | client | 2818 | 37 | `AgentAttentionBanner`, `AgentAttentionBannerProps`, `AgentHealthGauge`, `AgentHealthGaugeProps`, `AgentLabelsRow`, `AgentMetricsCard`, `AgentMetricsCardProps`, `AgentStateDot`, `AgentStatusLight`, `AgentStatusLightProps`, `AgentStatusLightsRow`, `AgentStatusLightsRowProps` …+25 more |
 | `client/tree-zebra.test.tsx` | client | 47 | 0 | — |
 | `index.client.tsx` | entry | 84 | 8 | `UPPIDI_FLEET_FLAIR`, `UPPIDI_FORGE_FLAIR`, `UppidiFleetPanel`, `UppidiFleetSurface`, `UppidiForgePanel`, `UppidiForgeSurface`, `contribute`, `registerWorkspacePanel` |
 | `index.server.ts` | entry | 146 | 1 | `contribute` |

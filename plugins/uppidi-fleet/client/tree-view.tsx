@@ -2631,6 +2631,7 @@ export const UppidiFleetTreeView: React.FC<UppidiFleetTreeViewProps> = ({
             placeholder="Search agents, projects, worktrees, #issues..."
             value={query}
             onChangeText={setQuery}
+            height={26}
           />
         </View>
       </Row>

@@ -1155,6 +1155,7 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
                   onChangeText={setQueueQuery}
                   onClear={() => setQueueQuery("")}
                   placeholder="Filter queues by repo or orchestrator..."
+                  height={26}
                 />
                 {visibleQueues.length === 0 ? (
                   <Text style={{ color: colors.foregroundMuted, ...typography.caption }}>
@@ -1367,6 +1368,7 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
                   onChangeText={setRunnerQuery}
                   onClear={() => setRunnerQuery("")}
                   placeholder="Filter runners by name, status, or labels..."
+                  height={26}
                 />
                 {visibleRunners.length === 0 ? (
                   <Text style={{ color: colors.foregroundMuted, ...typography.caption }}>
@@ -1496,6 +1498,7 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
                   onChangeText={setMetricQuery}
                   onClear={() => setMetricQuery("")}
                   placeholder="Filter models by name, role, or profile advisory..."
+                  height={26}
                 />
 
                 {metricsData?.privacyNotice && (
@@ -1803,6 +1806,7 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
                   onChangeText={setQuery}
                   onClear={() => setQuery("")}
                   placeholder="Filter by title, number, or label..."
+                  height={26}
                 />
               </View>
               <Row gap="xs" align="center" wrap>
