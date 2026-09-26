@@ -8,8 +8,11 @@ import { PluginStorage } from "./vendor/paseo-plugin-helper/index";
  * explicit immediate retry when a peer is observed reconnecting. Entries expire
  * after a configurable window; expiry notifies the local sender with the reason.
  *
- * Every entry retains the first attempt's messageId. Paseo's daemon receives
- * that same key on a retry and deduplicates before the target agent sees it.
+ * Every entry retains the first attempt's messageId. That key suppresses
+ * duplicates on the native drain only: the daemon compares it at the request
+ * level when `send()` carries `options.messageId` (local-send.ts). CLI-routed
+ * entries get no duplicate suppression today — `paseo send` has no
+ * `--message-id` option (pending #350).
  */
 
 export const OUTBOX_FILE = "outbox.json";

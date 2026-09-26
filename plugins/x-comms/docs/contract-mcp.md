@@ -513,9 +513,11 @@ x_comms_send(daemon, agentId, prompt, fromAgentId?, fromAgentName?, messageId?, 
 * **Stamping before queueing is the load-bearing ordering.** A queued item carries
   the exact bytes it will deliver, signature and all, so nothing re-stamps it
   later — re-stamping would move `sentAt` and invalidate the signature.
-* **`messageId`** defaults to a fresh `randomUUID()` and is passed to
-  `paseo send --message-id`, so the daemon can discard a duplicate before the
-  target agent sees it. It is retained across every retry.
+* **`messageId`** defaults to a fresh `randomUUID()` and is retained across every
+  retry. Dedupe engages only where that value reaches the daemon's request-level
+  receipt — the native SDK send carrying `options.messageId` (local-send.ts).
+  The CLI leg is not wired: `paseo send` has no `--message-id` option (pending
+  #350), so CLI-routed sends get no duplicate suppression today.
 * **`fromAgentId` is ignored in an agent session** (C2). It is honoured only for
   the plugin server's own subprocess, which runs without `PASEO_AGENT_ID`.
 
