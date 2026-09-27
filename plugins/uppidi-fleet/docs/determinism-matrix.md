@@ -29,13 +29,13 @@ the easy mistake.
 
 | Label | Parts |
 | --- | ---: |
-| `deterministic` | 44 |
+| `deterministic` | 46 |
 | `hybrid` | 3 |
 | `ai-llm` | 0 |
 | `contested` | 1 |
-| **total** | **48** |
+| **total** | **50** |
 
-Inventory: 42 tracked source files in scope — 32 described above as source (26 files, some carrying several parts) and 16 test suites, which are described by the inventory itself rather than by hand.
+Inventory: 44 tracked source files in scope — 32 described above as source (26 files, some carrying several parts) and 18 test suites, which are described by the inventory itself rather than by hand.
 
 **The `ai-llm` column is empty, and that is the finding rather than a gap.** Nothing in this
 plugin performs model inference: there is no completions call, no provider SDK, no temperature
@@ -97,10 +97,10 @@ See *What this table does not cover* below for the sessions themselves.
 | --- | --- | ---: | ---: | --- | --- | --- |
 | Barrel re-export for surface, tree-view and panel | `client/index.ts` | 0 | 3 | `deterministic` | whole file | client/index.ts:1-3 — three `export *` statements, no code |
 | Workspace panel wrapper, flair, panel registration | `client/panel.tsx` | 7 | 46 | `deterministic` | `UPPIDI_FLEET_FLAIR`, `UppidiFleetPanel`, `registerWorkspacePanel` | panel.tsx:10-18 — flair is a static `VisualFlair` literal<br>panel.tsx:20-30 — the panel delegates to the tree view<br>panel.tsx:37-46 — registration wraps `client.addWorkspacePanel` |
-| Fleet surface: tabs, router status badge, attention card, role-model and metrics dashboards | `client/surface.tsx` | 10 | 2002 | `deterministic` | `UppidiFleetSurface`, `UppidiBrandMark`, `UppidiTopHeaderBar`, `AttentionAgentCard`, `resolveRouterStatusBadge` | surface.tsx:295-306 — router badge is a three-way branch on two booleans<br>surface.tsx:499 — the surface reads every dataset over `useRpc`<br>surface.tsx:1281-1300 — model selection is a `Select` writing the role-model RPC<br>surface.tsx:682-685 — the write reports the server's own message, not a local guess |
+| Fleet surface: tabs, router status badge, attention card, role-model and metrics dashboards | `client/surface.tsx` | 10 | 2020 | `deterministic` | `UppidiFleetSurface`, `UppidiBrandMark`, `UppidiTopHeaderBar`, `AttentionAgentCard`, `resolveRouterStatusBadge` | surface.tsx:295-306 — router badge is a three-way branch on two booleans<br>surface.tsx:499 — the surface reads every dataset over `useRpc`<br>surface.tsx:1281-1300 — model selection is a `Select` writing the role-model RPC<br>surface.tsx:682-685 — the write reports the server's own message, not a local guess |
 | Agent tree rendering: status lights, health gauges, metrics cards, rows, project groups | `client/tree-view.tsx` | 37 | 2818 | `deterministic` | `UppidiFleetTreeView`, `AgentStatusLight`, `AgentStateDot`, `AgentHealthGauge`, `AgentMetricsCard`, `OrchestratorRow`, +3 more | tree-view.tsx:387-403 — relative time is arithmetic on a timestamp<br>tree-view.tsx:450 — health gauge reads thresholds computed server-side<br>tree-view.tsx:2042 — the tree view is a pure function of the agents array |
 | Static fleet fixtures for client tests | `client/testing/fleet-fixtures.ts` | 8 | 387 | `deterministic` | `agentsPayload`, `issuesPayload`, `metricsPayload`, `runnersPayload`, `hookQueuesPayload` | fleet-fixtures.ts:222-370 — seven payload builders returning fixed records<br>fleet-fixtures.ts:32 — one wide-worktree geometry constant |
-| Render harness: host element stubs, rpc stubs, provider wrapper | `client/testing/fleet-harness.ts` | 27 | 219 | `deterministic` | `getFleetHarness`, `useToast`, `Icon`, `useRevealedText` | fleet-harness.ts:28-58 — host components stubbed to inert React elements<br>fleet-harness.ts:70-80 — toast, icon, scroll/flatlist and copyText stubs<br>fleet-harness.ts:111 — the harness is assembled once and awaited |
+| Render harness: host element stubs, rpc stubs, provider wrapper | `client/testing/fleet-harness.ts` | 27 | 225 | `deterministic` | `getFleetHarness`, `useToast`, `Icon`, `useRevealedText` | fleet-harness.ts:28-58 — host components stubbed to inert React elements<br>fleet-harness.ts:70-80 — toast, icon, scroll/flatlist and copyText stubs<br>fleet-harness.ts:111 — the harness is assembled once and awaited |
 | Layout measurement double for mobile/zebra assertions | `client/testing/flex-measure.ts` | 5 | 438 | `deterministic` | `measureText`, `resolveStyle`, `findHorizontalOverflows` | flex-measure.ts:153 — text width is computed from the style, not a real layout pass<br>flex-measure.ts:371 — overflow findings are walked off the resolved style tree |
 
 - **Barrel re-export for surface, tree-view and panel** (`client/index.ts`) — Pure re-export barrel.
@@ -149,6 +149,7 @@ that enforces the invariant; this table is the readable view of the same fact.
 
 | Suite | Covers | Runs under | Loc | Classification |
 | --- | --- | --- | ---: | --- |
+| `client/cross-repo-issues.test.ts` | client/cross-repo-issues | `test:tsx` | 265 | `deterministic` |
 | `client/entry.test.ts` | Surface/panel registration and teardown | `test:tsx` | 1230 | `deterministic` |
 | `client/fleet-state-filter-row.test.ts` | Fleet state filter row rendering | `test:node` | 49 | `deterministic` |
 | `client/issue-metrics-bar.test.ts` | Issue metrics bar rendering | `test:node` | 64 | `deterministic` |
@@ -161,6 +162,7 @@ that enforces the invariant; this table is the readable view of the same fact.
 | `server/fleet.test.ts` | Cross-surface fleet behaviour | `test:node` | 1196 | `deterministic` |
 | `server/hook-router.test.ts` | Webhook classification, coalescing, queueing, watchdog taxonomy, handoff | `test:node` | 2526 | `deterministic` |
 | `server/hook.test.ts` | Hook-service handlers, endpoint resolution, unreachable-path shapes | `test:node` | 377 | `deterministic` |
+| `server/issues.test.ts` | server/issues | `test:node` | 88 | `deterministic` |
 | `server/metrics.test.ts` | Rollup arithmetic, candidate derivation, receipt persistence | `test:node` | 279 | `deterministic` |
 | `server/runners.test.ts` | Runner scope merge, normalisation, fleet-status decision table | `test:node` | 357 | `deterministic` |
 | `shared/contracts.test.ts` | Contract schema validation | `test:node` | 835 | `deterministic` |
@@ -190,6 +192,7 @@ matrix above is the judgement half.
 
 | File | Layer | Loc | Exports | Top-level exported names |
 | --- | --- | ---: | ---: | --- |
+| `client/cross-repo-issues.test.ts` | client | 265 | 0 | — |
 | `client/entry.test.ts` | client | 1230 | 0 | — |
 | `client/fleet-state-filter-row.test.ts` | client | 49 | 0 | — |
 | `client/index.ts` | client | 3 | 0 | — |
@@ -199,9 +202,9 @@ matrix above is the judgement half.
 | `client/panel.tsx` | client | 46 | 7 | `UPPIDI_FLEET_FLAIR`, `UPPIDI_FORGE_FLAIR`, `UppidiFleetPanel`, `UppidiFleetWorkspacePanel`, `UppidiForgePanel`, `UppidiForgeWorkspacePanel`, `registerWorkspacePanel` |
 | `client/role-model-picker.test.ts` | client | 62 | 0 | — |
 | `client/search-height.test.ts` | client | 171 | 0 | — |
-| `client/surface.tsx` | client | 2002 | 10 | `AttentionAgentCard`, `AttentionAgentCardProps`, `RouterStatusBadge`, `SurfaceTab`, `UppidiBrandMark`, `UppidiFleetSurface`, `UppidiForgeSurface`, `UppidiTopHeaderBar`, `UppidiTopHeaderBarProps`, `resolveRouterStatusBadge` |
+| `client/surface.tsx` | client | 2020 | 10 | `AttentionAgentCard`, `AttentionAgentCardProps`, `RouterStatusBadge`, `SurfaceTab`, `UppidiBrandMark`, `UppidiFleetSurface`, `UppidiForgeSurface`, `UppidiTopHeaderBar`, `UppidiTopHeaderBarProps`, `resolveRouterStatusBadge` |
 | `client/testing/fleet-fixtures.ts` | client | 387 | 8 | `WIDE_WORKTREE`, `agentsPayload`, `agentsPayloadNoFrontDesk`, `hookQueuesPayload`, `installPayloads`, `issuesPayload`, `metricsPayload`, `runnersPayload` |
-| `client/testing/fleet-harness.ts` | client | 219 | 27 | `ActivityIndicator`, `Animated`, `Appearance`, `Dimensions`, `Easing`, `FlatList`, `FleetRenderHarness`, `Icon`, `Image`, `Linking`, `Modal`, `PanResponder` …+15 more |
+| `client/testing/fleet-harness.ts` | client | 225 | 27 | `ActivityIndicator`, `Animated`, `Appearance`, `Dimensions`, `Easing`, `FlatList`, `FleetRenderHarness`, `Icon`, `Image`, `Linking`, `Modal`, `PanResponder` …+15 more |
 | `client/testing/flex-measure.ts` | client | 438 | 5 | `OverflowFinding`, `StyleValue`, `findHorizontalOverflows`, `measureText`, `resolveStyle` |
 | `client/tree-view.tsx` | client | 2818 | 37 | `AgentAttentionBanner`, `AgentAttentionBannerProps`, `AgentHealthGauge`, `AgentHealthGaugeProps`, `AgentLabelsRow`, `AgentMetricsCard`, `AgentMetricsCardProps`, `AgentStateDot`, `AgentStatusLight`, `AgentStatusLightProps`, `AgentStatusLightsRow`, `AgentStatusLightsRowProps` …+25 more |
 | `client/tree-zebra.test.tsx` | client | 47 | 0 | — |
@@ -215,6 +218,7 @@ matrix above is the judgement half.
 | `server/hook-router.ts` | server | 3831 | 100 | `BoardCandidate`, `BoardCheckResult`, `BoardSweepResult`, `CANCELLATION_TIMEOUT_MARKER`, `CHILD_WAKEUP_EVENTS`, `ChildWakeupAssessment`, `ChildWakeupKind`, `CoalesceEntry`, `CoalesceEvent`, `CoalesceInput`, `CoalesceResult`, `DEFAULT_CANCELLATION_RECENCY_SECONDS` …+88 more |
 | `server/hook.test.ts` | server | 377 | 0 | — |
 | `server/hook.ts` | server | 227 | 11 | `handleHookConfigure`, `handleHookDrain`, `handleHookInfo`, `handleHookLogTail`, `handleHookPause`, `handleHookQueues`, `handleHookResume`, `handleHookServiceAction`, `handleHookServiceStatus`, `handleHookStatus`, `resolveHookUrl` |
+| `server/issues.test.ts` | server | 88 | 0 | — |
 | `server/issues.ts` | server | 103 | 1 | `handleUppidiIssues` |
 | `server/metrics.test.ts` | server | 279 | 0 | — |
 | `server/metrics.ts` | server | 700 | 19 | `AppendRollupResult`, `BASELINE_CANDIDATES`, `DEFAULT_TASK_PROFILES`, `FleetMetrics`, `MAX_ROLLUP_RECEIPTS`, `METRICS_PRIVACY_NOTICE`, `ModelRollup`, `RollupAgentInput`, `RollupAgentMetrics`, `appendRollupReceipt`, `computeModelRollups`, `defaultMetricsFilePath` …+7 more |

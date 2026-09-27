@@ -139,7 +139,13 @@ export async function getFleetHarness(): Promise<FleetRenderHarness> {
         Modal: Object.assign(() => null, { Content: () => null }),
         // Every RPC read resolves from the mutable payload map. A contract with
         // no entry yields `undefined`, which is exactly the missing-data case.
-        useRpc: (contract: { name?: string }) => async () => payloads[contract?.name ?? ""],
+        // Payload entries may be functions receiving the RPC input (#724), so
+        // per-repo contracts can answer differently per repo.
+        useRpc: (contract: { name?: string }) => async (input: unknown) => {
+          const entry = payloads[contract?.name ?? ""];
+          if (typeof entry === "function") return entry(input);
+          return entry;
+        },
         useToast: () => ({ show() {}, error() {}, copied() {} }),
       } as any);
 

@@ -535,11 +535,19 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
   const [metricSortDir, setMetricSortDir] = useState<SortDirection>("desc");
 
   // Live RPC queries with polling
+  // The selected repo goes with the request (#724). Before the fix this input
+  // never carried `repo`, so the server kept answering the default repository
+  // and any other selection filtered a list the server never served — blank by
+  // construction.
   const {
     data: issuesData,
     isLoading: issuesLoading,
     refetch: refetchIssues,
-  } = useRpcQuery(uppidiIssuesContract, { state: "open" }, { refetchInterval: 10000 });
+  } = useRpcQuery(
+    uppidiIssuesContract,
+    { state: "open", repo: selectedRepo === "all" ? undefined : selectedRepo },
+    { refetchInterval: 10000 },
+  );
 
   const {
     data: hookStatus,
@@ -1834,8 +1842,18 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
               keyExtractor={(issue) => String(issue.number)}
               emptyState={
                 <EmptyState
-                  title="No issues match this filter"
-                  description="Try changing the filter or search query."
+                  title={
+                    issuesData?.ok === false && issuesData?.error
+                      ? "Could not load issues"
+                      : selectedRepo !== "all" && issuesData?.ok && issuesData?.issues.length === 0
+                        ? `No open issues in ${selectedRepo}`
+                        : "No issues match this filter"
+                  }
+                  description={
+                    issuesData?.ok === false && issuesData?.error
+                      ? issuesData.error
+                      : "Try changing the filter or search query."
+                  }
                   actionLabel="Clear filters"
                   onAction={() => {
                     setFilter("all");
