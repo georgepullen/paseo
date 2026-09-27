@@ -5,7 +5,7 @@ import TestRenderer, { act } from "react-test-renderer";
 // helper barrel must be required after `initClientHelpers` below — a top-level
 // import would evaluate it before the host seam exists.
 const { initClientHelpers } = await import("paseo-plugin-helper/client");
-import { ApprovalSurface } from "./approvals";
+import { ApprovalHeaderIcon, ApprovalSurface } from "./approvals";
 
 // The real `react-native` entrypoint carries Flow syntax Vite cannot parse;
 // the `@getpaseo/plugin/client/*` modules ship as `export {}` — the *host*
@@ -88,6 +88,17 @@ const surfaceProps = {
   layout: { compact: false, platform: "web" as const },
 };
 
+// Only the entries `ApprovalHeaderIcon` reads before the boundary swaps in the
+// fallback: theme for the degraded tint, size for the icon slot, plus the
+// required context shape.
+const headerIconProps = {
+  ...surfaceProps,
+  size: 18,
+  color: "#e8e8ee",
+  context: "workspace" as const,
+  workspaceId: "ws-1",
+};
+
 describe("2fado ApprovalSurface survives undefined host bindings (#555)", () => {
   it("renders the degraded fallback surface with no host SDK bindings", () => {
     initClientHelpers({
@@ -102,5 +113,31 @@ describe("2fado ApprovalSurface survives undefined host bindings (#555)", () => 
     const text = textOf(renderer.toJSON());
     expect(text).toContain("2fado panel hit a render error");
     expect(text).toContain("Re-open the panel to retry.");
+  });
+});
+
+describe("2fado ApprovalHeaderIcon survives undefined host bindings (#728)", () => {
+  it("renders the degraded fallback icon when the guarded tree throws with Icon undefined", () => {
+    initClientHelpers({
+      Icon: undefined,
+      Modal: undefined,
+      useRpc: () => () => {
+        throw new Error("host runtime lacks the injected bindings");
+      },
+      useToast: () => ({ show() {}, error() {}, copied() {} }),
+    } as unknown as Parameters<typeof initClientHelpers>[0]);
+    const renderer = render(
+      React.createElement(ApprovalHeaderIcon, headerIconProps as never),
+    );
+    const text = textOf(renderer.toJSON());
+    expect(text).toBe("!");
+    // The degraded mark is `theme.colors.statusDanger`, read from props — not
+    // any host-injected binding.
+    const output = renderer.toJSON() as {
+      type: string;
+      children?: Array<{ props: { style?: { color?: string } } }>;
+    };
+    expect(output.type).toBe("View");
+    expect(output.children?.[0]?.props.style?.color).toBe("#f7768e");
   });
 });

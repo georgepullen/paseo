@@ -303,11 +303,22 @@ function ApprovalHeaderIconInner(props: PluginButtonIconProps) {
 }
 
 export function ApprovalHeaderIcon(props: PluginButtonIconProps) {
-  const { size, color } = props;
+  const { theme, size } = props;
   return (
     <ErrorBoundary
       label="ApprovalHeaderIcon"
-      fallback={<Icon name="ShieldCheck" size={size} color={color} />}
+      // The fallback must not depend on any host-injected SDK binding (the old
+      // fallback rendered `<Icon>`): those ship as `export {}` and are
+      // undefined when the host runtime lacks them — the same environment
+      // that makes the guarded tree throw. Plain react-native elements keep
+      // the fallback itself renderable (#555).
+      fallback={
+        <View style={{ width: size, height: size, alignItems: "center", justifyContent: "center" }}>
+          <Text style={{ color: theme.colors.statusDanger, fontSize: size * 0.6, fontWeight: "700" }}>
+            !
+          </Text>
+        </View>
+      }
     >
       <ApprovalHeaderIconInner {...props} />
     </ErrorBoundary>
