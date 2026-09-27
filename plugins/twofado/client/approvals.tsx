@@ -1973,31 +1973,33 @@ function ApprovalSurfaceInner({
 }
 
 export function ApprovalSurface(props: PluginSurfaceProps) {
-  const { theme, layout } = props;
+  const { theme } = props;
   return (
     <ErrorBoundary
       label="ApprovalSurface"
+      // The fallback must not depend on any host-injected SDK binding (Icon,
+      // ModalBody, PluginThemeProvider): those ship as `export {}` and are
+      // undefined when the host runtime lacks them — the same environment
+      // that makes the guarded tree throw. Plain react-native elements keep
+      // the fallback itself renderable (#555).
       fallback={
-        <PluginThemeProvider theme={{ colors: theme.colors }} layout={layout}>
-          <ModalBody
-            style={{ backgroundColor: theme.colors.surface0 }}
-            contentContainerStyle={{ padding: 20 }}
-          >
-            <View style={{ width: "100%", gap: 10 }}>
-              <Card style={{ borderLeftWidth: 3, borderLeftColor: theme.colors.statusDanger }}>
-                <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                  <Icon name="CloudOff" size={16} color={theme.colors.statusDanger} />
-                  <Text style={{ color: theme.colors.foreground, fontSize: 13, fontWeight: "600" }}>
-                    2fado panel hit a render error
-                  </Text>
-                </View>
-                <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12, marginTop: 4 }}>
-                  Details are in the plugin logs. Re-open the panel to retry.
-                </Text>
-              </Card>
-            </View>
-          </ModalBody>
-        </PluginThemeProvider>
+        <View
+          style={{
+            backgroundColor: theme.colors.surface0,
+            borderWidth: 3,
+            borderColor: theme.colors.statusDanger,
+            borderRadius: 8,
+            padding: 16,
+            gap: 6,
+          }}
+        >
+          <Text style={{ color: theme.colors.statusDanger, fontSize: 14, fontWeight: "600" }}>
+            !!! 2fado panel hit a render error
+          </Text>
+          <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>
+            Details are in the plugin logs. Re-open the panel to retry.
+          </Text>
+        </View>
       }
     >
       <ApprovalSurfaceInner {...props} />

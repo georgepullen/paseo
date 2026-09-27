@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import fs from "node:fs";
+import { createRequire } from "node:module";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
@@ -139,6 +140,66 @@ function helperImports(source: ts.SourceFile): Array<{ name: string; typeOnly: b
   return imports;
 }
 
+// SDK subpaths that ship as `export {}`: their values exist only because the
+// host injects them at runtime, so an undeclared name is `undefined` in every
+// host — the mobile failure mode behind #555.
+const HOST_INJECTED_SPECIFIERS = [
+  "@getpaseo/plugin/client/react-native",
+  "@getpaseo/plugin/client/ui",
+] as const;
+
+type HostInjectedSpecifier = (typeof HOST_INJECTED_SPECIFIERS)[number];
+
+interface HostInjectedImport {
+  specifier: HostInjectedSpecifier;
+  names: string[];
+}
+
+function hostInjectedImports(source: ts.SourceFile): HostInjectedImport[] {
+  const bySpecifier = new Map<HostInjectedSpecifier, string[]>();
+  for (const statement of source.statements) {
+    if (!ts.isImportDeclaration(statement)) continue;
+    const specifier = statement.moduleSpecifier;
+    if (!ts.isStringLiteral(specifier)) continue;
+    if (
+      !HOST_INJECTED_SPECIFIERS.includes(
+        specifier.text as HostInjectedSpecifier,
+      )
+    ) {
+      continue;
+    }
+    const clause = statement.importClause;
+    if (!clause) continue;
+    const names = bySpecifier.get(specifier.text as HostInjectedSpecifier) ?? [];
+    if (clause.name && !clause.isTypeOnly) names.push(clause.name.text);
+    const bindings = clause.namedBindings;
+    if (bindings && ts.isNamedImports(bindings)) {
+      for (const element of bindings.elements) {
+        if (!clause.isTypeOnly && !element.isTypeOnly) {
+          names.push((element.propertyName ?? element.name).text);
+        }
+      }
+    }
+    bySpecifier.set(specifier.text as HostInjectedSpecifier, names);
+  }
+  return [...bySpecifier].map(([specifier, names]) => ({ specifier, names }));
+}
+
+/** Value names of one SDK subpath, from the installed SDK's own declarations. */
+function sdkRuntimeSurface(specifier: HostInjectedSpecifier): Set<string> {
+  // The export maps point `default` at the runtime JS file; its declarations
+  // sit next to it. Resolving through Node keeps the test on whatever the
+  // package manager actually installed for the pinned `^0.9.0` SDK.
+  const require = createRequire(path.join(pluginRoot, "package.json"));
+  const resolved = require.resolve(specifier);
+  const declared = resolved.replace(/\.js$/, ".d.ts");
+  expect(
+    fs.existsSync(declared),
+    `${specifier} resolved to ${resolved}, which has no sibling .d.ts — cannot compare against the host runtime surface`,
+  ).toBe(true);
+  return collectBarrelExports(declared);
+}
+
 function resolveRelativeModule(fromFile: string, specifier: string): string | undefined {
   if (!specifier.startsWith(".")) return undefined;
   const base = path.resolve(path.dirname(fromFile), specifier);
@@ -209,6 +270,10 @@ const parsedSurfaces = SURFACE_FILES.map((rel) => ({
 
 describe("2fado client JSX element types resolve statically (#555)", () => {
   it("binds every capitalized JSX tag at module scope", () => {
+    // Host-injected SDK subpaths ship as `export {}`: their values exist only
+    // because the host injects them at runtime, so an import name the SDK
+    // declarations do not list is `undefined` on every host — the mobile
+    // failure mode behind #555.
     for (const { rel, source } of parsedSurfaces) {
       const bound = moduleValueBindings(source);
       for (const [full, line] of jsxElementRoots(source)) {
@@ -231,6 +296,21 @@ describe("2fado client JSX element types resolve statically (#555)", () => {
           vendored.has(name),
           `${rel} imports '${name}' from paseo-plugin-helper/client but the vendored barrel does not export it`,
         ).toBe(true);
+      }
+    }
+  });
+
+  it("imports only names the host injects for `export {}` SDK subpaths", () => {
+    // The host cannot inject what its SDK does not declare: such an import
+    // binds `undefined` at runtime and renders as the #555 crash.
+    for (const { rel, source } of parsedSurfaces) {
+      for (const { specifier, names } of hostInjectedImports(source)) {
+        const injected = sdkRuntimeSurface(specifier);
+        const undeclared = names.filter((name) => !injected.has(name));
+        expect(
+          undeclared,
+          `${rel} imports ${undeclared.map((name) => `'${name}'`).join(", ")} from ${specifier}, which is not part of the installed SDK's runtime surface — the binding is undefined on every host`,
+        ).toEqual([]);
       }
     }
   });
