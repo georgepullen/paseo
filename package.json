@@ -16,7 +16,8 @@
     "plugins/twofado",
     "plugins/uppidi-fleet",
     "plugins/worktree-install",
-    "plugins/wellbeing"
+    "plugins/wellbeing",
+    "plugins/permission-logger"
   ],
   "scripts": {
     "typecheck": "npm run typecheck --workspaces --if-present",

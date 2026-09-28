@@ -67,6 +67,7 @@ const EXPECTED_PLUGINS = [
   "demo",
   "forges",
   "mcp-tools",
+  "permission-logger",
   "plugin-updates",
   "slash",
   "top",
@@ -109,6 +110,9 @@ function withTempStage(run) {
 
 const demo = manifestFor("demo");
 check("demo files ship source entry points", demo.files.includes("index.client.tsx") && demo.files.includes("index.server.ts"));
+const permissionLogger = manifestFor("permission-logger");
+check("permission-logger is READY", readiness(permissionLogger).length === 0);
+check("permission-logger files ship source entry points", permissionLogger.files.includes("index.client.tsx") && permissionLogger.files.includes("index.server.ts"));
 for (const id of ids) {
   const manifest = manifestFor(id);
   const sourceEntries = fs

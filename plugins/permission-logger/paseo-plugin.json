@@ -1,0 +1,9 @@
+{
+  "id": "permission-logger",
+  "requirements": {
+    "paseo": ">=0.9.0"
+  },
+  "build": [
+    ["npm", "install"]
+  ]
+}
