@@ -1,7 +1,8 @@
 # forgejo-issues-check: TS port parity evidence (#733)
 
 Date: 2026-09-28. Python original (read-only reference):
-`/home/xpufx/code/platform/scripts/forgejo-issues-check` (Python 3.12.3).
+the platform script `scripts/forgejo-issues-check` (Python 3.12.3), referenced by
+relative path only because the publishable tree must not name operator paths.
 Port: `server/issues-check.ts`. Ported regression suite: `server/issues-check.test.ts`
 (mirrors `forgejo-issues-check.test.py` fixture for fixture — same NOW anchor,
 same issue helpers, same stubs via the `IssuesCheckIo` seam, same expectations).
@@ -38,7 +39,7 @@ Identical = identical across all five dimensions.
 | 07 | stale-WIP real recovery | same board, runs the real comment+label edit | 1/1 | yes |
 | 08 | comment POST failure | fgjx POST exits 1; error surfaces on stderr | 1/1 | yes |
 | 09 | custom threshold (`--stale-wip-hours 0.5`) | WIP above/below threshold | 0/0 | yes |
-| 10 | human feedback | oktay / plain human / `xpufx` / envelope / `[x-agent]` / multiline >100 chars / comments=0 | 1/1 | yes |
+| 10 | human feedback | configured trusted login / plain human / configured board owner / envelope / `[x-agent]` / multiline >100 chars / comments=0 | 1/1 | yes |
 | 11 | `--role worker` | same board as 05, worker perspective | 1/1 | yes |
 | 12 | `--all` | unchanged cache, actionable issues reported | 1/1 | yes |
 | 13 | markdown, full taxonomy | default format | 1/1 | yes |

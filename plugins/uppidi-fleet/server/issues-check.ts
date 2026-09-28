@@ -151,6 +151,38 @@ export interface IssuesCheckOutcome {
 export type IssuesCheckRole = "orchestrator" | "worker";
 
 /**
+ * Board identities are operator-specific, so they are configuration rather than
+ * literals: the published plugin must not name a person, and the PII hygiene
+ * gate on the publish surface enforces that.
+ *
+ * `trusted` logins count as human feedback even when the body carries an agent
+ * marker. `nonHuman` logins are the board owner, whose own comments are not
+ * inbound feedback. Both default to empty, which reduces the rule to its
+ * general form: any comment without an agent marker is human feedback, whoever
+ * wrote it. That default is the intended behaviour for a public install.
+ *
+ * Divergence from the Python original is recorded in
+ * docs/issues-check-parity.md (scenario 10): with the identities configured to
+ * match, the port reproduces the original exactly.
+ */
+export function boardIdentityConfig(env: Record<string, string | undefined> = process.env): {
+  trusted: Set<string>;
+  nonHuman: Set<string>;
+} {
+  const parse = (value: string | undefined): Set<string> =>
+    new Set(
+      (value ?? "")
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter(Boolean),
+    );
+  return {
+    trusted: parse(env.PASEO_BOARD_TRUSTED_LOGINS),
+    nonHuman: parse(env.PASEO_BOARD_NON_HUMAN_LOGINS),
+  };
+}
+
+/**
  * Transport failure of the issues query. Divergence from the Python original
  * (recorded in docs/issues-check-parity.md): the script treated a failing
  * `fgjx` call as an empty board and exited 0 silently, which is exactly the
@@ -784,6 +816,7 @@ export async function runIssuesCheck(options: IssuesCheckOptions = {}): Promise<
   const cache = await io.loadCache(repo);
   const newState: Record<string, IssueSignature> = {};
   const candidates: RankedCandidate[] = [];
+  const { trusted: trustedLogins, nonHuman: nonHumanLogins } = boardIdentityConfig();
 
   for (const issue of issues) {
     const num = issue.number;
@@ -824,7 +857,7 @@ export async function runIssuesCheck(options: IssuesCheckOptions = {}): Promise<
         const lastComment = comments[comments.length - 1];
         const author = lastComment?.user?.login ?? "";
         const body = typeof lastComment?.body === "string" ? lastComment.body : "";
-        if (author === "oktay" || (!body.includes("[x-agent]") && !body.includes("<sub>🤖") && author !== "xpufx")) {
+        if (trustedLogins.has(author) || (!body.includes("[x-agent]") && !body.includes("<sub>🤖") && !nonHumanLogins.has(author))) {
           // Verified human author
           isFeedback = true;
           feedbackAuthor = author;
