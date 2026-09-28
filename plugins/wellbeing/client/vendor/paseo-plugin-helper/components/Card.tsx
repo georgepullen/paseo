@@ -30,6 +30,11 @@ export interface CardHeaderProps {
   highlightQuery?: string;
 }
 
+// TEMPORARY DIAGNOSTIC (#555) — one-shot probe logging the host icon the
+// first CardHeader render resolves, right before it is used; strip once the
+// missing-binding cause is confirmed.
+let cardHeaderIconProbeFired = false;
+
 export function CardHeader({
   title,
   subtitle,
@@ -43,6 +48,33 @@ export function CardHeader({
   highlightQuery,
 }: CardHeaderProps) {
   const { Icon } = getClientHost();
+  // TEMPORARY DIAGNOSTIC (#555) — strip once the missing-binding cause is
+  // confirmed. A probe that throws must never crash the header itself.
+  try {
+    if (!cardHeaderIconProbeFired) {
+      cardHeaderIconProbeFired = true;
+      const describe = (value: unknown): string => {
+        if (value === undefined) return "undefined";
+        if (value === null) return "null";
+        if (typeof value === "function") {
+          const named = (value as { displayName?: string; name?: string }).displayName
+            ?? (value as { name?: string }).name;
+          return `function(${named || "(anonymous)"})`;
+        }
+        if (typeof value === "object") {
+          const symbolTag = (value as { $$typeof?: unknown }).$$typeof;
+          return `object($$typeof=${String(symbolTag)}, render=${typeof (value as { render?: unknown }).render})`;
+        }
+        return typeof value;
+      };
+      console.warn(
+        "[2fado] CardHeader probe: icon=", icon ?? "(no icon prop)",
+        "resolved host Icon=", `typeofIcon=${typeof Icon}`, describe(Icon),
+      );
+    }
+  } catch (err) {
+    console.warn("[2fado] CardHeader probe failed:", err);
+  }
   const { colors, flair, typography, padding, isCompact } = usePluginTheme();
 
   return (
