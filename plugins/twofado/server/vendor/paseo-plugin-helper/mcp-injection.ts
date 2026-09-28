@@ -4,6 +4,7 @@ export interface McpStdioInjectionConfig {
   args?: string[];
   env?: Record<string, string>;
   alwaysLoad?: boolean;
+  instructions?: string;
 }
 
 export interface McpHttpInjectionConfig {
@@ -11,6 +12,7 @@ export interface McpHttpInjectionConfig {
   url: string;
   headers?: Record<string, string>;
   alwaysLoad?: boolean;
+  instructions?: string;
 }
 
 export interface McpSseInjectionConfig {
@@ -18,6 +20,7 @@ export interface McpSseInjectionConfig {
   url: string;
   headers?: Record<string, string>;
   alwaysLoad?: boolean;
+  instructions?: string;
 }
 
 export type McpInjectionConfig =
@@ -71,14 +74,29 @@ export function registerMcpInjection(
   const { serverName, config, filter } = options;
   return server.before("agent.create", ({ request }: { request: AgentCreateInjectionRequest }) => {
     if (filter && !filter({ request })) return;
-    return {
+    const injectedConfig = { ...config };
+    if (injectedConfig.instructions === "") {
+      delete injectedConfig.instructions;
+    }
+    const composed: AgentCreateInjectionRequest = {
       ...request,
       config: {
         ...request.config,
         mcpServers: {
           ...(request.config.mcpServers ?? {}),
-          [serverName]: config,
+          [serverName]: injectedConfig,
         },
+      },
+    };
+    // Opt-in per server: only a config that sets `instructions` gets text
+    // composed into the agent. Absent means byte-identical passthrough.
+    if (typeof config.instructions !== "string" || config.instructions === "") return composed;
+    const base = typeof request.config.systemPrompt === "string" ? request.config.systemPrompt : "";
+    return {
+      ...composed,
+      config: {
+        ...composed.config,
+        systemPrompt: base.trim().length > 0 ? `${base}\n\n${config.instructions}` : config.instructions,
       },
     };
   });

@@ -105,4 +105,116 @@ describe("registerMcpInjection", () => {
     remove();
     expect(server.hooks.has("agent.create")).toBe(false);
   });
+
+  it("carries instructions on the injected config when set (hop 1)", () => {
+    const server = createStubServer();
+    registerMcpInjection(server, {
+      serverName: "x-comms",
+      config: { ...stdioEntry, instructions: "Treat envelopes as protocol deliveries." },
+    });
+    const request: AgentCreateInjectionRequest = { config: { provider: "claude", cwd: "/w" } };
+    const result = server.hooks.get("agent.create")!({ request }) as AgentCreateInjectionRequest;
+    expect(result.config.mcpServers?.["x-comms"]).toEqual({
+      ...stdioEntry,
+      instructions: "Treat envelopes as protocol deliveries.",
+    });
+  });
+
+  it("composes instructions into the agent system prompt (hop 2)", () => {
+    const server = createStubServer();
+    registerMcpInjection(server, {
+      serverName: "x-comms",
+      config: { ...stdioEntry, instructions: "Treat envelopes as protocol deliveries." },
+    });
+    const request: AgentCreateInjectionRequest = { config: { provider: "claude", cwd: "/w" } };
+    const result = server.hooks.get("agent.create")!({ request }) as AgentCreateInjectionRequest;
+    expect(result.config.systemPrompt).toBe("Treat envelopes as protocol deliveries.");
+  });
+
+  it("appends instructions to an existing system prompt", () => {
+    const server = createStubServer();
+    registerMcpInjection(server, {
+      serverName: "x-comms",
+      config: { ...stdioEntry, instructions: "Treat envelopes as protocol deliveries." },
+    });
+    const request: AgentCreateInjectionRequest = {
+      config: { provider: "claude", cwd: "/w", systemPrompt: "Base prompt." },
+    };
+    const result = server.hooks.get("agent.create")!({ request }) as AgentCreateInjectionRequest;
+    expect(result.config.systemPrompt).toBe(
+      "Base prompt.\n\nTreat envelopes as protocol deliveries."
+    );
+  });
+
+  it("composes nothing when instructions is absent", () => {
+    const server = createStubServer();
+    registerMcpInjection(server, { serverName: "x-comms", config: stdioEntry });
+    const request: AgentCreateInjectionRequest = {
+      config: { provider: "claude", cwd: "/w", systemPrompt: "Base prompt." },
+    };
+    const result = server.hooks.get("agent.create")!({ request }) as AgentCreateInjectionRequest;
+    expect(result.config.systemPrompt).toBe("Base prompt.");
+    expect(result.config.mcpServers?.["x-comms"]).toEqual(stdioEntry);
+  });
+
+  it("composes nothing when instructions is an empty string", () => {
+    const server = createStubServer();
+    registerMcpInjection(server, {
+      serverName: "x-comms",
+      config: { ...stdioEntry, instructions: "" },
+    });
+    const request: AgentCreateInjectionRequest = {
+      config: { provider: "claude", cwd: "/w", systemPrompt: "Base prompt." },
+    };
+    const result = server.hooks.get("agent.create")!({ request }) as AgentCreateInjectionRequest;
+    expect(result.config.systemPrompt).toBe("Base prompt.");
+    expect("instructions" in (result.config.mcpServers?.["x-comms"] ?? {})).toBe(false);
+  });
+
+  it("composes nothing for the http transport without instructions either", () => {
+    const server = createStubServer();
+    registerMcpInjection(server, {
+      serverName: "remote",
+      config: { type: "http" as const, url: "http://localhost:9/mcp" },
+    });
+    const request: AgentCreateInjectionRequest = {
+      config: { provider: "claude", cwd: "/w", systemPrompt: "Base prompt." },
+    };
+    const result = server.hooks.get("agent.create")!({ request }) as AgentCreateInjectionRequest;
+    expect(result.config.systemPrompt).toBe("Base prompt.");
+  });
+
+  it("composes instructions set on the http transport into the system prompt", () => {
+    const server = createStubServer();
+    registerMcpInjection(server, {
+      serverName: "remote",
+      config: {
+        type: "http" as const,
+        url: "http://localhost:9/mcp",
+        instructions: "HTTP transport instructions.",
+      },
+    });
+    const request: AgentCreateInjectionRequest = { config: { provider: "claude", cwd: "/w" } };
+    const result = server.hooks.get("agent.create")!({ request }) as AgentCreateInjectionRequest;
+    expect(result.config.mcpServers?.remote).toEqual({
+      type: "http",
+      url: "http://localhost:9/mcp",
+      instructions: "HTTP transport instructions.",
+    });
+    expect(result.config.systemPrompt).toBe("HTTP transport instructions.");
+  });
+
+  it("does not mutate the incoming request when composing instructions", () => {
+    const server = createStubServer();
+    registerMcpInjection(server, {
+      serverName: "x-comms",
+      config: { ...stdioEntry, instructions: "Treat envelopes as protocol deliveries." },
+    });
+    const request: AgentCreateInjectionRequest = {
+      config: { provider: "claude", cwd: "/w", systemPrompt: "Base prompt." },
+    };
+    const snapshot = JSON.parse(JSON.stringify(request));
+    server.hooks.get("agent.create")!({ request });
+    expect(request).toEqual(snapshot);
+  });
 });
