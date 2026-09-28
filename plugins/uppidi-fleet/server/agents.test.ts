@@ -46,7 +46,7 @@ describe("authoritative agent project resolution (#530)", () => {
         cwd: "/var/test-home/.paseo/worktrees/2h0dw6vb/fix-530-authoritative-agent-project-resolution",
         workspaceId: "wks_fix_530",
       });
-      assert.equal(worker.project, "xpufx-org/paseo");
+      assert.equal(worker.project, "forge.mrs.uppidi.com/xpufx-org/paseo");
       assert.equal(worker.worktree, "fix-530-authoritative-agent-project-resolution");
 
       // Ad-hoc agent with a non-repo title still resolves via workspaceId.
@@ -56,7 +56,7 @@ describe("authoritative agent project resolution (#530)", () => {
         status: "idle",
         workspaceId: "wks_platform",
       });
-      assert.equal(adHoc.project, "xpufx-org/platform");
+      assert.equal(adHoc.project, "forge.mrs.uppidi.com/xpufx-org/platform");
     } finally {
       setWorkspaceProjectMapForTest(null);
     }
@@ -87,7 +87,7 @@ describe("authoritative agent project resolution (#530)", () => {
         workspaceId: "wks_platform",
         labels: { repo: "xpufx-org/paseo" },
       });
-      assert.equal(labeled.project, "xpufx-org/platform");
+      assert.equal(labeled.project, "forge.mrs.uppidi.com/xpufx-org/platform");
 
       const orchestrator = normalizeRawAgent(
         {
@@ -122,8 +122,8 @@ describe("authoritative agent project resolution (#530)", () => {
 
       assert.equal(worker.project, DEFAULT_PROJECT);
       applyParentProjectInheritance([orchestrator, worker, grandchild]);
-      assert.equal(worker.project, "xpufx-org/paseo");
-      assert.equal(grandchild.project, "xpufx-org/paseo");
+      assert.equal(worker.project, "forge.mrs.uppidi.com/xpufx-org/paseo");
+      assert.equal(grandchild.project, "forge.mrs.uppidi.com/xpufx-org/paseo");
     } finally {
       setWorkspaceProjectMapForTest(null);
     }
@@ -172,7 +172,7 @@ describe("authoritative agent project resolution (#530)", () => {
     process.env.HOME = tempHome;
     try {
       const map = getWorkspaceProjectMap({ forceRefresh: true });
-      assert.equal(map["wks_worktree"], "xpufx-org/paseo");
+      assert.equal(map["wks_worktree"], "forge.mrs.uppidi.com/xpufx-org/paseo");
       assert.equal(map["wks_plain"], "meta");
     } finally {
       process.env.HOME = originalHome;
