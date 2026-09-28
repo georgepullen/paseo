@@ -1311,9 +1311,24 @@ export type WorkspaceProjectMap = Record<string, string>;
 /** Sentinel bucket for agents with no authoritative project metadata. */
 export const DEFAULT_PROJECT = "Default Project";
 
+const DEFAULT_FORGEJO_HOST = "forge.mrs.uppidi.com";
+
 /**
- * Extracts an agent's project identifier (e.g. "xpufx-org/paseo") from
- * authoritative metadata only (#530):
+ * Normalizes a project name to the long format (e.g. "forge.mrs.uppidi.com/xpufx-org/paseo").
+ * Short-format names like "xpufx-org/paseo" are prefixed with the default Forgejo host.
+ * Already-long names and non-repo sentinels pass through unchanged.
+ */
+export function normalizeProjectName(name: string): string {
+  const trimmed = name.trim();
+  if (!trimmed || trimmed === DEFAULT_PROJECT) return trimmed;
+  if (trimmed.includes("://") || trimmed.includes(DEFAULT_FORGEJO_HOST)) return trimmed;
+  if (trimmed.startsWith("git@")) return trimmed;
+  if (!trimmed.includes("/")) return trimmed;
+  return `${DEFAULT_FORGEJO_HOST}/${trimmed}`;
+}
+
+/**
+ * Extracts an agent's project identifier from authoritative metadata only (#530):
  *   1. An already-resolved `project` field.
  *   2. Canonical workspace mapping (`workspaceId` -> repository).
  *   3. Explicit agent labels (`repo` / `project`).
@@ -1322,6 +1337,8 @@ export const DEFAULT_PROJECT = "Default Project";
  *
  * Title and cwd regex heuristics are intentionally not used: they misassign
  * worktree workers and ad-hoc agents into detached ghost projects.
+ *
+ * Returned names are normalized to the long format (e.g. "forge.mrs.uppidi.com/xpufx-org/paseo").
  */
 export function extractAgentProject(
   agent: {
@@ -1338,19 +1355,19 @@ export function extractAgentProject(
   workspaceProjectMap?: WorkspaceProjectMap
 ): string {
   if (agent.project && agent.project.trim() && agent.project.trim() !== DEFAULT_PROJECT) {
-    return agent.project.trim();
+    return normalizeProjectName(agent.project);
   }
 
   if (agent.workspaceId && workspaceProjectMap) {
     const mapped = workspaceProjectMap[agent.workspaceId];
-    if (mapped && mapped.trim()) return mapped.trim();
+    if (mapped && mapped.trim()) return normalizeProjectName(mapped);
   }
 
-  if (agent.labels?.["repo"] && agent.labels["repo"].trim()) return agent.labels["repo"].trim();
-  if (agent.labels?.["project"] && agent.labels["project"].trim()) return agent.labels["project"].trim();
+  if (agent.labels?.["repo"] && agent.labels["repo"].trim()) return normalizeProjectName(agent.labels["repo"]);
+  if (agent.labels?.["project"] && agent.labels["project"].trim()) return normalizeProjectName(agent.labels["project"]);
 
   if (parentProject && parentProject.trim() && parentProject.trim() !== DEFAULT_PROJECT) {
-    return parentProject.trim();
+    return normalizeProjectName(parentProject);
   }
 
   return DEFAULT_PROJECT;

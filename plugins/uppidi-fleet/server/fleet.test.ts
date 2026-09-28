@@ -56,14 +56,14 @@ describe("fleet and agents classification", () => {
       cwd: "/home/user/code/paseo",
     });
     assert.equal(work1?.issue, 385);
-    assert.equal(work1?.repo, "xpufx-org/paseo");
+    assert.equal(work1?.repo, "forge.mrs.uppidi.com/xpufx-org/paseo");
 
     const work2 = extractAttributedWork({
       id: "agent-2",
       title: "Worker for xpufx-org/platform#109",
     });
     assert.equal(work2?.issue, 109);
-    assert.equal(work2?.repo, "xpufx-org/platform");
+    assert.equal(work2?.repo, "forge.mrs.uppidi.com/xpufx-org/platform");
 
     const work3 = extractAttributedWork({
       id: "agent-3",
@@ -71,7 +71,7 @@ describe("fleet and agents classification", () => {
       labels: { "forgejo.issue": "404", repo: "xpufx-org/aur-automation" },
     });
     assert.equal(work3?.issue, 404);
-    assert.equal(work3?.repo, "xpufx-org/aur-automation");
+    assert.equal(work3?.repo, "forge.mrs.uppidi.com/xpufx-org/aur-automation");
   });
 
   it("derives deterministic states strictly according to taxonomy", () => {
@@ -242,7 +242,7 @@ describe("fleet and agents classification", () => {
     assert.equal(frontDeskNodes[0].children.length, 0); // orch-1 promoted out of Front Desk
 
     assert.equal(projectGroups.length, 1);
-    assert.equal(projectGroups[0].projectName, "xpufx-org/paseo");
+    assert.equal(projectGroups[0].projectName, "forge.mrs.uppidi.com/xpufx-org/paseo");
     assert.equal(projectGroups[0].orchestrators.length, 1);
 
     const promotedOrch = projectGroups[0].orchestrators[0];

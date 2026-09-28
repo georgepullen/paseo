@@ -436,13 +436,13 @@ describe("uppidi-fleet shared contracts", () => {
     // 1. From resolved project property
     assert.equal(
       extractAgentProject({ project: "xpufx-org/paseo" }),
-      "xpufx-org/paseo"
+      "forge.mrs.uppidi.com/xpufx-org/paseo"
     );
 
     // 2. From labels
     assert.equal(
       extractAgentProject({ labels: { repo: "xpufx-org/platform" } }),
-      "xpufx-org/platform"
+      "forge.mrs.uppidi.com/xpufx-org/platform"
     );
 
     // 3. From authoritative workspace -> project mapping
@@ -452,7 +452,7 @@ describe("uppidi-fleet shared contracts", () => {
         undefined,
         { wks_abc: "xpufx-org/aur-automation" }
       ),
-      "xpufx-org/aur-automation"
+      "forge.mrs.uppidi.com/xpufx-org/aur-automation"
     );
 
     // 4. Workspace mapping takes precedence over unresolved default project
@@ -462,7 +462,7 @@ describe("uppidi-fleet shared contracts", () => {
         undefined,
         { wks_abc: "xpufx-org/paseo" }
       ),
-      "xpufx-org/paseo"
+      "forge.mrs.uppidi.com/xpufx-org/paseo"
     );
 
     // 5. Workspace mapping takes precedence over labels
@@ -472,7 +472,7 @@ describe("uppidi-fleet shared contracts", () => {
         undefined,
         { wks_abc: "xpufx-org/paseo" }
       ),
-      "xpufx-org/paseo"
+      "forge.mrs.uppidi.com/xpufx-org/paseo"
     );
 
     // 6. Labels used when the workspace is not in the map
@@ -482,13 +482,13 @@ describe("uppidi-fleet shared contracts", () => {
         undefined,
         { wks_abc: "xpufx-org/paseo" }
       ),
-      "xpufx-org/platform"
+      "forge.mrs.uppidi.com/xpufx-org/platform"
     );
 
     // 7. Inherited from parent hierarchy
     assert.equal(
       extractAgentProject({ name: "Worker" }, "xpufx-org/paseo"),
-      "xpufx-org/paseo"
+      "forge.mrs.uppidi.com/xpufx-org/paseo"
     );
 
     // 8. Title and cwd heuristics are NOT used

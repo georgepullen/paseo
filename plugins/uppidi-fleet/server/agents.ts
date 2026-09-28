@@ -37,6 +37,7 @@ import {
   extractPermissionScope,
   buildAgentBlockDetail,
   deriveLifecycleState,
+  normalizeProjectName,
   DEFAULT_PROJECT,
 } from "../shared/contracts.js";
 import type { WorkspaceProjectMap } from "../shared/contracts.js";
@@ -152,17 +153,17 @@ export function extractAttributedWork(raw: RawAgentRecord): UppidiAgentWork | nu
     }
   }
 
-  // Check repo from cwd if available (e.g. /home/user/code/paseo -> xpufx-org/paseo)
+  // Check repo from cwd if available (e.g. /home/user/code/paseo -> forge.mrs.uppidi.com/xpufx-org/paseo)
   if (!repoName && raw.cwd) {
     const match = raw.cwd.match(/\/code\/([a-zA-Z0-9_-]+)/);
     if (match && match[1]) {
-      repoName = `xpufx-org/${match[1]}`;
+      repoName = `forge.mrs.uppidi.com/xpufx-org/${match[1]}`;
     }
   }
 
   if (issueNum || repoName || slugName || branchName) {
     return {
-      repo: repoName,
+      repo: repoName ? normalizeProjectName(repoName) : repoName,
       issue: issueNum,
       slug: slugName,
       branch: branchName,
@@ -574,7 +575,7 @@ export function getWorkspaceProjectMap(options: { forceRefresh?: boolean } = {})
         for (const workspace of workspaces) {
           if (!workspace?.workspaceId) continue;
           const repo = deriveRepoFromWorkspace(workspace, projectsById.get(workspace.projectId));
-          if (repo) map[workspace.workspaceId] = repo;
+          if (repo) map[workspace.workspaceId] = normalizeProjectName(repo);
         }
       }
     }
