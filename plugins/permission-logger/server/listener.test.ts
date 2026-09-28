@@ -18,16 +18,16 @@ describe("extractAgentAttribution", () => {
       extractAgentAttribution({
         id: "agent-1",
         title: "worker",
-        model: "pufaysokt/opencode-go/longcat-2.5-preview-free",
-        provider: "pufaysokt",
+        model: "test-model",
+        provider: "test-provider",
         modeId: "build",
         cwd: "/srv/app",
       }),
     ).toMatchObject({
       id: "agent-1",
       title: "worker",
-      model: "pufaysokt/opencode-go/longcat-2.5-preview-free",
-      provider: "pufaysokt",
+      model: "test-model",
+      provider: "test-provider",
       mode: "build",
       cwd: "/srv/app",
     });

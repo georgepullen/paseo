@@ -27,14 +27,14 @@ describe("PermissionAuditEntrySchema", () => {
       ...BASE_ENTRY,
       decision: "deny",
       agentTitle: "worker",
-      agentModel: "pufaysokt/opencode-go/longcat-2.5-preview-free",
-      agentProvider: "pufaysokt",
+      agentModel: "test-model",
+      agentProvider: "test-provider",
       agentMode: "build",
       agentCwd: "/srv/app",
       updatedInput: { command: "ls -la" },
       denyReason: "too broad",
     });
-    expect(parsed.agentModel).toContain("longcat");
+    expect(parsed.agentModel).toBe("test-model");
     expect(parsed.denyReason).toBe("too broad");
   });
 
