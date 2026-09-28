@@ -56,6 +56,18 @@ import {
   type WatchdogAgentDisk,
 } from "./hook-router.js";
 import { setMetricsFilePathForTest } from "./metrics.js";
+import type { IssuesCheckIo } from "./issues-check.js";
+
+function failingBoardIo(error: string): IssuesCheckIo {
+  return {
+    getOpenIssues: async () => ({ ok: false, error }),
+    getLatestComments: async () => [],
+    getIssueComments: async () => [],
+    runStaleWipCommand: async () => true,
+    loadCache: async () => ({}),
+    saveCache: async () => {},
+  };
+}
 
 describe("hook-router payload and key utilities", () => {
   it("normalizes repo URLs to canonical key format", () => {
@@ -1954,7 +1966,9 @@ describe("hook-router HTTP handoff, prune, and board sweep routes (#458)", () =>
     assert.equal(router.readOrchestrator("repo-stale"), null);
   });
 
-  it("runs a board sweep via POST /board-sweep over explicit repos", async () => {
+  it("runs a board sweep via POST /board-sweep over explicit repos (debug override)", async () => {
+    // The external checker is retired (#733); this exercises the documented
+    // FORGEJO_ISSUES_CHECK debug-only override, not the primary path.
     const fakeScript = join(tempDir, "fake-check.sh");
     writeFileSync(
       fakeScript,
@@ -1981,7 +1995,7 @@ describe("hook-router HTTP handoff, prune, and board sweep routes (#458)", () =>
     }
   });
 
-  it("parses board check JSON even when the checker exits non-zero", async () => {
+  it("parses debug-override checker JSON even when the checker exits non-zero", async () => {
     const fakeScript = join(tempDir, "fake-check-fail.sh");
     writeFileSync(
       fakeScript,
@@ -1998,6 +2012,90 @@ describe("hook-router HTTP handoff, prune, and board sweep routes (#458)", () =>
     } finally {
       if (prevScript !== undefined) process.env.FORGEJO_ISSUES_CHECK = prevScript;
       else delete process.env.FORGEJO_ISSUES_CHECK;
+    }
+  });
+
+  it("runs the in-process board check with an injected io (#733)", async () => {
+    const saved: string[] = [];
+    const io: IssuesCheckIo = {
+      getOpenIssues: async () => ({
+        ok: true,
+        issues: [
+          {
+            number: 5,
+            title: "t",
+            state: "open",
+            updated_at: "2026-01-01T00:00:00Z",
+            created_at: "2026-01-01T00:00:00Z",
+            comments: 0,
+            labels: [{ name: "spec/2-approved" }, { name: "attention/1-agent" }, { name: "target/uppidi-fleet" }],
+          },
+        ],
+      }),
+      getLatestComments: async () => [],
+      getIssueComments: async () => [],
+      runStaleWipCommand: async () => true,
+      // Stale cache entry so issue 5 counts as changed-but-seen: the
+      // dispatchable classification path, not the first-seen one.
+      loadCache: async () => ({
+        5: { updated_at: "2025-12-01T00:00:00Z", labels: ["stale-marker"], comments_count: 0 },
+      }),
+      saveCache: async (state, repo) => {
+        saved.push(`${repo}:${Object.keys(state).join(",")}`);
+      },
+    };
+    const result = await router.runBoardCheck("forge.test/xpufx-org/paseo", "forge.test", io);
+    assert.equal(result.ok, true);
+    assert.equal(result.candidates.length, 1);
+    assert.equal(result.candidates[0].number, 5);
+    assert.equal(result.candidates[0].is_dispatchable, true);
+    assert.ok(result.candidates[0].reason.includes("[target/uppidi-fleet]"));
+    assert.deepEqual(saved, ["xpufx-org/paseo:5"]);
+  });
+
+  it("board sweep reports a failed repo check loudly instead of a silent ok:false (#733)", async () => {
+    const result = await router.runBoardSweep(
+      ["forge.test/xpufx-org/paseo"],
+      failingBoardIo("fgjx issues query failed (rc=7): boom"),
+    );
+    assert.equal(result.ok, true);
+    assert.equal(result.swept, 1);
+    assert.equal(result.actionable.length, 0);
+    assert.equal(result.errors?.length, 1);
+    assert.equal(result.errors?.[0].repo, "forge.test/xpufx-org/paseo");
+    assert.match(result.errors?.[0].error ?? "", /fgjx issues query failed/);
+    assert.ok(
+      getHookLogs().some((line) => line.includes("[error] board check failed for forge.test/xpufx-org/paseo")),
+    );
+  });
+
+  it("notifies Front Desk when a repo board check fails (#733)", async () => {
+    router.writeFrontDesk("agent-front");
+    const sendLog = join(tempDir, "paseo-send.log");
+    const binDir = mkdtempSync(join(tmpdir(), "paseo-stub-send-"));
+    const prevPath = process.env.PATH;
+    try {
+      writeFileSync(
+        join(binDir, "paseo"),
+        `#!/bin/sh\nif [ "$1" = "send" ]; then\n  printf '%s\\n' "$*" >> ${JSON.stringify(sendLog)}\n  exit 0\nfi\nexit 127\n`,
+        { mode: 0o755 },
+      );
+      process.env.PATH = `${binDir}:${prevPath ?? ""}`;
+      const result = await router.runBoardSweep(
+        ["forge.test/xpufx-org/paseo"],
+        failingBoardIo("fgjx issues query failed (rc=127): not found"),
+      );
+      assert.equal(result.notified, 1);
+      const sent = readFileSync(sendLog, "utf8");
+      assert.ok(sent.includes("FAILED board check"), `front desk message missing failure section: ${sent}`);
+      assert.ok(sent.includes("forge.test/xpufx-org/paseo"));
+      assert.ok(sent.includes("agent-front"));
+    } finally {
+      if (prevPath === undefined) delete process.env.PATH;
+      else process.env.PATH = prevPath;
+      try {
+        rmSync(binDir, { recursive: true, force: true });
+      } catch {}
     }
   });
 });

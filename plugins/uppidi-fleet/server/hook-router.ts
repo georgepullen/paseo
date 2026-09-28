@@ -20,6 +20,7 @@ import type {
 import { extractPermissionScope } from "../shared/contracts.js";
 import { getUppidiFleetSettingsStorage } from "./settings.js";
 import { appendRollupReceipt } from "./metrics.js";
+import { createDefaultIssuesCheckIo, runIssuesCheck, type IssuesCheckIo } from "./issues-check.js";
 
 export interface RouterConfig {
   host?: string;
@@ -1237,6 +1238,8 @@ export interface BoardSweepResult {
   swept: number;
   actionable: Array<{ repo: string; count: number; dispatchable: number }>;
   notified: number;
+  /** Repos whose board check failed; surfaced to the caller and Front Desk. */
+  errors?: Array<{ repo: string; error: string }>;
   error?: string;
 }
 
@@ -2612,44 +2615,80 @@ export class HookRouter {
   // Deterministic board sweep
   // -------------------------------------------------------------------------
 
-  public async runBoardCheck(repo: string, hostname = "forge.mrs.uppidi.com"): Promise<BoardCheckResult> {
-    const script = process.env.FORGEJO_ISSUES_CHECK ?? join(os.homedir(), "bin", "forgejo-issues-check");
+  /**
+   * Parse the external checker's stdout into candidates; null when it is not
+   * the checker's JSON report. The checker exits 1 whenever candidates exist,
+   * so stdout must be read from the failure object too.
+   */
+  private parseExternalCheckerStdout(stdout: string): BoardCandidate[] | null {
+    try {
+      const parsed = JSON.parse(stdout || "{}");
+      return Array.isArray(parsed?.ranked_candidates) ? parsed.ranked_candidates : [];
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Run the deterministic board check for one repo. The checker is the ported
+   * in-process module (#733); a failing transport (fgjx missing or erroring)
+   * throws instead of degrading to an empty board — silence here used to hide
+   * a missing dependency from Front Desk entirely.
+   *
+   * `FORGEJO_ISSUES_CHECK` is a debug-only override that execs an external
+   * checker instead; it is not the primary path and must not be set in
+   * production.
+   */
+  public async runBoardCheck(
+    repo: string,
+    hostname = "forge.mrs.uppidi.com",
+    io?: IssuesCheckIo,
+  ): Promise<BoardCheckResult> {
     // Enrolled keys may be `owner/repo` or the forge-qualified `host/owner/repo`;
     // the checker's `-R` argument always wants the trailing `owner/repo`.
     const parts = String(repo ?? "").split("/").filter(Boolean);
     const ownerRepo = parts.length > 2 ? parts.slice(-2).join("/") : parts.join("/");
-    try {
-      const { stdout } = await execFileAsync(script, ["--hostname", hostname, "-R", ownerRepo, "--json"], {
-        timeout: 30000,
-        maxBuffer: 5 * 1024 * 1024,
-      });
-      const parsed = JSON.parse(stdout || "{}");
-      const candidates: BoardCandidate[] = Array.isArray(parsed?.ranked_candidates)
-        ? parsed.ranked_candidates
-        : [];
-      return { repo, ok: true, candidates };
-    } catch (err: any) {
-      // The checker exits 1 whenever candidates exist; stdout still carries the report.
-      if (err?.stdout) {
-        try {
-          const parsed = JSON.parse(err.stdout);
-          const candidates: BoardCandidate[] = Array.isArray(parsed?.ranked_candidates)
-            ? parsed.ranked_candidates
-            : [];
-          return { repo, ok: true, candidates };
-        } catch {}
+    const debugScript = process.env.FORGEJO_ISSUES_CHECK;
+    if (debugScript) {
+      this.log(`[warn] FORGEJO_ISSUES_CHECK debug override active: exec ${debugScript}`);
+      try {
+        const { stdout } = await execFileAsync(debugScript, ["--hostname", hostname, "-R", ownerRepo, "--json"], {
+          timeout: 30000,
+          maxBuffer: 5 * 1024 * 1024,
+        });
+        return { repo, ok: true, candidates: this.parseExternalCheckerStdout(stdout) ?? [] };
+      } catch (err: any) {
+        const fromStdout = err?.stdout ? this.parseExternalCheckerStdout(String(err.stdout)) : null;
+        if (fromStdout) return { repo, ok: true, candidates: fromStdout };
+        return { repo, ok: false, candidates: [], error: err instanceof Error ? err.message : String(err) };
       }
-      return { repo, ok: false, candidates: [], error: err instanceof Error ? err.message : String(err) };
     }
+    const outcome = await runIssuesCheck({
+      hostname,
+      repo: ownerRepo,
+      io: io ?? createDefaultIssuesCheckIo(),
+    });
+    return { repo, ok: true, candidates: outcome.rankedCandidates };
   }
 
-  public async runBoardSweep(repos?: string[]): Promise<BoardSweepResult> {
+  public async runBoardSweep(repos?: string[], io?: IssuesCheckIo): Promise<BoardSweepResult> {
     const targets = Array.from(
       new Set((repos ?? this.getEnrolledRepos()).filter((k) => k && k !== "frontdesk")),
     );
     const actionable: Array<{ repo: string; count: number; dispatchable: number }> = [];
+    const errors: Array<{ repo: string; error: string }> = [];
     for (const repo of targets) {
-      const res = await this.runBoardCheck(repo);
+      let res: BoardCheckResult;
+      try {
+        res = await this.runBoardCheck(repo, undefined, io);
+      } catch (err) {
+        // A failed check is loud: logged, returned, and reported to Front
+        // Desk, because an unreported failure looks exactly like a clean board.
+        const error = err instanceof Error ? err.message : String(err);
+        errors.push({ repo, error });
+        this.log(`[error] board check failed for ${repo}: ${error}`);
+        continue;
+      }
       if (!res.ok || res.candidates.length === 0) continue;
       const dispatchable = res.candidates.filter((c) => c.is_dispatchable).length;
       actionable.push({ repo, count: res.candidates.length, dispatchable });
@@ -2657,16 +2696,25 @@ export class HookRouter {
 
     let notified = 0;
     const frontDeskId = this.readFrontDesk()?.agentId ?? null;
-    if (actionable.length > 0 && frontDeskId) {
-      const lines = actionable.map(
-        (a) => `- ${a.repo}: ${a.count} actionable (${a.dispatchable} dispatchable)`,
-      );
-      const msg = `[Fleet Board Sweep] ${actionable.length} repo(s) with actionable tickets:\n${lines.join("\n")}`;
-      const ok = await this.deliverMessage(frontDeskId, msg, { noWait: true, steer: true });
+    if (frontDeskId && (actionable.length > 0 || errors.length > 0)) {
+      const sections: string[] = [];
+      if (actionable.length > 0) {
+        const lines = actionable.map(
+          (a) => `- ${a.repo}: ${a.count} actionable (${a.dispatchable} dispatchable)`,
+        );
+        sections.push(`[Fleet Board Sweep] ${actionable.length} repo(s) with actionable tickets:\n${lines.join("\n")}`);
+      }
+      if (errors.length > 0) {
+        const failureLines = errors.map((e) => `- ${e.repo}: check failed (${e.error})`);
+        sections.push(
+          `[Fleet Board Sweep] ${errors.length} repo(s) FAILED board check - actionable tickets may be missed:\n${failureLines.join("\n")}`,
+        );
+      }
+      const ok = await this.deliverMessage(frontDeskId, sections.join("\n\n"), { noWait: true, steer: true });
       if (ok) notified = 1;
     }
-    this.log(`[info] Board sweep complete: ${targets.length} repo(s) swept, ${actionable.length} actionable`);
-    return { ok: true, swept: targets.length, actionable, notified };
+    this.log(`[info] Board sweep complete: ${targets.length} repo(s) swept, ${actionable.length} actionable, ${errors.length} failed`);
+    return { ok: true, swept: targets.length, actionable, notified, ...(errors.length > 0 ? { errors } : {}) };
   }
 
   public startBackgroundLoops(): void {
