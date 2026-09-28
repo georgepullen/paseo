@@ -543,18 +543,21 @@ interface McpStdioInjectionConfig {
     args?: string[];
     env?: Record<string, string>;
     alwaysLoad?: boolean;
+    instructions?: string;
 }
 interface McpHttpInjectionConfig {
     type: "http";
     url: string;
     headers?: Record<string, string>;
     alwaysLoad?: boolean;
+    instructions?: string;
 }
 interface McpSseInjectionConfig {
     type: "sse";
     url: string;
     headers?: Record<string, string>;
     alwaysLoad?: boolean;
+    instructions?: string;
 }
 type McpInjectionConfig = McpStdioInjectionConfig | McpHttpInjectionConfig | McpSseInjectionConfig;
 interface AgentCreateInjectionConfig {
