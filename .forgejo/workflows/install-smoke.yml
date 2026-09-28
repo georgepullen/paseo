@@ -87,17 +87,18 @@ jobs:
             allow-failure: true
           - paseo-version: 0.9.0
             allow-failure: false
-          # 0.10 is a prerelease, so this lane is experimental and must not
-          # block merges. `continue-on-error: ${{ matrix.allow-failure }}`
+          # 0.10 stable (0.10.0) is released on npm, but this lane stays
+          # experimental and must not block merges until the 0.10 runtime
+          # is verified as the gating lane. `continue-on-error: ${{ matrix.allow-failure }}`
           # already scopes the non-blocking behaviour to this lane alone, so
           # 0.9.0 stays the gating lane and 0.8.0 stays legacy.
           #
-          # Pinned exactly, not a `0.10.0-beta` range: the install step asserts
+          # Pinned exactly, not a `0.10` range: the install step asserts
           # `paseo --version` equals `matrix.paseo-version`
           # (see "Install Paseo CLI"), so a floating range would make that
           # assertion pass a moving target. The exact pin also makes a lane
           # failure reproducible instead of "it was green last week".
-          - paseo-version: 0.10.0-beta.1
+          - paseo-version: 0.10.0
             allow-failure: true
     # Dedicated paseo-ci image with Node 22, git/make/jq, and pinned @getpaseo/cli.
     # A fresh container per run is the point: no reused node_modules and no pre-existing daemon state.
