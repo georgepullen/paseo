@@ -29,6 +29,8 @@ import type {
   UppidiReplaceOrchestratorOutput,
   UppidiToggleRepoMuteInput,
   UppidiToggleRepoMuteOutput,
+  FleetTeardownInput,
+  FleetTeardownOutput,
 } from "../shared/contracts.js";
 import {
   extractAgentWorktree,
@@ -1008,6 +1010,113 @@ export async function handleUppidiArchiveInactiveAgents(
       ok: false,
       archivedCount: 0,
       archivedIds: [],
+      error: err?.message || String(err),
+    };
+  }
+}
+
+// --- Fleet Teardown Handler (#742) ---
+
+/**
+ * Maps a teardown target category to the agent category string used by the
+ * daemon's agent categorization.
+ */
+function teardownTargetToCategory(target: string): "front-desk" | "orchestrator" | "worker" {
+  switch (target) {
+    case "frontdesk":
+      return "front-desk";
+    case "orchestrators":
+      return "orchestrator";
+    case "workers":
+    default:
+      return "worker";
+  }
+}
+
+/**
+ * Archives a single agent by id, trying SDK first and falling back to CLI.
+ * Returns true on success, false on failure.
+ */
+async function archiveAgentById(
+  agentId: string,
+  context: PluginHandlerContext
+): Promise<boolean> {
+  if (context?.paseo?.agents?.ref) {
+    try {
+      const ref = context.paseo.agents.ref(agentId);
+      if (typeof ref?.archive === "function") {
+        await ref.archive();
+        return true;
+      }
+    } catch {
+      // Fall through to CLI
+    }
+  }
+
+  try {
+    await execFileAsync("paseo", ["archive", agentId], {
+      timeout: 5000,
+      encoding: "utf-8",
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Fleet teardown handler (#742). Archives all agents matching the requested
+ * target categories. Returns structured counts of torn-down agents per
+ * category and any errors encountered.
+ */
+export async function handleFleetTeardown(
+  input: FleetTeardownInput,
+  context: PluginHandlerContext
+): Promise<FleetTeardownOutput> {
+  try {
+    const agents = await fetchPaseoAgents(context);
+    const targetCategories = new Set(
+      input.targets.map((t) => teardownTargetToCategory(t))
+    );
+
+    const agentsToTeardown = agents.filter((a) => targetCategories.has(a.category));
+
+    if (agentsToTeardown.length === 0) {
+      return {
+        ok: true,
+        tornDown: { workers: 0, orchestrators: 0, frontdesk: 0 },
+        errors: [],
+        message: "No agents found matching the selected teardown targets",
+      };
+    }
+
+    const tornDown = { workers: 0, orchestrators: 0, frontdesk: 0 };
+    const errors: string[] = [];
+
+    for (const agent of agentsToTeardown) {
+      const success = await archiveAgentById(agent.id, context);
+      if (success) {
+        if (agent.category === "worker") tornDown.workers++;
+        else if (agent.category === "orchestrator") tornDown.orchestrators++;
+        else if (agent.category === "front-desk") tornDown.frontdesk++;
+      } else {
+        errors.push(`Failed to archive agent ${agent.id} (${agent.name})`);
+      }
+    }
+
+    const totalTornDown = tornDown.workers + tornDown.orchestrators + tornDown.frontdesk;
+
+    return {
+      ok: errors.length === 0 || totalTornDown > 0,
+      tornDown,
+      errors,
+      message: `Torn down ${totalTornDown} agent(s) — ${tornDown.workers} workers, ${tornDown.orchestrators} orchestrators, ${tornDown.frontdesk} frontdesk`,
+    };
+  } catch (err: any) {
+    return {
+      ok: false,
+      tornDown: { workers: 0, orchestrators: 0, frontdesk: 0 },
+      errors: [err?.message || String(err)],
       error: err?.message || String(err),
     };
   }

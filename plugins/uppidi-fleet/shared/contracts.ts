@@ -1246,6 +1246,36 @@ export const uppidiToggleRepoMuteContract = defineContract({
   output: UppidiToggleRepoMuteOutputSchema,
 });
 
+// Fleet Teardown (Issue #742)
+export const FleetTeardownTargetSchema = z.enum(["workers", "orchestrators", "frontdesk"]);
+export type FleetTeardownTarget = z.infer<typeof FleetTeardownTargetSchema>;
+
+export const FleetTeardownInputSchema = z.object({
+  targets: z.array(FleetTeardownTargetSchema).min(1),
+  confirm: z.literal(true),
+});
+export type FleetTeardownInput = z.infer<typeof FleetTeardownInputSchema>;
+
+export const FleetTeardownOutputSchema = z.object({
+  ok: z.boolean(),
+  tornDown: z.object({
+    workers: z.number().default(0),
+    orchestrators: z.number().default(0),
+    frontdesk: z.number().default(0),
+  }),
+  errors: z.array(z.string()).default([]),
+  message: z.string().optional(),
+  error: z.string().optional(),
+});
+export type FleetTeardownOutput = z.infer<typeof FleetTeardownOutputSchema>;
+
+export const uppidiFleetTeardownContract = defineContract({
+  name: "uppidi-fleet.fleet-teardown",
+  description: "Teardown (archive) fleet agents by category: workers, orchestrators, or frontdesk",
+  input: FleetTeardownInputSchema,
+  output: FleetTeardownOutputSchema,
+});
+
 // Uppidi Fleet Plugin Settings Contract (Issue #444)
 export const uppidiFleetSettingsSchema = z.object({
   hookHost: z.string().default("127.0.0.1"),

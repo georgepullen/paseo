@@ -54,6 +54,7 @@ import {
   uppidiFleetMetricsContract,
   uppidiArchiveAgentContract,
   uppidiArchiveInactiveAgentsContract,
+  uppidiFleetTeardownContract,
   type UppidiAgent,
   type UppidiIssue,
   type AttentionLabel,
@@ -312,6 +313,7 @@ export interface UppidiTopHeaderBarProps {
   repoOptions: SelectOption[];
   onRepoChange: (repo: string) => void;
   onRefresh: () => void;
+  onTeardown?: () => void;
   /** Number of agents blocked on a pending permission prompt (#534). */
   permissionAttentionCount?: number;
   /** Number of agents awaiting operator input (#534). */
@@ -331,6 +333,7 @@ export function UppidiTopHeaderBar({
   repoOptions,
   onRepoChange,
   onRefresh,
+  onTeardown,
   permissionAttentionCount = 0,
   inputAttentionCount = 0,
 }: UppidiTopHeaderBarProps) {
@@ -405,6 +408,20 @@ export function UppidiTopHeaderBar({
           }}
           onPress={onRefresh}
         />
+        {onTeardown && (
+          <Button
+            label="Teardown Fleet"
+            icon="Trash2"
+            size="sm"
+            variant="danger"
+            style={{
+              paddingHorizontal: 8,
+              paddingVertical: 2,
+              minHeight: 22,
+            }}
+            onPress={onTeardown}
+          />
+        )}
       </Row>
     </Row>
   );
@@ -493,6 +510,149 @@ export function AttentionAgentCard({ agent, onOpen }: AttentionAgentCardProps) {
         )}
       </Card>
     </AttentionBeacon>
+  );
+}
+
+// --- Fleet Teardown Modal (#742) ---
+
+interface TeardownModalProps {
+  visible: boolean;
+  onClose: () => void;
+  onConfirm: (targets: Array<"workers" | "orchestrators" | "frontdesk">) => void;
+  isProcessing: boolean;
+}
+
+const TEARDOWN_TARGETS: Array<{
+  id: "workers" | "orchestrators" | "frontdesk";
+  label: string;
+  description: string;
+}> = [
+  { id: "workers", label: "Coding Agents", description: "Terminates running coding subagents and archives their sessions" },
+  { id: "orchestrators", label: "Orchestrators", description: "Terminates active project orchestrator agents" },
+  { id: "frontdesk", label: "Front Desk / Total Destruction", description: "Terminates the Front Desk agent and all supervisory daemons" },
+];
+
+/**
+ * Multi-level approval modal for fleet teardown (#742). Requires explicit
+ * checkbox selection of target categories and typing "TEARDOWN" to arm the
+ * final confirmation button.
+ */
+export function TeardownModal({ visible, onClose, onConfirm, isProcessing }: TeardownModalProps) {
+  const { colors, typography } = usePluginTheme();
+  const [selectedTargets, setSelectedTargets] = useState<Set<"workers" | "orchestrators" | "frontdesk">>(new Set());
+  const [confirmText, setConfirmText] = useState("");
+
+  const isArmed = confirmText.trim().toUpperCase() === "TEARDOWN" && selectedTargets.size > 0;
+  const dangerColor = colors.statusDanger ?? "#ef4444";
+
+  const toggleTarget = (id: "workers" | "orchestrators" | "frontdesk") => {
+    setSelectedTargets((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const handleConfirm = () => {
+    if (!isArmed || isProcessing) return;
+    onConfirm(Array.from(selectedTargets));
+    setSelectedTargets(new Set());
+    setConfirmText("");
+  };
+
+  const handleClose = () => {
+    setSelectedTargets(new Set());
+    setConfirmText("");
+    onClose();
+  };
+
+  return (
+    <Modal
+      open={visible}
+      onOpenChange={(open) => {
+        if (!open) handleClose();
+      }}
+      title="Teardown Fleet"
+    >
+      <ModalContent>
+        <Stack gap="sm">
+          <Card variant="flat" style={{ borderColor: dangerColor, borderWidth: 1 }}>
+            <Stack gap="xs">
+              <Row align="center" gap="xs">
+                <Icon name="AlertTriangle" size={16} color={dangerColor} />
+                <Text style={{ color: dangerColor, ...typography.heading }}>
+                  Destructive Operation
+                </Text>
+              </Row>
+              <Text style={{ color: colors.foregroundMuted, ...typography.caption }}>
+                This will permanently archive the selected agent categories. This action cannot be undone.
+              </Text>
+            </Stack>
+          </Card>
+
+          <Text style={{ color: colors.foreground, ...typography.caption, fontWeight: "600" }}>
+            Select agents to teardown:
+          </Text>
+
+          {TEARDOWN_TARGETS.map((target) => (
+            <Card
+              key={target.id}
+              variant="flat"
+              style={{
+                borderColor: selectedTargets.has(target.id) ? dangerColor : colors.border,
+                borderWidth: selectedTargets.has(target.id) ? 2 : 1,
+              }}
+            >
+              <Row align="center" gap="sm">
+                <Button
+                  label={selectedTargets.has(target.id) ? "✓" : ""}
+                  size="sm"
+                  variant={selectedTargets.has(target.id) ? "danger" : "ghost"}
+                  style={{ width: 28, height: 28, padding: 0 }}
+                  onPress={() => toggleTarget(target.id)}
+                />
+                <Stack gap="xxs" style={{ flex: 1 }}>
+                  <Text style={{ color: colors.foreground, ...typography.body, fontWeight: "600" }}>
+                    {target.label}
+                  </Text>
+                  <Text style={{ color: colors.foregroundMuted, ...typography.caption, fontSize: 11 }}>
+                    {target.description}
+                  </Text>
+                </Stack>
+              </Row>
+            </Card>
+          ))}
+
+          <Text style={{ color: colors.foreground, ...typography.caption, fontWeight: "600" }}>
+            Type TEARDOWN to confirm:
+          </Text>
+          <TextInput
+            value={confirmText}
+            onChangeText={setConfirmText}
+            placeholder="TEARDOWN"
+            autoCapitalize="characters"
+          />
+
+          <Row justify="flex-end" gap="xs">
+            <Button
+              label="Cancel"
+              size="sm"
+              variant="secondary"
+              onPress={handleClose}
+              disabled={isProcessing}
+            />
+            <Button
+              label={isProcessing ? "Tearing down..." : "Teardown Fleet"}
+              size="sm"
+              variant="danger"
+              disabled={!isArmed || isProcessing}
+              onPress={handleConfirm}
+            />
+          </Row>
+        </Stack>
+      </ModalContent>
+    </Modal>
   );
 }
 
@@ -602,6 +762,11 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
 
   const [archivingAgentId, setArchivingAgentId] = useState<string | null>(null);
   const [isBulkArchiving, setIsBulkArchiving] = useState(false);
+
+  // Fleet Teardown (#742)
+  const teardownMutation = useRpcMutation(uppidiFleetTeardownContract);
+  const [isTeardownModalOpen, setIsTeardownModalOpen] = useState(false);
+  const [isTearingDown, setIsTearingDown] = useState(false);
 
   // Hook service listen address configuration (#427)
   const [hostSelection, setHostSelection] = useState<string>("127.0.0.1");
@@ -911,6 +1076,24 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
     }
   };
 
+  const handleTeardown = async (targets: Array<"workers" | "orchestrators" | "frontdesk">) => {
+    try {
+      setIsTearingDown(true);
+      const res = await teardownMutation.mutateAsync({ targets, confirm: true });
+      if (res.ok) {
+        toast.show(res.message || `Torn down ${res.tornDown.workers + res.tornDown.orchestrators + res.tornDown.frontdesk} agent(s)`);
+        setIsTeardownModalOpen(false);
+      } else {
+        toast.error(res.error || "Failed to teardown fleet");
+      }
+      void refetchAgents();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setIsTearingDown(false);
+    }
+  };
+
 
   const rawRunners = toList(runnersData?.runners);
   const visibleRunners = useMemo(() => {
@@ -936,6 +1119,7 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
             repoOptions={repoOptions}
             onRepoChange={setSelectedRepo}
             onRefresh={refetchAll}
+            onTeardown={() => setIsTeardownModalOpen(true)}
             permissionAttentionCount={permissionAgentCount}
             inputAttentionCount={attentionAgents.length - permissionAgentCount}
           />
@@ -2003,6 +2187,12 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
           )}
         </Stack>
       )}
+      <TeardownModal
+        visible={isTeardownModalOpen}
+        onClose={() => setIsTeardownModalOpen(false)}
+        onConfirm={handleTeardown}
+        isProcessing={isTearingDown}
+      />
     </ModalBody>
   );
 }

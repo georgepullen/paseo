@@ -24,6 +24,7 @@ import {
   uppidiReplaceOrchestratorContract,
   uppidiToggleRepoMuteContract,
   uppidiFleetSettingsContract,
+  uppidiFleetTeardownContract,
 } from "./shared/contracts.js";
 import { handleUppidiIssues } from "./server/issues.js";
 import {
@@ -47,6 +48,7 @@ import {
   handleUppidiAddOrchestrator,
   handleUppidiReplaceOrchestrator,
   handleUppidiToggleRepoMute,
+  handleFleetTeardown,
 } from "./server/agents.js";
 
 import { handleUppidiRoleModels, handleUppidiSetRoleModel } from "./server/role-models.js";
@@ -101,6 +103,7 @@ export default function contribute(server: PluginServerContext) {
   server.handle(uppidiAddOrchestratorContract, handleUppidiAddOrchestrator);
   server.handle(uppidiReplaceOrchestratorContract, handleUppidiReplaceOrchestrator);
   server.handle(uppidiToggleRepoMuteContract, handleUppidiToggleRepoMute);
+  server.handle(uppidiFleetTeardownContract, handleFleetTeardown);
 
   const settingsStorage = getUppidiFleetSettingsStorage();
   registerSettingsRpc(server, uppidiFleetSettingsContract, settingsStorage, {
