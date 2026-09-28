@@ -210,6 +210,8 @@ export function deactivate() {
 
 ## 10. Settings RPC Registration: `registerSettingsRpc`
 
+> **Two settings APIs exist. Pick per call site — see [Which settings API?](#which-settings-api).**
+
 Wires atomic file persistence and typed `get`, `update`, and `reset` RPC handlers to Paseo's daemon `PluginContext` in one line:
 
 ```ts
@@ -231,6 +233,51 @@ export default function activate(context: PluginContext) {
   });
 }
 ```
+
+---
+
+## Which settings API?
+
+Since Paseo `0.9.0-beta.1` the host provides a settings handle of its own. Verified in our
+installed SDK (`@getpaseo/plugin@0.9.0-beta.2`, `dist/server/contracts.d.ts:19-24`):
+
+```ts
+export interface PluginSettings<Schema extends ZodType> {
+  read(): Promise<PluginSettingsState<Schema>>;
+  subscribe(listener: (state: PluginSettingsState<Schema>) => void | Promise<void>): PluginCleanup;
+}
+
+registerSettings<Schema extends ZodType>(definition: SettingsDefinition<Schema>): PluginSettings<Schema>;
+```
+
+`PluginSettingsState` is a tagged union: `status: "ready"` with `revision` and parsed `values`, or
+`status: "invalid"` with `revision` and an `error` string. So a schema mismatch is an explicit
+state to handle, not a throw.
+
+### Decision rule
+
+Answer in order; the first "yes" decides it.
+
+1. **Must the plugin run on Paseo 0.8?** Use `registerSettingsRpc`. The upstream handle does not
+   exist there. Our manifests declare `requirements.paseo: ">=0.8.0"` and the `0.8.0` install-smoke
+   lane still gates releases, so this is the common case, not the exception.
+2. **Must another plugin read or write the same settings file?** Use `registerSettingsRpc`, or
+   `createSharedPluginSettings` (§15) for sibling plugins. `registerSettings` scopes values to the
+   calling plugin.
+3. **Need a synchronous read, a partial patch, or storage for non-settings state?** Use
+   `registerSettingsRpc` / `PluginStorage` (§10). `PluginSettings.read()` is async and
+   whole-value, and `PluginStorage` is the general key-value store.
+4. **Otherwise — plugin-owned settings, 0.9+ only, read-whole-value plus change notifications?**
+   Use the upstream `registerSettings`. You drop the file-handling code and get revision tracking
+   and a real `status: "invalid"` state for free.
+
+Rule 4 is the narrow one: it applies to own-host settings only, and only once the 0.8 lane is no
+longer a constraint. Do not assume it applies because the host offers the handle — check rules 1-3
+first, they are the majority of real call sites.
+
+Two things the upstream handle does **not** give you, so keep `registerSettingsRpc` if you need
+either: writes. `PluginSettings` is read and subscribe only, with no update or reset method in the
+type above. Settings changes are driven by whoever owns the definition.
 
 ---
 
