@@ -498,7 +498,7 @@ Beyond ingress, the router exposes:
 | `GET /orchestrators[/:repo]` | Read one or all orchestrator registrations. |
 | `POST /orchestrator` (alias `/orchestrate`) | Register `{repo, agentId}`. |
 | `POST /orchestrators/prune` | Delete registrations whose agent no longer exists on the daemon. |
-| `POST /board-sweep` | Run `~/bin/forgejo-issues-check` (`{repos?: string[]}`); notify Front Desk of actionable tickets. |
+| `POST /board-sweep` | Run the in-process deterministic board check (`{repos?: string[]}`); notify Front Desk of actionable tickets and failed repo checks. |
 | `POST /queues/:key/pause` · `/resume` · `/drain` | Per-queue control (also `POST /queue/{pause,resume,drain}` with `{repo}`). |
 
 Example registration (loopback, no secret needed):
@@ -693,10 +693,17 @@ registered orchestrator and drains the queue.
 
 ### 7.8 Deterministic board sweep
 
-`BOARD_SWEEP_INTERVAL_MS` (default `900000`, 15 min) runs
-`~/bin/forgejo-issues-check --json` across enrolled repos and alerts Front Desk
-when new actionable tickets surface. Run it on demand with `POST /board-sweep`.
-Override the script path with `FORGEJO_ISSUES_CHECK`.
+`BOARD_SWEEP_INTERVAL_MS` (default `900000`, 15 min) runs the deterministic
+board checker (`server/issues-check.ts`, ported in-process from the Python
+script) across enrolled repos and alerts Front Desk when new actionable tickets
+surface. A failed repo check is never silent: it is logged as
+`[error] board check failed`, returned as `errors` in the sweep result, and
+reported to Front Desk, because an unreported failure looks exactly like a
+clean board. Run it on demand with `POST /board-sweep`.
+
+`FORGEJO_ISSUES_CHECK` is a **debug-only override** that execs an external
+checker binary instead of the in-process implementation. It is not a runtime
+dependency; do not set it in production.
 
 ---
 
@@ -941,7 +948,8 @@ Environment variables: `FORGE_HOOK_HOST`, `FORGE_HOOK_PORT`/`HOOK_PORT`,
 `FORGEJO_TOKEN`/`GITEA_TOKEN`, `HOOK_COALESCE_DISABLE`, `HOOK_DEBOUNCE_MS`,
 `HOOK_COALESCE_MAX`, `HOOK_COALESCE_WINDOW_MAX_MS`, `WATCHDOG_INTERVAL_MS`,
 `WATCHDOG_BUSY_THRESHOLD`, `WATCHDOG_ALERT_COOLDOWN_MS`,
-`BOARD_SWEEP_INTERVAL_MS`, `FORGEJO_ISSUES_CHECK`.
+`BOARD_SWEEP_INTERVAL_MS` (a non-empty `FORGEJO_ISSUES_CHECK` enables the
+debug-only external-checker override).
 
 ---
 

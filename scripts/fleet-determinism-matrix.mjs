@@ -304,10 +304,10 @@ const PARTS = [
       symbols: ["ingestWebhook", "SLASH_BYPASS_RE"],
     },
     evidence: [
-      [`hook-router.ts:246-267`, "bypass is one regex over the event body"],
-      [`hook-router.ts:291-300`, "`eventKind` maps a fixed event-type table"],
-      [`hook-router.ts:358-368`, "`formatDigest` is string concatenation"],
-      [`hook-router.ts:1489`, "`ingestWebhook` classifies then enqueues"],
+      [`hook-router.ts:247-261`, "bypass is one regex over the event body"],
+      [`hook-router.ts:292-301`, "`eventKind` maps a fixed event-type table"],
+      [`hook-router.ts:359-369`, "`formatDigest` is string concatenation"],
+      [`hook-router.ts:1600`, "`ingestWebhook` classifies then enqueues"],
     ],
     note: "The ingress path is a pure function of the webhook payload.",
   },
@@ -321,9 +321,9 @@ const PARTS = [
       symbols: ["drain", "pause", "resume", "persistQueue", "coalesce"],
     },
     evidence: [
-      [`hook-router.ts:2776-2885`, "`drain` is guarded by closed/paused/muted/draining sets"],
-      [`hook-router.ts:2833`, "backoff delay is `min(30000, 3000 * 1.5^attempts)`"],
-      [`hook-router.ts:2694-2724`, "pause/resume mutate a `Set`"],
+      [`hook-router.ts:2939-3048`, "`drain` is guarded by closed/paused/muted/draining sets"],
+      [`hook-router.ts:2996`, "backoff delay is `min(30000, 3000 * 1.5^attempts)`"],
+      [`hook-router.ts:2857-2885`, "pause/resume mutate a `Set`"],
     ],
     note: "Scheduling is deterministic; the message it eventually hands to `deliverMessage` is not, and is classified separately below.",
   },
@@ -337,10 +337,10 @@ const PARTS = [
       symbols: ["runWatchdogAudit", "recoverWatchdogAgent"],
     },
     evidence: [
-      [`hook-router.ts:984-1006`, "six boolean detectors, each substring or timestamp comparison"],
-      [`hook-router.ts:1054-1072`, "`planWatchdogRecovery` is set algebra over the taxonomy"],
-      [`hook-router.ts:1060`, "quota exhaustion is a circuit break: `steer` is forced false"],
-      [`hook-router.ts:2154`, "the plan is executed by steering a live turn"],
+      [`hook-router.ts:591-714`, "six boolean detectors, each substring or timestamp comparison"],
+      [`hook-router.ts:1161-1181`, "`planWatchdogRecovery` is set algebra over the taxonomy"],
+      [`hook-router.ts:1157-1181`, "quota exhaustion is a circuit break: `steer` is forced false"],
+      [`hook-router.ts:2153`, "the plan is executed by steering a live turn"],
     ],
     note: "Detection is deterministic. Recovery is not: `planWatchdogRecovery` returns `steer: true` and the caller turns that into a wake message inside a running model session, whose response is unconstrained. Deterministic decision, nondeterministic remedy.",
   },
@@ -351,12 +351,53 @@ const PARTS = [
     label: HYBRID,
     anchors: { symbols: ["deliverMessage", "runBoardSweep", "doFrontDeskHandoff"] },
     evidence: [
-      [`hook-router.ts:1813`, "`agentRef.send(msg, { steer })` hands text to a model-backed session"],
-      [`hook-router.ts:1826-1829`, "CLI fallback `paseo send --no-wait --steer <id> <msg>`"],
-      [`hook-router.ts:2471-2474`, "handoff onboarding text is a template, delivered with `steer: true`"],
-      [`hook-router.ts:2531-2556`, "board sweep summarises candidates deterministically, then steers the notice"],
+      [`hook-router.ts:1924`, "`agentRef.send(msg, { steer })` hands text to a model-backed session"],
+      [`hook-router.ts:1929-1939`, "CLI fallback `paseo send --no-wait --steer <id> <msg>`"],
+      [`hook-router.ts:2589-2592`, "handoff onboarding text is a template, delivered with `steer: true`"],
+      [`hook-router.ts:2703-2712`, "board sweep summarises candidates deterministically, then steers the notice (failures included)"],
     ],
     note: "The send itself is a deterministic API call. What the recipient model does with it -- whether the wake actually revives the turn, whether the notice is acted on -- is the part that cannot be asserted. Hybrid for that reason, not because the delivery code guesses.",
+  },
+  {
+    file: `${PLUGIN}/server/issues-check.ts`,
+    part: "In-process board checker port: stale-WIP recovery sweep and its regression guard (#733)",
+    layer: "server",
+    label: DETERMINISTIC,
+    anchors: { exports: ["staleWipAge", "hasStaleWipReminder", "recoverStaleWipIssue", "sweepStaleWipIssues"] },
+    evidence: [
+      ["issues-check.ts:216", "stale WIP age is a timestamp comparison against a fixed skip-label set"],
+      ["issues-check.ts:229", "reminder detection is a substring probe for the marker"],
+      ["issues-check.ts:272", "recovery posts one comment (same label edit grammar)"],
+      ["issues-check.ts:326", "sweep filtering is bounded by thresholds over issues already fetched"],
+    ],
+    note: "Ported from platform `scripts/forgejo-issues-check`; forgejo-issues-check.test.py carries the same fixtures.",
+  },
+  {
+    file: `${PLUGIN}/server/issues-check.ts`,
+    part: "Deterministic priority tuple, dispatchability and taxonomy classification",
+    layer: "server",
+    label: DETERMINISTIC,
+    anchors: { exports: ["calculatePriorityTuple", "isDispatchableCandidate", "classifyCandidate", "isActionable"] },
+    evidence: [
+      ["issues-check.ts:346", "tier/urgency/effort come from fixed label-weight tables; age sorts lexicographically"],
+      ["issues-check.ts:378", "dispatchability is set algebra over blocker and approver labels"],
+      ["issues-check.ts:414", "classification is a first-match ladder over label sets producing fixed reason strings"],
+    ],
+    note: "Pure classification carried over from the Python checker; the board sweep consumes it every 15 minutes.",
+  },
+  {
+    file: `${PLUGIN}/server/issues-check.ts`,
+    part: "Board-check IO: fgjx transport, cache read/write, human-feedback probe",
+    layer: "server",
+    label: DETERMINISTIC,
+    anchors: { exports: ["createDefaultIssuesCheckIo", "runIssuesCheck", "IssuesCheckTransportError"] },
+    evidence: [
+      ["issues-check.ts:632", "fgjx runs via spawn with captured stdout; query failure is an error, not an empty board"],
+      ["issues-check.ts:677", "cache is a JSON document under ~/.cache keyed by repo slug"],
+      ["issues-check.ts:806-808", "signature diff (updated_at/labels/comments_count against the persisted cache) decides new/changed candidates"],
+    ],
+    note:
+      "Runs inside the daemon's node context; the transport subprocess is `fgjx`, one invocation per query like the original.",
   },
   {
     file: `${PLUGIN}/server/hook-router.ts`,
@@ -368,9 +409,9 @@ const PARTS = [
       symbols: ["handleHttpRequest", "sendJson"],
     },
     evidence: [
-      [`hook-router.ts:2960-3002`, "`createServer` + `listen`, EADDRINUSE degrades to disabled rather than throwing"],
-      [`hook-router.ts:3047-3088`, "`configure` writes config then restarts if listening"],
-      [`hook-router.ts:3455-3484`, "status is a projection of bound address, pid and uptime"],
+      [`hook-router.ts:3133-3162`, "`createServer` + `listen`, EADDRINUSE degrades to disabled rather than throwing"],
+      [`hook-router.ts:3210-3236`, "`configure` writes config then restarts if listening"],
+      [`hook-router.ts:3629-3657`, "status is a projection of bound address, pid and uptime"],
     ],
     note: "Lifecycle and transport. Deterministic given the same host state.",
   },
@@ -692,6 +733,7 @@ const SUITE_NOTES = {
   "server/fleet.test.ts": "Cross-surface fleet behaviour",
   "server/hook.test.ts": "Hook-service handlers, endpoint resolution, unreachable-path shapes",
   "server/hook-router.test.ts": "Webhook classification, coalescing, queueing, watchdog taxonomy, handoff",
+  "server/issues-check.test.ts": "Ported stale-WIP sweep fixtures, checker retirement guard (#733)",
   "server/metrics.test.ts": "Rollup arithmetic, candidate derivation, receipt persistence",
   "server/runners.test.ts": "Runner scope merge, normalisation, fleet-status decision table",
   "client/entry.test.ts": "Surface/panel registration and teardown",
@@ -1074,7 +1116,7 @@ function render(inv) {
   out.push("Also outside the inventory, because they are not plugin-owned:");
   out.push("");
   out.push(
-    "- `~/bin/forgejo-issues-check`, invoked by the board sweep at `server/hook-router.ts:2500-2505`.",
+    "- `~/bin/forgejo-issues-check`, retired by #733: the board sweep now runs the ported `server/issues-check.ts` in-process. A `FORGEJO_ISSUES_CHECK=` override execs an external checker for debugging only.",
   );
   out.push("- The `paseo` CLI and daemon SDK surface, called as a subprocess throughout the server.");
   out.push("- `paseo-plugin-helper`, the UI/storage/logger layer this plugin is built on.");
