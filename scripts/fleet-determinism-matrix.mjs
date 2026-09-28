@@ -88,7 +88,7 @@ function trackedFiles() {
   return out
     .split("\n")
     .map((l) => l.trim())
-    .filter((l) => l && SOURCE_EXT.test(l) && fs.statSync(path.join(ROOT, l)).isFile());
+    .filter((l) => l && SOURCE_EXT.test(l) && !l.startsWith(`${PLUGIN}/web/`) && fs.statSync(path.join(ROOT, l)).isFile());
 }
 
 function layerOf(rel) {
