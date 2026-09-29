@@ -1212,7 +1212,7 @@ export function planWatchdogRecovery(
   return {
     stop,
     clearError: set.has("STALE_ERROR_GHOSTING") || stop,
-    clearAttention: set.has("IDLE_POST_ERROR_AMNESIA"),
+    clearAttention: set.has("IDLE_POST_ERROR_AMNESIA") || stop,
     recordCancellationHandled: set.has("TURN_CANCELLATION_TIMEOUT"),
     steer,
     steerMessage,
@@ -2038,7 +2038,7 @@ export class HookRouter {
   public async getActiveAgentIds(): Promise<Set<string>> {
     const active = new Set<string>();
     try {
-      const { stdout } = await execFileAsync("paseo", ["ls", "--json"], { timeout: 5000 });
+      const { stdout } = await execFileAsync("paseo", ["ls", "--json", "--global"], { timeout: 5000 });
       const list = JSON.parse(stdout);
       if (Array.isArray(list)) {
         for (const item of list) {
@@ -2143,7 +2143,7 @@ export class HookRouter {
       }
     }
     try {
-      const { stdout } = await execFileAsync("paseo", ["ls", "--json"], { timeout: 5000 });
+      const { stdout } = await execFileAsync("paseo", ["ls", "--json", "--global"], { timeout: 5000 });
       const parsed = JSON.parse(stdout);
       if (Array.isArray(parsed)) {
         for (const item of parsed) {
@@ -2179,6 +2179,25 @@ export class HookRouter {
     });
   }
 
+  public clearDaemonAttention(agentId: string): Promise<boolean> {
+    const script = `
+      import('/usr/lib/node_modules/@getpaseo/cli/dist/utils/client.js').then(async ({ connectToDaemon }) => {
+        const home = process.env.HOME ? process.env.HOME + '/.paseo' : undefined;
+        const client = await connectToDaemon({ target: { kind: 'home', home } });
+        if (typeof client?.clearAgentAttention === 'function') {
+          await client.clearAgentAttention(process.argv[1]);
+        }
+        await client?.close?.();
+        process.exit(0);
+      }).catch(() => process.exit(1));
+    `;
+    return new Promise((resolve) => {
+      execFile("node", ["-e", script, agentId], { timeout: 10000 }, (err) => {
+        resolve(!err);
+      });
+    });
+  }
+
   /**
    * Execute the ordered, conservative 4-step recovery pipeline for one
    * assessment: stop -> wipe lastError -> wipe attention flags -> steer wake
@@ -2209,6 +2228,7 @@ export class HookRouter {
     }
     if (plan.clearAttention) {
       const ok = clearAgentDiskFields(assessment.diskPath, WATCHDOG_ATTENTION_CLEAR_KEYS);
+      void this.clearDaemonAttention(assessment.agentId).catch(() => undefined);
       actions.push(`clear_attention:${ok ? "ok" : "noop"}`);
     }
     if (plan.recordCancellationHandled) {
@@ -2332,7 +2352,7 @@ export class HookRouter {
 
         // Recovery and alerts share the watchdog cooldown so a persistently
         // wedged agent is not stop/steered on every audit tick.
-        const actionKey = `taxonomy:${assessment.agentId}:${assessment.taxonomy.join(",")}`;
+        const actionKey = `taxonomy:${assessment.agentId}`;
         const eligible = this.canWatchdogAlert(actionKey, now);
         if (eligible) this.watchdogAlerts.set(actionKey, now);
 
@@ -2360,13 +2380,13 @@ export class HookRouter {
         const label = assessment.name || assessment.agentId.slice(0, 7);
         if (assessment.taxonomy.includes("PROVIDER_QUOTA_EXHAUSTION")) {
           const alert = `[Fleet Watchdog] Agent ${label} (${assessment.agentId.slice(0, 7)}) hit provider/quota exhaustion: "${assessment.lastError}". Circuit-break: no auto-steer; operator required.`;
-          void deliverFn(frontDeskId, alert, { noWait: true, steer: true });
+          void deliverFn(frontDeskId, alert, { noWait: true, steer: false });
         } else if (recovery.steered) {
           const alert = `[Fleet Watchdog] Auto-recovered agent ${label} (${assessment.agentId.slice(0, 7)}) [${assessment.taxonomy.join(", ")}] via ${recovery.actions.join(" -> ")}.`;
-          void deliverFn(frontDeskId, alert, { noWait: true, steer: true });
+          void deliverFn(frontDeskId, alert, { noWait: true, steer: false });
         } else {
           const alert = `[Fleet Watchdog] Agent ${label} (${assessment.agentId.slice(0, 7)}) unhealthy [${assessment.taxonomy.join(", ")}]. Operator attention may be required.`;
-          void deliverFn(frontDeskId, alert, { noWait: true, steer: true });
+          void deliverFn(frontDeskId, alert, { noWait: true, steer: false });
         }
       }
 
@@ -2757,7 +2777,13 @@ export class HookRouter {
 
   public async runBoardSweep(repos?: string[], io?: IssuesCheckIo): Promise<BoardSweepResult> {
     const targets = Array.from(
-      new Set((repos ?? this.getEnrolledRepos()).filter((k) => k && k !== "frontdesk")),
+      new Set(
+        (repos ?? this.getEnrolledRepos()).filter((k) => {
+          if (!k || k === "frontdesk") return false;
+          const parts = k.split("/").filter(Boolean);
+          return parts.length >= 2;
+        }),
+      ),
     );
     const actionable: Array<{ repo: string; count: number; dispatchable: number }> = [];
     const errors: Array<{ repo: string; error: string }> = [];
