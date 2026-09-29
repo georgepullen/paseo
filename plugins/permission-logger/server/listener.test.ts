@@ -74,10 +74,17 @@ describe("event capture and pairing", () => {
 
   it("pairs a requested event with its resolution, keeping request input", () => {
     const { store, logger } = setup();
-    logger.handleRequested({
+    const pendingEntry = logger.handleRequested({
       request: { id: "r1", kind: "tool", name: "bash", input: { command: "ls" } },
       agent: { id: "a1", model: "m1", provider: "p1", modeId: "build", cwd: "/srv" },
     });
+    expect(pendingEntry).toMatchObject({
+      id: "r1",
+      agentId: "a1",
+      decision: "pending",
+    });
+    expect(store.query({ decision: "pending" }).total).toBe(1);
+
     const recorded = logger.handleResolved({
       requestId: "r1",
       response: { behavior: "allow", updatedInput: { command: "ls -la" } },
@@ -91,7 +98,10 @@ describe("event capture and pairing", () => {
       decision: "allow",
     });
     expect(recorded?.input).toEqual({ command: "ls" });
-    expect(store.readAll()).toHaveLength(1);
+    expect(store.readAll()).toHaveLength(2);
+    expect(store.readLatest()).toHaveLength(1);
+    expect(store.query({ decision: "pending" }).total).toBe(0);
+    expect(store.query({ decision: "allow" }).total).toBe(1);
   });
 
   it("records resolutions that arrive without a prior request", () => {
@@ -106,10 +116,26 @@ describe("event capture and pairing", () => {
     expect(store.readAll()).toHaveLength(1);
   });
 
+  it("reconciles pending permissions on agent turn activity when provider omits resolution event", () => {
+    const { store, logger } = setup();
+    logger.handleRequested({
+      request: { id: "r_opencode", kind: "tool", name: "bash", input: { command: "git status" } },
+      agent: { id: "a_opencode", model: "space-bunny", provider: "pufaysokt" },
+    });
+    expect(store.query({ decision: "pending" }).total).toBe(1);
+
+    // Agent resumes turn without Paseo core firing agent.permission_resolved
+    const resolved = logger.handleTurnActivity({ agentId: "a_opencode" });
+    expect(resolved).toHaveLength(1);
+    expect(resolved[0]).toMatchObject({ id: "r_opencode", decision: "allow" });
+    expect(store.query({ decision: "pending" }).total).toBe(0);
+    expect(store.query({ decision: "allow" }).total).toBe(1);
+  });
+
   it("drops resolutions with no id, agent, or decision", () => {
     const { store, logger } = setup();
     expect(logger.handleResolved({})).toBeNull();
-    expect(logger.handleRequested({})).toBeUndefined();
+    expect(logger.handleRequested({})).toBeNull();
     expect(store.readAll()).toHaveLength(0);
   });
 

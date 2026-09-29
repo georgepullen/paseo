@@ -29,7 +29,9 @@ describe("permission-logger surface", () => {
     expect(source).toContain("DataTable");
     expect(source).toContain("EmptyState");
     expect(source).toContain("permission-logger-search");
-    expect(source).toMatch(/All.*Allowed.*Denied|decision/);
+    expect(source).toMatch(/All.*Pending.*Allowed.*Denied|decision/);
+    expect(source).toContain('"pending"');
+    expect(source).toContain('"warning"');
   });
 });
 

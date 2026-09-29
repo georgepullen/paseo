@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { defineContract } from "paseo-plugin-helper/shared";
 
-export const PermissionDecisionSchema = z.enum(["allow", "deny"]);
+export const PermissionDecisionSchema = z.enum(["pending", "allow", "deny"]);
 export type PermissionDecision = z.infer<typeof PermissionDecisionSchema>;
 
 export const PermissionAuditEntrySchema = z.object({
@@ -33,7 +33,7 @@ export const PermissionQueryFilterSchema = z.object({
   search: z.string().optional(),
   limit: z.number().int().min(1).max(1000).default(100),
 });
-export type PermissionQueryFilter = z.infer<typeof PermissionQueryFilterSchema>;
+export type PermissionQueryFilter = z.input<typeof PermissionQueryFilterSchema>;
 
 export const permissionLoggerQuery = defineContract({
   name: "permission-logger.query",

@@ -198,9 +198,33 @@ export function createPermissionLogger(options: PermissionLoggerOptions) {
   const now = options.now ?? (() => new Date().toISOString());
   const pending = new Map<string, PendingPermissionRequest>();
 
-  function handleRequested(event: unknown, context?: unknown): void {
+  function handleRequested(event: unknown, context?: unknown): PermissionAuditEntry | null {
     const parsed = splitRequestEvent(event, context);
-    if (parsed) pending.set(parsed.id, parsed);
+    if (!parsed) return null;
+    pending.set(parsed.id, parsed);
+
+    const attribution = parsed.attribution ?? {};
+    const agentId = parsed.agentId ?? attribution.id;
+    if (!parsed.id || !agentId) return null;
+
+    const candidate = {
+      id: parsed.id,
+      timestamp: parsed.timestamp ?? now(),
+      agentId,
+      agentTitle: attribution.title,
+      agentModel: attribution.model,
+      agentProvider: attribution.provider,
+      agentMode: attribution.mode,
+      agentCwd: attribution.cwd,
+      kind: parsed.kind ?? "tool",
+      name: parsed.name ?? "permission",
+      input: parsed.input ?? null,
+      decision: "pending" as const,
+    };
+    const validated = PermissionAuditEntrySchema.parse(candidate);
+    const stored = store.append(validated);
+    onRecord?.(stored);
+    return stored;
   }
 
   function handleResolved(event: unknown, context?: unknown): PermissionAuditEntry | null {
@@ -221,7 +245,7 @@ export function createPermissionLogger(options: PermissionLoggerOptions) {
 
     const candidate = {
       id,
-      timestamp: prior?.timestamp ?? now(),
+      timestamp: now(),
       agentId,
       agentTitle: attribution.title,
       agentModel: attribution.model,
@@ -241,11 +265,44 @@ export function createPermissionLogger(options: PermissionLoggerOptions) {
     return stored;
   }
 
-  return { handleRequested, handleResolved, pending };
+  function handleTurnActivity(event: unknown): PermissionAuditEntry[] {
+    const root = asRecord(event);
+    const agentId = asString(root?.agentId) ?? asString(asRecord(root?.agent)?.id);
+    if (!agentId) return [];
+    const resolved: PermissionAuditEntry[] = [];
+    for (const [id, req] of pending.entries()) {
+      if (req.agentId === agentId) {
+        pending.delete(id);
+        const attribution = req.attribution ?? {};
+        const candidate = {
+          id: req.id,
+          timestamp: now(),
+          agentId,
+          agentTitle: attribution.title,
+          agentModel: attribution.model,
+          agentProvider: attribution.provider,
+          agentMode: attribution.mode,
+          agentCwd: attribution.cwd,
+          kind: req.kind ?? "tool",
+          name: req.name ?? "permission",
+          input: req.input ?? null,
+          decision: "allow" as const,
+        };
+        const parsed = PermissionAuditEntrySchema.parse(candidate);
+        const stored = store.append(parsed);
+        onRecord?.(stored);
+        resolved.push(stored);
+      }
+    }
+    return resolved;
+  }
+
+  return { handleRequested, handleResolved, handleTurnActivity, pending };
 }
 
 const REQUESTED_EVENTS = ["agent.permission_requested", "permission.requested"];
 const RESOLVED_EVENTS = ["agent.permission_resolved", "permission.resolved"];
+const TURN_EVENTS = ["agent.turn_started", "agent.turn_ended"];
 
 interface EventedServer {
   on?: (event: string, handler: (event: unknown, context: unknown) => void) => () => void;
@@ -253,7 +310,10 @@ interface EventedServer {
 
 export function subscribePermissionEvents(
   server: EventedServer,
-  logger: Pick<ReturnType<typeof createPermissionLogger>, "handleRequested" | "handleResolved">,
+  logger: Pick<
+    ReturnType<typeof createPermissionLogger>,
+    "handleRequested" | "handleResolved" | "handleTurnActivity"
+  >,
 ): () => void {
   if (typeof server.on !== "function") return () => {};
   const offs: Array<() => void> = [];
@@ -267,6 +327,13 @@ export function subscribePermissionEvents(
   for (const name of RESOLVED_EVENTS) {
     try {
       offs.push(server.on(name, (event, context) => logger.handleResolved(event, context)));
+    } catch {
+      continue;
+    }
+  }
+  for (const name of TURN_EVENTS) {
+    try {
+      offs.push(server.on(name, (event) => logger.handleTurnActivity(event)));
     } catch {
       continue;
     }

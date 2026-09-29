@@ -88,10 +88,18 @@ export function PermissionLoggerSurface() {
         testID="permission-logger-search"
       />
       <View style={{ flexDirection: "row", gap: 8 }}>
-        {(["all", "allow", "deny"] as DecisionFilter[]).map((value) => (
+        {(["all", "pending", "allow", "deny"] as DecisionFilter[]).map((value) => (
           <Button
             key={value}
-            label={value === "all" ? "All" : value === "allow" ? "Allowed" : "Denied"}
+            label={
+              value === "all"
+                ? "All"
+                : value === "pending"
+                  ? "Pending"
+                  : value === "allow"
+                    ? "Allowed"
+                    : "Denied"
+            }
             variant={decision === value ? "primary" : "secondary"}
             onPress={() => setDecision(value)}
           />
@@ -133,8 +141,20 @@ export function PermissionLoggerSurface() {
             align: "right",
             render: (item) => (
               <Badge
-                label={item.decision === "allow" ? "Allowed" : "Denied"}
-                variant={item.decision === "allow" ? "success" : "danger"}
+                label={
+                  item.decision === "pending"
+                    ? "Pending"
+                    : item.decision === "allow"
+                      ? "Allowed"
+                      : "Denied"
+                }
+                variant={
+                  item.decision === "pending"
+                    ? "warning"
+                    : item.decision === "allow"
+                      ? "success"
+                      : "danger"
+                }
                 dot
               />
             ),

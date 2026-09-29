@@ -60,6 +60,20 @@ describe("PermissionLogStore", () => {
     ).toEqual(["b"]);
   });
 
+  it("readLatest and query resolve entries by id, reflecting pending-to-allowed transition", () => {
+    store.append(entry({ id: "req-x", decision: "pending", timestamp: "2026-09-20T10:00:00.000Z" }));
+    expect(store.query({ decision: "pending" }).total).toBe(1);
+    expect(store.query({ decision: "allow" }).total).toBe(0);
+
+    store.append(entry({ id: "req-x", decision: "allow", timestamp: "2026-09-20T10:00:05.000Z" }));
+    expect(store.readAll()).toHaveLength(2);
+    expect(store.readLatest()).toHaveLength(1);
+    expect(store.readLatest()[0]?.decision).toBe("allow");
+    expect(store.query({ decision: "pending" }).total).toBe(0);
+    expect(store.query({ decision: "allow" }).total).toBe(1);
+    expect(store.query({}).total).toBe(1);
+  });
+
   it("searches tool names and serialized input, newest first, honoring limit", () => {
     store.append(entry({ id: "a", name: "bash", input: { command: "rm -rf /tmp/x" }, timestamp: "2026-09-10T00:00:00.000Z" }));
     store.append(entry({ id: "b", name: "read", input: { path: "/etc/hosts" }, timestamp: "2026-09-20T00:00:00.000Z" }));
