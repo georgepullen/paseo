@@ -103,7 +103,7 @@ import {
 } from "./tree-view.js";
 import { UppidiFleetToolingView } from "./tooling.js";
 import { UppidiFleetKanbanBoard } from "./kanban-board.js";
-import { ForgeIssuesView } from "../../forges/index.client.js";
+import { ForgeIssuesView } from "./forges-tab.js";
 
 export type SurfaceTab = "tree" | "dashboard" | "tooling" | "settings" | "board" | "forges";
 

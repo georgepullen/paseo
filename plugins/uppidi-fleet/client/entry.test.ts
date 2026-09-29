@@ -936,11 +936,11 @@ describe("uppidi-fleet client entry contract", () => {
         "tabs must define the forges tab with GitPullRequest icon",
       );
 
-      // 3. ForgeIssuesView is imported cleanly from forges client
+      // 3. ForgeIssuesView is imported cleanly from forges-tab
       assert.match(
         surfaceSource,
-        /import\s*\{\s*ForgeIssuesView\s*\}\s*from\s*["'][^"']*forges\/index\.client\.js["']/,
-        "surface.tsx must import ForgeIssuesView from forges",
+        /import\s*\{\s*ForgeIssuesView\s*\}\s*from\s*["']\.\/forges-tab(?:\.js)?["']/,
+        "surface.tsx must import ForgeIssuesView from ./forges-tab.js",
       );
 
       // 4. activeTab === 'forges' renders ForgeIssuesView with ModalBodyScrollOwnerContext host
