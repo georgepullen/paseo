@@ -104,12 +104,13 @@ Honest bounds, also in the README:
 
 ## Layer 2: Injection (tools by default)
 
-Implemented on this branch (`server/injection.ts`, wired in
-`index.server.ts`):
+Implemented (`server/injection.ts`, wired in `index.server.ts`):
 - `registerMcpInjection` from the helper wraps `server.before`
   ("agent.create") with merge-preserving, non-mutating semantics.
-- Key scheme `x-comms.<serverId>` (fallback plain `x-comms` with a logged
-  warning if the local server id is unreadable).
+- Key scheme `x-comms_<serverId>` (underscore, compliant with ACP and Gemini
+  character set `^[a-zA-Z0-9_-]+$`; dotted keys cause `-32602` initialization
+  errors #243). Fallback plain `x-comms` with a logged warning if the local
+  server id is unreadable.
 - Stdio config uses `process.execPath` plus the runtime-resolved bundled
   server path, so it works from git checkouts on foreign hosts.
 - No provider filter (all agents). Daemon-wide `injectionEnabled` toggle
@@ -123,8 +124,9 @@ Implemented on this branch (`server/injection.ts`, wired in
 
 ## Layer 3: Visibility (intended vs actual)
 
-Not implemented. Planned: injection snapshot plus diff against live
-session configs. Separate slice.
+Implemented partially: `conversations.json` snapshot tracks active threads
+and unread counts. Planned: injection snapshot plus diff against live
+session configs.
 
 ## Layer 4: Conversation reliability (sender-side outbox)
 
@@ -140,17 +142,19 @@ Implemented (`server/outbox.ts` + the plugin server, #12):
   `x_comms_send` calls run in an ephemeral per-session MCP process and are not
   outboxed.
 - Delivery path (`conversation.send`): a target that resolves to THIS daemon's
-  serverId sends natively through the host `PaseoApi` (`server/local-send.ts`);
-  every remote target goes through the bundled MCP server, which stamps the
-  envelope and shells out to `paseo send --host`. `PaseoApi.send()` is bound to
-  one daemon connection and carries no host/`serverId` (`PaseoAgentSendOptions`
-  has only `messageId`/`images`/`attachments`), so there is no host-targeted SDK
-  call to replace the remote shell-out with. Both producers stamp the identical
-  version-4 envelope, so the wire contract is unchanged.
-- Every initial send assigns a UUID messageId, carries it in the version-5
-  envelope, and passes it through to Paseo. Held outbox entries retain that
-  same id for retries, so native daemon deduplication prevents duplicate agent
-  delivery after an ambiguous failure.
+  serverId sends natively through the host `PaseoApi` (`server/local-send.ts`).
+  For remote targets:
+  * *Legacy pre-0.8*: Routed through bundled MCP server and shelled out to
+    `paseo send --host`.
+  * *Post-0.8 / 0.10 modern*: Direct `@getpaseo/client` `DaemonClient.sendAgentPrompt()`
+    over `DaemonClientRelayE2eeTransport` (`@getpaseo/relay/e2ee`) with native
+    `messageId` idempotency.
+- Wire contract: Both producers stamp the canonical **Version-6** envelope
+  (`<x-comms-message>`) with an ed25519 signature in `xComms.auth`.
+- Every initial send assigns a UUID `messageId`, carried in the version-6
+  envelope and passed through to Paseo's native client send API. Held outbox
+  entries retain that same id for retries, so native daemon deduplication
+  prevents duplicate agent delivery after an ambiguous failure.
 
 ## Trust corollary
 

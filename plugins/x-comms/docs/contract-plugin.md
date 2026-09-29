@@ -1,13 +1,32 @@
 # x-comms plugin — features contract
 
-Derived from the code as it stands, not from what it was designed to do. Every
-row below was read out of the source named in its *Where* cell; nothing here is
-inherited from a design document. Where the shipped docs and the code disagree,
-the code wins and the disagreement is recorded in
+Derived from the code as it stands, not from what it was designed to do, updated
+with the post-0.8 / 0.10 modern Paseo architecture and the Zero-Registry mandate
+(#706). Every row below was read out of the source named in its *Where* cell;
+nothing here is inherited from a legacy design document. Where the shipped docs
+and the code disagree, the code wins and the disagreement is recorded in
 [`contract-drift.md`](contract-drift.md).
 
+The companion evolution specification detailing pre-0.8 obsoletions and modern
+post-0.8/0.10 capabilities is [`contract-evolution.md`](contract-evolution.md).
 The companion contract for the embedded MCP server is
 [`contract-mcp.md`](contract-mcp.md).
+
+### Post-0.8 / 0.10 Overhaul & Zero-Registry Architecture
+
+Under operator directive for #706 (*"no registry dependency. QUICK!"*), x-comms is
+respecified to operate with **zero dependency on static registry files**
+(`registry.json` / `hosts.json`). Modern capabilities unlocked in Paseo >= 0.9:
+* **Direct E2EE Pairing**: Daemons pair directly via self-contained pairing URLs
+  (`https://app.paseo.sh/#offer=...`) or direct host addresses, communicating
+  via `@getpaseo/client` and `DaemonClientRelayE2eeTransport` (`@getpaseo/relay/e2ee`).
+* **Reactive WebSocket Event Streams**: Turn lifecycle tracking (`agent.turn_started`,
+  `agent.turn_ended`) replaces point-in-time polling probes.
+* **Sanitized Identifiers**: Strict adherence to ACP-compliant `x-comms_<serverId>` keys.
+* **Native Schedules & Heartbeats**: Offloading outbox retries and liveness probes
+  to Paseo's native scheduling engine.
+* **Direct Permission Protocol Hooks**: Native event streaming and resolution
+  replacing ad-hoc CLI intercepts.
 
 ## How to read this
 
@@ -67,17 +86,22 @@ Notes that matter and are not in the shipped README:
 * A registry write **never** touches a configured host. Configured hosts appear
   in `registry.read` output with `source: "configured-host"` and are not
   addable/removable through these RPCs.
+* **Zero-Registry Evolution (Post-0.8 / 0.10)**: Under the zero-registry architecture
+  (issue #706), file-backed registry mutation is deprecated. These 4 RPCs operate as
+  backward-compatible shims for legacy local files. The primary addressing mechanism
+  is self-contained pairing URLs (`https://app.paseo.sh/#offer=...`) and direct in-memory
+  peer connection handles (`srv_<id>`), with zero dependency on static disk tables.
 
 ### 1.2 Reachability and identity (6)
 
 | RPC | Does | I/O | Fails | Depends on |
 |---|---|---|---|---|
 | `daemon.health` | Returns per-daemon reachability and live agent count from a 60s-stale cache, and records each verdict so a false→true flip can kick an immediate outbox retry. | in `{}` → `{ results: [{ name, reachable, error, agentCount }] }` | Per-entry `error`, never a whole-list failure. One unreachable peer does not fail the list. | peer |
-| `agents.introspect` | The agent tree every picker reads: daemon → project → workspace → `{ agentId, shortId, name, status }`. | in `{}` → `{ daemons: [{ name, reachable, error, projects[] }] }` | Per-daemon `error`; an unreachable daemon returns `projects: []`. | peer |
+| `agents.introspect` | The agent tree every picker reads: daemon → project → workspace → `{ agentId, shortId, name, status }`. Under zero-registry, dials direct pairing URLs or active session IDs. | in `{}` → `{ daemons: [{ name, reachable, error, projects[] }] }` | Per-daemon `error`; an unreachable daemon returns `projects: []`. | peer |
 | `daemon.probe` | Validates the *format* of a candidate host, then actually dials it with `paseo ls --host`. | in `{ value }` → `{ valid, formatError, reachable, error }` | Format failure is `valid: false` with `reachable: false` and no dial attempted. An 8s dial timeout is reported as `reachable: false` + `error`. Never throws. | peer |
-| `daemon.dump` | The debug surface: 6 parallel CLI probes (`daemon status`, `ls --global`, `workspace ls`, `project ls`, `schedule ls`, `terminal ls`) behind one 20s wrapper each, unwrapped from the CLI's several response shapes, plus offer-derived identity. | in `{ daemon }` → ~30 fields (identity, listen/pid/nodePath/startedAt, relay endpoints, transport, agents, workspaces, projects, providers, permissions, schedules, terminals) | An unknown name returns `reached: false` with the unknown-daemon diagnostic and `transport: ""`. `reached` is `true` if **any** probe succeeded. `permissions` is always `[]` — see [§5.4](#54-permissions-are-always-empty). | peer |
+| `daemon.dump` | The debug surface: 6 parallel CLI probes (`daemon status`, `ls --global`, `workspace ls`, `project ls`, `schedule ls`, `terminal ls`) behind one 20s wrapper each. **Pre-0.8 obsolete pattern**: being replaced in post-0.8/0.10 by direct typed `DaemonClient` RPC calls over a single multiplexed connection. | in `{ daemon }` → ~30 fields (identity, listen/pid/nodePath/startedAt, relay endpoints, transport, agents, workspaces, projects, providers, permissions, schedules, terminals) | An unknown name returns `reached: false` with the unknown-daemon diagnostic and `transport: ""`. `reached` is `true` if **any** probe succeeded. `permissions` is always `[]` — see [§5.4](#54-permissions-are-always-empty). | peer |
 | `identity.sync` | Re-derives each daemon's `serverId` and hostname into plugin state (`daemonIdentities`, `daemonHostnames`) so a peer's id can be mapped back to its registered alias. | in `{}` → `{ identities, hostnames }` | Never throws. An entry with no derivable id is simply omitted. | fs (derivation is local: offer-decode only) |
-| `peer.status` | The Peers tab. Dials every registered daemon concurrently over a real `DaemonClient`, checks the handshake `serverId` against the pairing offer, reads the peer's own `daemon.get_status` and `getHubStatus`. | in `{}` → `{ results: [20 fields incl. transport, serverId, hostname, version, pid, listen, relayEnabled/Endpoint, providerCount/Available, hubState/DaemonId/Origin/LastError] }` | Each result carries its own `reachable`/`error`; a thrown prober is converted to a down row. A peer that answers the handshake but not `daemon.get_status` is still `reachable: true` with identity from the handshake only. | peer |
+| `peer.status` | The Peers tab. Demonstrates modern post-0.8/0.10 SDK architecture: dials every daemon concurrently over a real `DaemonClient` (using `DaemonClientRelayE2eeTransport`), checks the handshake `serverId` against the pairing offer, reads the peer's own `daemon.get_status` and `getHubStatus`. | in `{}` → `{ results: [20 fields incl. transport, serverId, hostname, version, pid, listen, relayEnabled/Endpoint, providerCount/Available, hubState/DaemonId/Origin/LastError] }` | Each result carries its own `reachable`/`error`; a thrown prober is converted to a down row. A peer that answers the handshake but not `daemon.get_status` is still `reachable: true` with identity from the handshake only. | peer |
 
 ### 1.3 Conversation and sending (1)
 
@@ -86,7 +110,7 @@ it is the whole delivery contract. Described in full in [§3](#3-the-send-path).
 
 | RPC | Does | I/O | Fails | Depends on |
 |---|---|---|---|---|
-| `conversation.send` | Busy-gates, then delivers: native SDK for a local target, pre-stamped `paseo send --host` when `stamped: true`, otherwise the bundled MCP server over stdio. Holds a transport failure in the outbox. | in `{ daemon, agentId, prompt, fromAgentId?, fromAgentName?, messageId?, notifyOnFinish?, stamped? }` → `{ daemon, agentId, ok, error, delivery, queueDepth, expiresAt }` where `delivery ∈ dispatched \| queued \| outbox \| dropped` | Never throws for a delivery outcome — every failure is one of the four states with `ok: false`. A thrown RPC means the plugin server itself is unreachable. | peer |
+| `conversation.send` | Busy-gates, then delivers: native SDK for a local target, pre-stamped delivery when `stamped: true`, otherwise the bundled MCP server over stdio. In post-0.8/0.10, remote delivery replaces `paseo send --host` CLI shellouts with direct `@getpaseo/client` `sendAgentPrompt()` over `DaemonClientRelayE2eeTransport` with native `messageId` idempotency. Holds transport failures in the outbox. | in `{ daemon, agentId, prompt, fromAgentId?, fromAgentName?, messageId?, notifyOnFinish?, stamped? }` → `{ daemon, agentId, ok, error, delivery, queueDepth, expiresAt }` where `delivery ∈ dispatched \| queued \| outbox \| dropped` | Never throws for a delivery outcome — every failure is one of the four states with `ok: false`. A thrown RPC means the plugin server itself is unreachable. | peer |
 
 ### 1.4 Peer control plane (4)
 
@@ -199,18 +223,19 @@ conversation.send(daemon, agentId, prompt, …)
   │
   ├─ messageId = input.messageId ?? randomUUID()      ← generated once, at the edge
   │
-  ├─ busyGate().isBusy({ daemon, agentId })  ── true ─▶ enqueue defer ─▶ delivery:"queued"
+  ├─ busyGate().isBusy({ daemon, agentId })  ── true ──▶ enqueue defer ──▶ delivery:"queued"
   │                                                          │
   │                                                     (return ok:true, queueDepth, expiresAt)
   │
   └─ deliverConversationMessage()
-        ├─ stamped:true          ─▶ safeSpawn paseo send --host <registry value>  (verbatim bytes)
-        ├─ local target          ─▶ PaseoApi.agents.ref(id).send(stamped, { messageId })
-        └─ otherwise             ─▶ McpStdioClient → x_comms_send  (MCP server stamps)
+        ├─ stamped:true          ──▶ Direct SDK / E2EE Relay: DaemonClient.sendAgentPrompt()
+        │                            (Legacy fallback: safeSpawn paseo send --host)
+        ├─ local target          ──▶ PaseoApi.agents.ref(id).send(stamped, { messageId })
+        └─ otherwise             ──▶ McpStdioClient → x_comms_send  (MCP server stamps)
                 │
-             throws ─▶ hold in outbox ─▶ delivery:"outbox"   (ok:false)
-             ok      ─▶ noteTargetDispatched, recordOutboundSend,
-                       queue delivery notice ─▶ delivery:"dispatched"
+             throws ──▶ hold in outbox ──▶ delivery:"outbox"   (ok:false)
+             ok      ──▶ noteTargetDispatched, recordOutboundSend,
+                       queue delivery notice ──▶ delivery:"dispatched"
 ```
 
 ### 3.1 The busy gate
@@ -224,8 +249,13 @@ lifecycle first.
 * **Local targets** come from the daemon's own `agent.turn_started` /
   `agent.turn_ended` hooks — free and authoritative, and no probe at all. An
   agent the hooks have not seen falls back to `agents.ref(id).refresh()`.
-* **Remote and configured-host targets** come from `paseo inspect --host
-  <value> --json` with a **5 s** timeout. A peer is a sample, not a stream.
+* **Remote and configured-host targets**:
+  * *Legacy pre-0.8 path*: Polled via `paseo inspect --host <value> --json` with
+    a **5 s** timeout. A peer is a point-in-time sample, not a stream.
+  * *Post-0.8 / 0.10 modern path*: Continuous WebSocket event streaming
+    (`DaemonClient.subscribe`) receiving `agent.turn_started` and `agent.turn_ended`
+    events push-delivered from the peer daemon. Zero-latency state tracking replaces
+    sampling and avoids race windows.
 * **Busy is a deny-list**, not `status !== "idle"`:
   `initializing`, `running`, `busy`, `permission`, `awaiting_permission`,
   `waiting_permission`. `error` and `closed` are deliberately *not* busy — they
@@ -534,7 +564,7 @@ forward-only one-time migration from the old `~/.paseo` root location.
 
 | File | Contents |
 |---|---|
-| `registry.json` | `name → opaque --host value`, `0600` |
+| `registry.json` | `name → opaque --host value`, `0600` (**Deprecated post-0.8**: zero-registry architecture replaces static file with self-contained pairing URLs `#offer=` and in-memory peer pools) |
 | `plugin.json` | preferences: `prereqsCollapsed`, `presenceEnabled`, `injectionEnabled`, `outboxExpirySeconds`, `daemonEnabled`, `daemonIdentities`, `daemonHostnames`, `serverPath` |
 | `outbox.json` | held messages + backoff state |
 | `presence.json` | live entries, sticky tombstones, bounded seen-id LRU, queued retracts |

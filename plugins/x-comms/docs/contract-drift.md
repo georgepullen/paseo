@@ -144,3 +144,20 @@ code, not assumed.
   `RECIPIENT_INSTRUCTIONS` in isolation, so A1 could ship. The cross-surface
   version lives in `instruction-surfaces.test.ts`, which opens the skill and the
   MCP string too.
+
+---
+
+## E. Post-0.8 / 0.10 Architectural Drift & Zero-Registry Respec (Issue #706)
+
+Full respec in [`contract-evolution.md`](contract-evolution.md). The ledger of
+pre-0.8 patterns being retired:
+
+| # | Legacy pre-0.8 Pattern | Post-0.8 / 0.10 Modern Contract | Status & Authority |
+|---|---|---|---|
+| E1 | `execFile("paseo", ["send", ...])` CLI shellouts lacking `--message-id` and `--no-wait` | Direct SDK dispatch via `@getpaseo/client` `DaemonClient.sendAgentPrompt()` with native idempotency and `DaemonClientRelayE2eeTransport` | Respecified in `contract-evolution.md` §2 (OBS-1) |
+| E2 | Static `registry.json` file writes and `PASEO_X_COMMS_REMOTES` dependency | **Zero Registry Dependency**: direct point-to-point self-contained pairing URLs (`https://app.paseo.sh/#offer=...`) and active in-memory session pools | Respecified per operator directive ("no registry dependency. QUICK!") in `contract-evolution.md` §1 & §4 |
+| E3 | Dotted MCP server identifiers `x-comms.<serverId>` | ACP-compliant sanitized identifier `x-comms_<serverId>` (underscore) preventing Gemini ACP `-32602` error | Fixed in code (`server/injection.ts`), respecified in `contract-evolution.md` §2 (OBS-2) |
+| E4 | 5 s / 15 s polling probes (`paseo inspect --host`) for busy-gate verdicts | Reactive WebSocket event streaming (`agent.turn_started`, `agent.turn_ended`) maintaining zero-latency status | Respecified in `contract-evolution.md` §3.2 |
+| E5 | Ad-hoc CLI permission inspection (`paseo permit ...`) and `x_comms_wait` spinlocks | Native Paseo permission protocol hooks (`agent_permission_request`, `respondToPermission`, `list_pending_permissions`) | Respecified in `contract-evolution.md` §3.5 |
+| E6 | In-process Node `setInterval` timers for outbox retry and peer health sweeps | Native Paseo daemon schedule and heartbeat engine (`scheduleCreate`, `sendHeartbeat`, liveness heartbeats) | Respecified in `contract-evolution.md` §3.4 |
+
