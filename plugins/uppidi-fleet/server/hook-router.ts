@@ -168,6 +168,48 @@ export function normalizeRepoKey(raw: string | null | undefined): string | null 
   return s || null;
 }
 
+export function candidateRepoKeys(raw: string | null | undefined): string[] {
+  if (!raw || typeof raw !== "string") return [];
+  const trimmed = raw.trim();
+  if (!trimmed) return [];
+
+  const candidates: string[] = [];
+  const pushUnique = (k: string | null | undefined) => {
+    if (k && !candidates.includes(k)) candidates.push(k);
+  };
+
+  pushUnique(trimmed);
+
+  const normalized = normalizeRepoKey(trimmed);
+  if (normalized) {
+    pushUnique(normalized);
+
+    if (normalized.includes("/")) {
+      const parts = normalized.split("/");
+      if (parts[0].includes(".") || parts[0].includes(":")) {
+        const withoutHost = parts.slice(1).join("/");
+        pushUnique(withoutHost);
+      } else {
+        pushUnique(`forge.mrs.uppidi.com/${normalized}`);
+      }
+    }
+  }
+
+  return candidates;
+}
+
+export function canonicalRepoKey(raw: string | null | undefined): string | null {
+  if (!raw || typeof raw !== "string") return null;
+  const normalized = normalizeRepoKey(raw) ?? raw.trim();
+  if (!normalized) return null;
+  if (!normalized.includes("/")) return normalized;
+  const parts = normalized.split("/");
+  if (parts[0].includes(".") || parts[0].includes(":")) {
+    return normalized;
+  }
+  return `forge.mrs.uppidi.com/${normalized}`;
+}
+
 export function repositoryFromPayload(body: any): any {
   return body?.repository ?? body?.run?.repository ?? {};
 }
@@ -515,6 +557,7 @@ export type WatchdogAnomalyType =
   | "AGENT_ERROR"
   | "ORCHESTRATOR_MISSING"
   | "QUEUE_WEDGED"
+  | "QUEUE_UNORCHESTRATED"
   | "CHILD_WAKEUP"
   | WatchdogTaxonomyType;
 
@@ -1860,22 +1903,25 @@ export class HookRouter {
   }
 
   public readOrchestrator(key: string): OrchestratorRecord | null {
-    const sanitized = sanitizeKey(key);
-    const filePath = join(this.stateDir, `${sanitized}.json`);
-    if (existsSync(filePath)) {
-      try {
-        const raw = readFileSync(filePath, "utf8");
-        const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed.agentId === "string" && parsed.agentId.trim()) {
-          return {
-            key: parsed.key ?? key,
-            agentId: parsed.agentId.trim(),
-            updatedAt: parsed.updatedAt ?? null,
-            by: parsed.by ?? null,
-          };
+    const candidates = candidateRepoKeys(key);
+    for (const cand of candidates) {
+      const sanitized = sanitizeKey(cand);
+      const filePath = join(this.stateDir, `${sanitized}.json`);
+      if (existsSync(filePath)) {
+        try {
+          const raw = readFileSync(filePath, "utf8");
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed.agentId === "string" && parsed.agentId.trim()) {
+            return {
+              key: parsed.key ?? cand,
+              agentId: parsed.agentId.trim(),
+              updatedAt: parsed.updatedAt ?? null,
+              by: parsed.by ?? null,
+            };
+          }
+        } catch {
+          // ignore corrupted file
         }
-      } catch {
-        // ignore corrupted file
       }
     }
     return null;
@@ -1883,17 +1929,27 @@ export class HookRouter {
 
   public writeOrchestrator(key: string, agentId: string, by = "orchestrator"): void {
     mkdirSync(this.stateDir, { recursive: true });
-    const sanitized = sanitizeKey(key);
-    const target = join(this.stateDir, `${sanitized}.json`);
+    const candidates = candidateRepoKeys(key);
+    const primaryKey = canonicalRepoKey(key) ?? key;
     const record: OrchestratorRecord = {
-      key,
+      key: primaryKey,
       agentId,
       updatedAt: new Date().toISOString(),
       by,
     };
-    const tmp = `${target}.${process.pid}.${Date.now()}.tmp`;
-    writeFileSync(tmp, JSON.stringify(record, null, 2), "utf8");
-    renameSync(tmp, target);
+    const targets = new Set<string>();
+    targets.add(primaryKey);
+    targets.add(key);
+    for (const cand of candidates) {
+      if (cand.includes("/")) targets.add(cand);
+    }
+    for (const targetKey of targets) {
+      const sanitized = sanitizeKey(targetKey);
+      const target = join(this.stateDir, `${sanitized}.json`);
+      const tmp = `${target}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
+      writeFileSync(tmp, JSON.stringify({ ...record, key: targetKey }, null, 2), "utf8");
+      renameSync(tmp, target);
+    }
   }
 
   public writeFrontDesk(agentId: string, by = "frontdesk"): void {
@@ -2016,7 +2072,7 @@ export class HookRouter {
   }
 
   public listOrchestratorRecords(): OrchestratorRecord[] {
-    const records: OrchestratorRecord[] = [];
+    const recordsMap = new Map<string, OrchestratorRecord>();
     try {
       if (existsSync(this.stateDir)) {
         const files = readdirSync(this.stateDir);
@@ -2026,33 +2082,46 @@ export class HookRouter {
             const raw = readFileSync(join(this.stateDir, file), "utf8");
             const parsed = JSON.parse(raw);
             if (parsed && typeof parsed.key === "string" && typeof parsed.agentId === "string" && parsed.agentId) {
-              records.push({
+              const rec: OrchestratorRecord = {
                 key: parsed.key,
                 agentId: parsed.agentId,
                 updatedAt: parsed.updatedAt ?? null,
                 by: parsed.by ?? null,
-              });
+              };
+              const canonical = canonicalRepoKey(rec.key) ?? rec.key;
+              const existing = recordsMap.get(canonical);
+              if (!existing || rec.key === canonical) {
+                recordsMap.set(canonical, rec);
+              }
             }
           } catch {}
         }
       }
     } catch {}
-    return records.sort((a, b) => a.key.localeCompare(b.key));
+    return Array.from(recordsMap.values()).sort((a, b) => a.key.localeCompare(b.key));
   }
 
   public deleteOrchestrator(repoOrKey: string): { ok: boolean; key?: string; error?: string; path?: string } {
-    const key = normalizeRepoKey(repoOrKey) ?? (typeof repoOrKey === "string" && repoOrKey.trim() ? repoOrKey.trim() : null);
-    if (!key) return { ok: false, error: "invalid repo key" };
-    const target = join(this.stateDir, `${sanitizeKey(key)}.json`);
-    if (existsSync(target)) {
-      try {
-        unlinkSync(target);
-        return { ok: true, key, path: target };
-      } catch (err) {
-        return { ok: false, error: err instanceof Error ? err.message : String(err), key };
+    const candidates = candidateRepoKeys(repoOrKey);
+    if (candidates.length === 0) return { ok: false, error: "invalid repo key" };
+    let deletedCount = 0;
+    let lastPath = "";
+    for (const cand of candidates) {
+      const target = join(this.stateDir, `${sanitizeKey(cand)}.json`);
+      if (existsSync(target)) {
+        try {
+          unlinkSync(target);
+          deletedCount++;
+          lastPath = target;
+        } catch (err) {
+          return { ok: false, error: err instanceof Error ? err.message : String(err), key: repoOrKey };
+        }
       }
     }
-    return { ok: false, error: "not found", key };
+    if (deletedCount > 0) {
+      return { ok: true, key: repoOrKey, path: lastPath };
+    }
+    return { ok: false, error: "not found", key: repoOrKey };
   }
 
   public async fetchAgentMap(): Promise<Map<string, WatchdogAgent> | null> {
@@ -2373,7 +2442,7 @@ export class HookRouter {
           if (frontDeskId && this.canWatchdogAlert(alertKey, now)) {
             this.watchdogAlerts.set(alertKey, now);
             const alert = `[Fleet Watchdog] Registered orchestrator for ${key} (${agentId.slice(0, 7)}) was not found on daemon.`;
-            void deliverFn(frontDeskId, alert, { noWait: true, steer: true });
+            void deliverFn(frontDeskId, alert, { noWait: true });
           }
           continue;
         }
@@ -2399,7 +2468,7 @@ export class HookRouter {
                 this.watchdogAlerts.set(alertKey, now);
                 const reasonDesc = isTurnLock ? "clearing foreground turn lock" : "reloading agent";
                 const alert = `[Fleet Watchdog] Auto-recovered orchestrator for ${key} (${agentId.slice(0, 7)}) by ${reasonDesc}.`;
-                void deliverFn(frontDeskId, alert, { noWait: true, steer: true });
+                void deliverFn(frontDeskId, alert, { noWait: true });
               }
               continue;
             }
@@ -2409,8 +2478,23 @@ export class HookRouter {
           if (frontDeskId && this.canWatchdogAlert(alertKey, now)) {
             this.watchdogAlerts.set(alertKey, now);
             const alert = `[Fleet Watchdog] Orchestrator for ${key} (${agentId.slice(0, 7)}) is in status error: "${errMsg}". Operator attention may be required.`;
-            void deliverFn(frontDeskId, alert, { noWait: true, steer: true });
+            void deliverFn(frontDeskId, alert, { noWait: true });
           }
+        }
+      }
+    }
+
+    for (const [key, q] of this.queues.entries()) {
+      if (key === "frontdesk" || q.length === 0) continue;
+      if (this.isRepoMuted(key) || this.isPaused(key)) continue;
+      const orch = this.readOrchestrator(key);
+      if (!orch) {
+        anomalies.push({ type: "QUEUE_UNORCHESTRATED", key, queueDepth: q.length });
+        const alertKey = `unorchestrated:${key}`;
+        if (frontDeskId && this.canWatchdogAlert(alertKey, now)) {
+          this.watchdogAlerts.set(alertKey, now);
+          const alert = `[Fleet Watchdog] Queue for ${key} has ${q.length} pending message(s) but no orchestrator is registered.`;
+          void deliverFn(frontDeskId, alert, { noWait: true });
         }
       }
     }
@@ -2444,7 +2528,7 @@ export class HookRouter {
             const alert = reloaded
               ? `[Fleet Watchdog] Auto-recovered wedged queue for ${key} (${q.length} pending, ${attempts} failed attempts) by reloading orchestrator ${orchId?.slice(0, 7)}.`
               : `[Fleet Watchdog] Queue for ${key} has ${q.length} pending message(s) and has failed delivery ${attempts} times.`;
-            void deliverFn(frontDeskId, alert, { noWait: true, steer: true });
+            void deliverFn(frontDeskId, alert, { noWait: true });
           }
         }
       }
@@ -3423,28 +3507,7 @@ export class HookRouter {
           return;
         }
 
-        const list: OrchestratorRecord[] = [];
-        try {
-          if (existsSync(this.stateDir)) {
-            const files = readdirSync(this.stateDir);
-            for (const file of files) {
-              if (!file.endsWith(".json") || file === "frontdesk.json") continue;
-              try {
-                const raw = readFileSync(join(this.stateDir, file), "utf8");
-                const parsed = JSON.parse(raw);
-                if (parsed && typeof parsed.agentId === "string" && parsed.agentId.trim()) {
-                  list.push({
-                    key: parsed.key ?? file.replace(/\.json$/, ""),
-                    agentId: parsed.agentId.trim(),
-                    updatedAt: parsed.updatedAt ?? null,
-                    by: parsed.by ?? null,
-                  });
-                }
-              } catch {}
-            }
-          }
-        } catch {}
-        list.sort((a, b) => a.key.localeCompare(b.key));
+        const list = this.listOrchestratorRecords();
         this.sendJson(res, 200, { ok: true, orchestrators: list });
         return;
       }
@@ -3458,7 +3521,9 @@ export class HookRouter {
           return;
         }
         this.writeOrchestrator(repo, agentId, "orchestrator");
-        void this.drain(repo);
+        for (const cand of candidateRepoKeys(repo)) {
+          void this.drain(cand);
+        }
         this.sendJson(res, 200, { ok: true, repo, agentId });
         return;
       }

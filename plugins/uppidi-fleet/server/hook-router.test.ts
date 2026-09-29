@@ -6,6 +6,8 @@ import { join } from "node:path";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import {
   normalizeRepoKey,
+  candidateRepoKeys,
+  canonicalRepoKey,
   keyFromPayload,
   isFrontDeskEvent,
   isBypassEvent,
@@ -85,6 +87,27 @@ describe("hook-router payload and key utilities", () => {
     );
     assert.equal(normalizeRepoKey(""), null);
     assert.equal(normalizeRepoKey(null as any), null);
+  });
+
+  it("derives candidate keys and canonical repo keys (#752)", () => {
+    assert.deepEqual(candidateRepoKeys("xpufx-org/paseo"), [
+      "xpufx-org/paseo",
+      "forge.mrs.uppidi.com/xpufx-org/paseo",
+    ]);
+    assert.deepEqual(candidateRepoKeys("forge.mrs.uppidi.com/xpufx-org/paseo"), [
+      "forge.mrs.uppidi.com/xpufx-org/paseo",
+      "xpufx-org/paseo",
+    ]);
+    assert.deepEqual(candidateRepoKeys("https://forge.mrs.uppidi.com/xpufx-org/paseo.git"), [
+      "https://forge.mrs.uppidi.com/xpufx-org/paseo.git",
+      "forge.mrs.uppidi.com/xpufx-org/paseo",
+      "xpufx-org/paseo",
+    ]);
+    assert.equal(canonicalRepoKey("xpufx-org/paseo"), "forge.mrs.uppidi.com/xpufx-org/paseo");
+    assert.equal(canonicalRepoKey("forge.mrs.uppidi.com/xpufx-org/paseo"), "forge.mrs.uppidi.com/xpufx-org/paseo");
+    assert.equal(canonicalRepoKey("https://forge.mrs.uppidi.com/xpufx-org/paseo.git"), "forge.mrs.uppidi.com/xpufx-org/paseo");
+    assert.equal(canonicalRepoKey(""), null);
+    assert.equal(canonicalRepoKey(null), null);
   });
 
   it("extracts repository key from various webhook payload structures", () => {
@@ -1490,6 +1513,50 @@ describe("hook-router fleet watchdog audit (#458)", () => {
     assert.equal((router as any).busyAttempts.has("wedged-with-orch"), false);
     assert.ok(delivered.some((d) => d.msg.includes("Auto-recovered wedged queue for wedged-with-orch")));
   });
+
+  it("flags un-orchestrated queues with pending messages and alerts Front Desk (#752)", async () => {
+    (router as any).queues.set("forge.mrs.uppidi.com/xpufx-org/pending-repo", [
+      { id: "m1", key: "forge.mrs.uppidi.com/xpufx-org/pending-repo", msg: "pending 1", ts: Date.now() },
+      { id: "m2", key: "forge.mrs.uppidi.com/xpufx-org/pending-repo", msg: "pending 2", ts: Date.now() },
+    ]);
+
+    const audit = await router.runWatchdogAudit({
+      orchestratorRecords: [],
+      agentMap: new Map(),
+      deliver: fakeDeliver,
+      reloadAgent: fakeReload,
+    });
+
+    const unorch = audit.anomalies.find((a) => a.type === "QUEUE_UNORCHESTRATED");
+    assert.ok(unorch, "expected QUEUE_UNORCHESTRATED anomaly");
+    assert.equal(unorch?.key, "forge.mrs.uppidi.com/xpufx-org/pending-repo");
+    assert.equal(unorch?.queueDepth, 2);
+    assert.ok(
+      delivered.some((d) =>
+        d.msg.includes("pending-repo has 2 pending message(s) but no orchestrator is registered"),
+      ),
+    );
+  });
+
+  it("does not flag un-orchestrated queues when queue is empty or muted or paused (#752)", async () => {
+    (router as any).queues.set("empty-repo", []);
+    (router as any).queues.set("muted-repo", [{ id: "m1", key: "muted-repo", msg: "p", ts: Date.now() }]);
+    (router as any).mutedRepos.add("muted-repo");
+    (router as any).queues.set("paused-repo", [{ id: "m2", key: "paused-repo", msg: "p", ts: Date.now() }]);
+    (router as any).pausedQueues.add("paused-repo");
+
+    const audit = await router.runWatchdogAudit({
+      orchestratorRecords: [],
+      agentMap: new Map(),
+      deliver: fakeDeliver,
+      reloadAgent: fakeReload,
+    });
+
+    assert.equal(
+      audit.anomalies.some((a) => a.type === "QUEUE_UNORCHESTRATED"),
+      false,
+    );
+  });
 });
 
 describe("watchdog metrics rollup tick (#560)", () => {
@@ -1763,6 +1830,63 @@ describe("hook-router orchestrator pruning (#458)", () => {
     const second = router.deleteOrchestrator("repo-del");
     assert.equal(second.ok, false);
     assert.equal(second.error, "not found");
+  });
+});
+
+describe("hook-router bidirectional repo key reconciliation (#752)", () => {
+  let tempDir: string;
+  let queueDir: string;
+  let stateDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "paseo-reconcile-test-"));
+    queueDir = join(tempDir, "queues");
+    stateDir = join(tempDir, "state");
+  });
+
+  afterEach(() => {
+    try {
+      rmSync(tempDir, { recursive: true, force: true });
+    } catch {}
+  });
+
+  it("resolves orchestrator bidirectionally between short and canonical keys", () => {
+    const router = new HookRouter(null, { queueDir, stateDir, port: 0 });
+    // Registered with short key
+    router.writeOrchestrator("xpufx-org/paseo", "agent-short");
+    assert.equal(router.readOrchestrator("xpufx-org/paseo")?.agentId, "agent-short");
+    assert.equal(router.readOrchestrator("forge.mrs.uppidi.com/xpufx-org/paseo")?.agentId, "agent-short");
+    assert.equal(router.readOrchestrator("https://forge.mrs.uppidi.com/xpufx-org/paseo.git")?.agentId, "agent-short");
+
+    // Registered with long key
+    router.writeOrchestrator("forge.mrs.uppidi.com/xpufx-org/platform", "agent-long");
+    assert.equal(router.readOrchestrator("xpufx-org/platform")?.agentId, "agent-long");
+    assert.equal(router.readOrchestrator("forge.mrs.uppidi.com/xpufx-org/platform")?.agentId, "agent-long");
+  });
+
+  it("deduplicates listOrchestratorRecords to canonical key", () => {
+    const router = new HookRouter(null, { queueDir, stateDir, port: 0 });
+    router.writeOrchestrator("xpufx-org/paseo", "agent-paseo");
+    router.writeOrchestrator("forge.mrs.uppidi.com/xpufx-org/platform", "agent-platform");
+
+    const records = router.listOrchestratorRecords();
+    assert.equal(records.length, 2);
+    assert.equal(records[0].key, "forge.mrs.uppidi.com/xpufx-org/paseo");
+    assert.equal(records[0].agentId, "agent-paseo");
+    assert.equal(records[1].key, "forge.mrs.uppidi.com/xpufx-org/platform");
+    assert.equal(records[1].agentId, "agent-platform");
+  });
+
+  it("deletes all candidate files on deleteOrchestrator", () => {
+    const router = new HookRouter(null, { queueDir, stateDir, port: 0 });
+    router.writeOrchestrator("xpufx-org/paseo", "agent-paseo");
+    assert.ok(router.readOrchestrator("xpufx-org/paseo"));
+    assert.ok(router.readOrchestrator("forge.mrs.uppidi.com/xpufx-org/paseo"));
+
+    const delRes = router.deleteOrchestrator("xpufx-org/paseo");
+    assert.equal(delRes.ok, true);
+    assert.equal(router.readOrchestrator("xpufx-org/paseo"), null);
+    assert.equal(router.readOrchestrator("forge.mrs.uppidi.com/xpufx-org/paseo"), null);
   });
 });
 
