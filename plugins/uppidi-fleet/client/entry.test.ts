@@ -920,6 +920,36 @@ describe("uppidi-fleet client entry contract", () => {
         "the separate filter/action row must stay removed (#645)",
       );
     });
+
+    it("embeds forges issues surface in a dedicated tab (#761)", () => {
+      // 1. SurfaceTab union includes "forges"
+      assert.match(
+        surfaceSource,
+        /export\s+type\s+SurfaceTab\s*=[^;]*["']forges["']/,
+        "SurfaceTab union must include 'forges'",
+      );
+
+      // 2. tabs configuration contains the forges tab
+      assert.match(
+        surfaceSource,
+        /id:\s*["']forges["'],\s*label:\s*["']Forge Issues["'],\s*shortLabel:\s*["']Forges["'],\s*icon:\s*["']GitPullRequest["']/,
+        "tabs must define the forges tab with GitPullRequest icon",
+      );
+
+      // 3. ForgeIssuesView is imported cleanly from forges client
+      assert.match(
+        surfaceSource,
+        /import\s*\{\s*ForgeIssuesView\s*\}\s*from\s*["'][^"']*forges\/index\.client\.js["']/,
+        "surface.tsx must import ForgeIssuesView from forges",
+      );
+
+      // 4. activeTab === 'forges' renders ForgeIssuesView with ModalBodyScrollOwnerContext host
+      assert.match(
+        surfaceSource,
+        /activeTab\s*===\s*["']forges["'][\s\S]*?<ModalBodyScrollOwnerContext\.Provider\s+value=["']host["']>[\s\S]*?<ForgeIssuesView[\s\S]*?workspaceId=\{activeWorkspaceId\}/,
+        "activeTab === 'forges' must render ForgeIssuesView wrapped in ModalBodyScrollOwnerContext.Provider",
+      );
+    });
   });
 
   describe("fleet page crash: undefined prototype/partial-payload class (#510)", () => {

@@ -21,6 +21,7 @@ import {
   KeyValue,
   KeyValueGroup,
   ModalBody,
+  ModalBodyScrollOwnerContext,
   ModalContent,
   Row,
   SearchInput,
@@ -102,8 +103,9 @@ import {
 } from "./tree-view.js";
 import { UppidiFleetToolingView } from "./tooling.js";
 import { UppidiFleetKanbanBoard } from "./kanban-board.js";
+import { ForgeIssuesView } from "../../forges/index.client.js";
 
-export type SurfaceTab = "tree" | "dashboard" | "tooling" | "settings" | "board";
+export type SurfaceTab = "tree" | "dashboard" | "tooling" | "settings" | "board" | "forges";
 
 /**
  * Narrows a possibly-partial RPC collection to an array. A truncated or legacy
@@ -150,6 +152,7 @@ const tabs = [
   { id: "tooling", label: "Tooling", shortLabel: "Tools", icon: "Terminal" },
   { id: "settings", label: "Settings", shortLabel: "Settings", icon: "Sliders" },
   { id: "board", label: "Board", shortLabel: "Board", icon: "Kanban" },
+  { id: "forges", label: "Forge Issues", shortLabel: "Forges", icon: "GitPullRequest" },
 ];
 
 const attentionMap: Record<AttentionLabel, string> = {
@@ -1159,6 +1162,21 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
   const attentionAgents = useMemo(() => collectAttentionAgents(allAgents), [allAgents]);
   const permissionAgentCount = useMemo(() => countPermissionAgents(allAgents), [allAgents]);
 
+  const activeWorkspaceId = useMemo(() => {
+    if ((props as any).workspaceId) return (props as any).workspaceId as string;
+    if (selectedRepo !== "all") {
+      const match = allAgents.find(
+        (a) =>
+          a.project &&
+          (isRepoMatching(a.project, selectedRepo) || a.project.toLowerCase() === selectedRepo.toLowerCase()) &&
+          a.workspaceId,
+      );
+      if (match?.workspaceId) return match.workspaceId;
+    }
+    const agentWithWorkspace = allAgents.find((a) => a.workspaceId);
+    return agentWithWorkspace?.workspaceId ?? "";
+  }, [(props as any).workspaceId, selectedRepo, allAgents]);
+
   const handleOpenAgent = (agentId: string) => {
     if (props.navigation?.openAgent) {
       props.navigation.openAgent({ agentId });
@@ -1958,6 +1976,10 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
             isLoading={issuesLoading}
           />
         </Card>
+      ) : activeTab === "forges" ? (
+        <ModalBodyScrollOwnerContext.Provider value="host">
+          <ForgeIssuesView workspaceId={activeWorkspaceId} />
+        </ModalBodyScrollOwnerContext.Provider>
       ) : (
         <Stack gap={6}>
           {/* Fleet Attention Board (#534): blocked agents need immediate clearance */}

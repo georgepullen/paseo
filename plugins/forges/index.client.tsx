@@ -11,7 +11,15 @@ import {
   ISSUES_PILL_ID,
   ForgeIssuesModal,
   ForgeIssuesPanel,
+  ForgeIssuesView,
 } from "./client/issues-pill.js";
+
+export {
+  ISSUES_PILL_ID,
+  ForgeIssuesModal,
+  ForgeIssuesPanel,
+  ForgeIssuesView,
+};
 import { createForgeLabelResolver } from "./client/pill-label.js";
 import {
   forgeLinkUserTransformer,

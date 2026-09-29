@@ -82,6 +82,22 @@ export const useRevealedText = (text) => text;
 
 const PASEO_RN_STUB_URL = `data:text/javascript,${encodeURIComponent(PASEO_RN_STUB_SOURCE)}`;
 
+const PASEO_UI_STUB_SOURCE = `
+import React from ${JSON.stringify(REACT_URL)};
+function stub(name) {
+  return function UIStub(props) { return React.createElement(name, props, props?.children); };
+}
+export const SettingsCard = stub("SettingsCard");
+export const SettingsSection = stub("SettingsSection");
+export const SettingsSwitch = stub("SettingsSwitch");
+export const SettingsSelect = stub("SettingsSelect");
+export const SettingsInput = stub("SettingsInput");
+export const SettingsRow = stub("SettingsRow");
+export const SettingsButton = stub("SettingsButton");
+`;
+
+const PASEO_UI_STUB_URL = `data:text/javascript,${encodeURIComponent(PASEO_UI_STUB_SOURCE)}`;
+
 export interface FleetRenderHarness {
   React: any;
   UppidiFleetSurface: any;
@@ -117,6 +133,9 @@ export async function getFleetHarness(): Promise<FleetRenderHarness> {
           if (specifier === "react-native") return { url: RN_STUB_URL, shortCircuit: true };
           if (specifier === "@getpaseo/plugin/client/react-native") {
             return { url: PASEO_RN_STUB_URL, shortCircuit: true };
+          }
+          if (specifier === "@getpaseo/plugin/client/ui") {
+            return { url: PASEO_UI_STUB_URL, shortCircuit: true };
           }
           return nextResolve(specifier, context);
         },
