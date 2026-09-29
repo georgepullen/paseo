@@ -1873,9 +1873,9 @@ export function ProjectGroupCard({
               {group.isEnrolled && !group.hasOrchestrator && onAddOrchestrator && (
                 <Button
                   label="+ Add Orchestrator"
-                  icon="Plus"
+                  icon="Bot"
                   size="sm"
-                  variant="primary"
+                  variant="ghost"
                   disabled={isActionLoading}
                   loading={isActionLoading}
                   onPress={() => onAddOrchestrator(group.projectName)}
