@@ -758,7 +758,7 @@ export async function fetchPaseoAgents(context?: PluginHandlerContext): Promise<
   // 2. If no agents from SDK, fallback to CLI: paseo ls --json
   if (mergedAgents.size === 0) {
     try {
-      const { stdout } = await execFileAsync("paseo", ["ls", "--json"], {
+      const { stdout } = await execFileAsync("paseo", ["ls", "--json", "--global"], {
         timeout: 5000,
         encoding: "utf-8",
       });
