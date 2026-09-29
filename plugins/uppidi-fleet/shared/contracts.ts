@@ -1276,6 +1276,34 @@ export const uppidiFleetTeardownContract = defineContract({
   output: FleetTeardownOutputSchema,
 });
 
+// Fleet Reset State (Issue #764)
+export const FleetResetStateInputSchema = z.object({
+  confirm: z.literal(true),
+  notifyOrchestrators: z.boolean().default(true).optional(),
+});
+export type FleetResetStateInput = z.infer<typeof FleetResetStateInputSchema>;
+
+export const FleetResetStateOutputSchema = z.object({
+  ok: z.boolean(),
+  cleared: z.object({
+    boardStateFiles: z.number().default(0),
+    queueFiles: z.number().default(0),
+    cacheFiles: z.number().default(0),
+  }),
+  notifiedOrchestrators: z.number().default(0),
+  errors: z.array(z.string()).default([]),
+  message: z.string().optional(),
+  error: z.string().optional(),
+});
+export type FleetResetStateOutput = z.infer<typeof FleetResetStateOutputSchema>;
+
+export const uppidiFleetResetStateContract = defineContract({
+  name: "uppidi-fleet.reset-state",
+  description: "Reset fleet state: purge stale cache, board status, queues, and notify orchestrators",
+  input: FleetResetStateInputSchema,
+  output: FleetResetStateOutputSchema,
+});
+
 // Uppidi Fleet Plugin Settings Contract (Issue #444)
 export const uppidiFleetSettingsSchema = z.object({
   hookHost: z.string().default("127.0.0.1"),
