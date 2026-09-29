@@ -309,16 +309,15 @@ maintainers' board, producing false "label not found" errors. Follow
 ## 6. Skills: how the fleet thinks
 
 Skills are Markdown instruction sets living in a **skills directory** that
-Paseo/opencode loads on demand. **The plugin does not contain the fleet's
-Skills.** In this repository they live at the repository root under
-`.agents/skills/`, *outside* the plugin package. Treat the ones in this
-repository as *one team's* working copy: read them, then write your own.
+Paseo/opencode loads on demand. The plugin ships sanitized, production-ready
+example Skills in [`examples/skills/`](./examples/skills/) that you can copy
+and adapt for your own environment:
 
-| Skill | Role |
-| --- | --- |
-| `.agents/skills/orchestrator/` | orchestrator — triage, decompose, dispatch, pre-flight PRs |
-| `.agents/skills/front-desk/` | Front Desk — the operator-facing liaison |
-| `.agents/skills/coding-agent/` | coding worker — implement, verify, open the PR |
+| Skill | Role | Example File |
+| --- | --- | --- |
+| `coding-agent` | coding worker — implement, verify, open the PR | [`examples/skills/coding-agent/SKILL.md`](./examples/skills/coding-agent/SKILL.md) |
+| `orchestrator` | orchestrator — triage, decompose, dispatch, pre-flight PRs | [`examples/skills/orchestrator/SKILL.md`](./examples/skills/orchestrator/SKILL.md) |
+| `front-desk` | Front Desk — operator-facing liaison and triage intake | [`examples/skills/front-desk/SKILL.md`](./examples/skills/front-desk/SKILL.md) |
 
 > [!NOTE]
 > **CLI tooling ships `teax` (over `tea`).** The fleet's rich CLI variant drives
@@ -330,9 +329,6 @@ repository as *one team's* working copy: read them, then write your own.
 > `https://gitea.com/gitea/tea/releases` — so you can install it. A skill that
 > instead uses the plugin's own surfaces and a direct `/api/v1` client needs no
 > CLI at all.
-
-There is **no shipped Front Desk example in the plugin package** — you must
-author your own (see [§10](#10-gap-analysis--what-the-plugin-does-not-ship)).
 
 ### 6.1 The three roles
 
@@ -389,9 +385,10 @@ author your own (see [§10](#10-gap-analysis--what-the-plugin-does-not-ship)).
 5. **Pick your models per role** and record them (Cockpit → Agent Role Models,
    or `~/.paseo/uppidi-fleet-role-models.json`). See
    [§12](#12-runtime-state--file-map).
-6. **Write the Front Desk skill.** Give it: how to register with the router, how
-   to ingest escalations (`attention/2-user`, `attention/frontdesk`,
-   `/frontdesk`), and the operator's hand-off/hand-over protocol.
+6. **Adapt the Front Desk skill.** Review [`examples/skills/front-desk/SKILL.md`](./examples/skills/front-desk/SKILL.md):
+   how to register with the router, how to ingest escalations (`attention/2-user`,
+   `attention/frontdesk`, `/frontdesk`), and the operator's hand-off/hand-over
+   protocol.
 7. **Cross-link** the adapted Skills back to your board conventions so the next
    agent inherits them.
 
@@ -811,15 +808,17 @@ these gaps yourself.
 - **Action:** copy/adapt the seed (see [§5.3](#53-install-approaches)). Consider
   adding a small `seed-labels.sh` to your fork.
 
-### 10.2 The fleet's Skills live outside the plugin
+### 10.2 The fleet's operational Skills live outside the plugin
 
-- The live `orchestrator`, `front-desk`, and `coding-agent` skills live in this
-  repository at the root, under `.agents/skills/` — **in the repository, but
-  outside the plugin package**. The plugin itself ships no Skills.
-- This repository's copies are one team's working set, not redistributable
-  examples; there is **no Front Desk example** in the plugin package.
-- **Action:** read the roles in [§6](#6-skills-how-the-fleet-thinks), author
-  your own Skills for them, and author a Front Desk skill.
+- The live `orchestrator`, `front-desk`, and `coding-agent` skills used in production
+  live in this repository at the root under `.agents/skills/` — **in the repository, but
+  outside the plugin package**.
+- For adoption, the plugin provides sanitized example skills under
+  [`examples/skills/`](./examples/skills/) (`coding-agent`, `orchestrator`, and
+  `front-desk`) that you can adapt for your team.
+- **Action:** review the sanitized reference templates in
+  [`examples/skills/`](./examples/skills/) and adapt them into your loaded
+  skills directory.
 
 ### 10.3 Action workflow YAML is monorepo-level, host-specific
 
@@ -896,7 +895,7 @@ these gaps yourself.
 - [ ] Install the plugin and confirm the Cockpit renders your board ([§3](#3-install-the-plugin)–[§4](#4-the-cockpit-surface)).
 - [ ] Start the router (Cockpit → Settings) and confirm `GET /health`.
 - [ ] Add the Forgejo webhook(s) and send a test `ping` ([§8](#8-configuring-webhooks-on-the-forgejo-side)).
-- [ ] Adapt the Skills and load them; author a Front Desk skill ([§6](#6-skills-how-the-fleet-thinks)).
+- [ ] Adapt the example Skills and load them into your skills directory ([§6](#6-skills-how-the-fleet-thinks)).
 - [ ] Copy/adapt the action workflows and register a runner ([§9](#9-forgejo-actions--automated-board-hygiene)).
 - [ ] Register a Front Desk and one orchestrator; enrol the repo ([§7.4](#74-control-endpoints)).
 - [ ] Decide on comment self-stamping (shared account) or a zero-dependency skill variant.
