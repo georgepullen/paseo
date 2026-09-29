@@ -1005,7 +1005,7 @@ agent at its SKILL.md and the board CLI conventions:
 You are the project orchestrator for <repo>.
 Follow the orchestrator skill at <home>/code/platform/skills/orchestrator/SKILL.md.
 Coordinate tasks, supervise worker agents, and manage pull requests and issues
-for this repository using the forge CLI (fgjx) and Paseo conventions.
+for this repository using the forge CLI (teax) and Paseo conventions.
 ```
 
 If you pass a custom `prompt`, keep the same contract: name the repo, point at

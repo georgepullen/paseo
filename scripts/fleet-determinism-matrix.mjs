@@ -387,17 +387,17 @@ const PARTS = [
   },
   {
     file: `${PLUGIN}/server/issues-check.ts`,
-    part: "Board-check IO: fgjx transport, cache read/write, human-feedback probe",
+    part: "Board-check IO: teax transport, cache read/write, human-feedback probe",
     layer: "server",
     label: DETERMINISTIC,
     anchors: { exports: ["createDefaultIssuesCheckIo", "runIssuesCheck", "IssuesCheckTransportError"] },
     evidence: [
-      ["issues-check.ts:632", "fgjx runs via spawn with captured stdout; query failure is an error, not an empty board"],
+      ["issues-check.ts:632", "teax runs via spawn with captured stdout; query failure is an error, not an empty board"],
       ["issues-check.ts:677", "cache is a JSON document under ~/.cache keyed by repo slug"],
       ["issues-check.ts:806-808", "signature diff (updated_at/labels/comments_count against the persisted cache) decides new/changed candidates"],
     ],
     note:
-      "Runs inside the daemon's node context; the transport subprocess is `fgjx`, one invocation per query like the original.",
+      "Runs inside the daemon's node context; the transport subprocess is `teax`, one invocation per query like the original.",
   },
   {
     file: `${PLUGIN}/server/hook-router.ts`,

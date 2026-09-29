@@ -1005,7 +1005,7 @@ describe("orchestrator workspace resolution and state isolation (#485, #486)", (
           path.join(os.homedir(), "code/platform/skills/orchestrator/SKILL.md")
         )
       );
-      assert.ok(capturedPayload.prompt.includes("fgjx"));
+      assert.ok(capturedPayload.prompt.includes("teax"));
     } finally {
       setExecFileAsyncForTest(null);
     }

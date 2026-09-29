@@ -33,7 +33,7 @@ import { fileURLToPath } from "node:url";
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
-const IGNORED_DIRS = new Set([".git", "node_modules", "dist", "build", "coverage", ".vitest", "publish-stage"]);
+const IGNORED_DIRS = new Set([".git", "node_modules", "dist", "build", "coverage", ".vitest", "publish-stage", "scratch"]);
 
 /**
  * Commands a package.json script may invoke that are not npm-installable

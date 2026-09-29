@@ -79,12 +79,12 @@ export function parseArgs(argv) {
  */
 function api(path, { host }) {
   const out = execFileSync(
-    "fgjx",
-    ["api", path, "--hostname", host, "--paginate", "--slurp"],
+    "teax",
+    ["api", path, "--hostname", host],
     { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 },
   );
-  const pageArrays = JSON.parse(out);
-  const flat = Array.isArray(pageArrays) ? pageArrays.flat(Infinity) : [pageArrays];
+  const parsed = JSON.parse(out);
+  const flat = Array.isArray(parsed) ? parsed.flat(Infinity) : [parsed];
   return flat.filter((item) => item && !item.pull_request);
 }
 

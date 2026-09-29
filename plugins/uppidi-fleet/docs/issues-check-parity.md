@@ -10,7 +10,7 @@ same issue helpers, same stubs via the `IssuesCheckIo` seam, same expectations).
 ## Method
 
 The harness (transient; not committed) drove **both implementations through
-identical plumbing**: the same `fgjx` stub binary on `PATH` serving canned
+identical plumbing**: the same `teax` stub binary on `PATH` serving canned
 Forgejo API responses, the same pre-seeded `~/.cache` board-state file under a
 scenario-specific `HOME`, and the same CLI arguments. For each scenario it
 compared five dimensions:
@@ -20,8 +20,8 @@ compared five dimensions:
 2. **exit code**;
 3. **stderr**, byte-for-byte;
 4. the **persisted board-state cache file**, byte-for-byte, after the run;
-5. the **action log** of mutating fgjx calls (`fgjx api -X POST
-   .../comments` payloads and `fgjx issue edit ...` argv), proving the recovery
+5. the **action log** of mutating teax calls (`teax api -X POST
+   .../comments` payloads and `teax issue edit ...` argv), proving the recovery
    path issues identical Forgejo commands with identical comment bodies.
 
 ## Cases (20 scenarios, counted 34 issues with per-dimension verdicts)
@@ -37,7 +37,7 @@ Identical = identical across all five dimensions.
 | 05 | taxonomy sweep | all 9 categories + ignore-label rule + not-actionable filter | 1/1 | yes |
 | 06 | stale-WIP dry run | stale/fresh/suppressed/marker/closed WIP mixed | 1/1 | yes |
 | 07 | stale-WIP real recovery | same board, runs the real comment+label edit | 1/1 | yes |
-| 08 | comment POST failure | fgjx POST exits 1; error surfaces on stderr | 1/1 | yes |
+| 08 | comment POST failure | teax POST exits 1; error surfaces on stderr | 1/1 | yes |
 | 09 | custom threshold (`--stale-wip-hours 0.5`) | WIP above/below threshold | 0/0 | yes |
 | 10 | human feedback | configured trusted login / plain human / configured board owner / envelope / `[x-agent]` / multiline >100 chars / comments=0 | 1/1 | yes |
 | 11 | `--role worker` | same board as 05, worker perspective | 1/1 | yes |
@@ -46,7 +46,7 @@ Identical = identical across all five dimensions.
 | 14 | markdown, stale-WIP dry run | | 1/1 | yes |
 | 15 | markdown, stale-WIP real | "recovered N/M" line | 1/1 | yes |
 | 16 | negative `--stale-wip-hours` | refusal | 2/2 | **documented divergence** |
-| 17 | fgjx transport failure | issues query exits 7 | 0/2 | **documented divergence** |
+| 17 | teax transport failure | issues query exits 7 | 0/2 | **documented divergence** |
 | 18 | garbage comment payload | comments endpoint returns non-JSON | 1/1 | yes |
 | 19 | default host/repo plumbing | no `--hostname`/`-R` args | 1/1 | yes |
 | 20 | `--force` | forced re-check incl. feedback re-probe | 1/1 | yes |
@@ -64,8 +64,8 @@ durable record.
    Same refusal, same exit code, different error surface. Understood: the
    plugin calls the module directly, so the CLI's usage banner does not exist.
 
-2. **fgjx transport failure (scenario 17).** Python treats a failing
-   `fgjx` query as an empty board and exits 0 silently — exactly the silent
+2. **teax transport failure (scenario 17).** Python treats a failing
+   `teax` query as an empty board and exits 0 silently — exactly the silent
    degradation #733 removes. The port throws
    `IssuesCheckTransportError`; `runBoardSweep` logs it as
    `[error] board check failed`, carries it in `BoardSweepResult.errors`, and

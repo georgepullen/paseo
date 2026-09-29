@@ -2715,7 +2715,7 @@ export class HookRouter {
 
   /**
    * Run the deterministic board check for one repo. The checker is the ported
-   * in-process module (#733); a failing transport (fgjx missing or erroring)
+   * in-process module (#733); a failing transport (teax missing or erroring)
    * throws instead of degrading to an empty board — silence here used to hide
    * a missing dependency from Front Desk entirely.
    *
