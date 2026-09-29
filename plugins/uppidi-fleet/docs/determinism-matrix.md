@@ -29,13 +29,13 @@ the easy mistake.
 
 | Label | Parts |
 | --- | ---: |
-| `deterministic` | 50 |
+| `deterministic` | 60 |
 | `hybrid` | 3 |
 | `ai-llm` | 0 |
 | `contested` | 1 |
-| **total** | **54** |
+| **total** | **64** |
 
-Inventory: 46 tracked source files in scope — 35 described above as source (27 files, some carrying several parts) and 19 test suites, which are described by the inventory itself rather than by hand.
+Inventory: 56 tracked source files in scope — 40 described above as source (32 files, some carrying several parts) and 24 test suites, which are described by the inventory itself rather than by hand.
 
 **The `ai-llm` column is empty, and that is the finding rather than a gap.** Nothing in this
 plugin performs model inference: there is no completions call, no provider SDK, no temperature
@@ -49,7 +49,7 @@ See *What this table does not cover* below for the sessions themselves.
 
 | Moving part | File | File exports | File loc | Classification | Anchors | Evidence |
 | --- | --- | ---: | ---: | --- | --- | --- |
-| RPC registration and plugin lifecycle | `index.server.ts` | 1 | 152 | `deterministic` | `server.handle`, `startHookRouter`, `registerSettingsRpc` | index.server.ts:81-103 — 23 `server.handle(contract, handler)` bindings, one per RPC contract<br>index.server.ts:133 — `startHookRouter(server)` starts the HTTP listener<br>index.server.ts:142-145 — teardown returns a disposer, no model call |
+| RPC registration and plugin lifecycle | `index.server.ts` | 1 | 157 | `deterministic` | `server.handle`, `startHookRouter`, `registerSettingsRpc` | index.server.ts:81-103 — 23 `server.handle(contract, handler)` bindings, one per RPC contract<br>index.server.ts:133 — `startHookRouter(server)` starts the HTTP listener<br>index.server.ts:142-145 — teardown returns a disposer, no model call |
 | Sidebar surface, workspace panel, helper settings screen registration | `index.client.tsx` | 8 | 84 | `deterministic` | `registerSidebarSurface`, `addWorkspacePanel`, `registerHelperSettingsScreen` | index.client.tsx:26-62 — three registrations, each returning a disposer<br>index.client.tsx:64-83 — teardown calls each disposer, tolerating either shape |
 
 - **RPC registration and plugin lifecycle** (`index.server.ts`) — Binds contracts to handlers and owns load/unload. Every handler it registers is classified on its own row below.
@@ -59,9 +59,9 @@ See *What this table does not cover* below for the sessions themselves.
 
 | Moving part | File | File exports | File loc | Classification | Anchors | Evidence |
 | --- | --- | ---: | ---: | --- | --- | --- |
-| Agent record normalisation, metrics projection, deterministic-state derivation | `server/agents.ts` | 51 | 2333 | `deterministic` | `normalizeRawAgent`, `normalizeAgentMetrics`, `deriveDeterministicState`, `categorizeAgent` | agents.ts:227-253 — copies token/cost/turn counters off the record, no inference<br>agents.ts:255-348 — `deriveDeterministicState` is ordered `if`/`includes` matching over status and error text<br>agents.ts:281-296 — quota/spawn/timeout classification is literal substring matching |
-| Fleet topology, workspace mapping, permission scope, on-disk metadata | `server/agents.ts` | 51 | 2333 | `deterministic` | `buildAgentTree`, `getWorkspaceProjectMap`, `findScopeMatchingPermission`, `getAgentDiskMetadataMap`, `checkRepoMainDirty` | agents.ts:425-543 — `buildAgentTree` links parents to children from ids<br>agents.ts:689-707 — `checkRepoMainDirty` shells `git status` and parses the result<br>agents.ts:758 — `fetchPaseoAgents` reads `paseo ls --json` |
-| Agent session spawning, front-desk and orchestrator lifecycle, spawn-authority guard | `server/agents.ts` | 51 | 2333 | `hybrid` | `spawnPaseoAgent`, `handleUppidiCreateFrontDesk`, `handleUppidiAddOrchestrator`, `evaluateSpawnAuthority` | agents.ts:1519 — `context.paseo.agents.create(createPayload)` creates a model-backed session<br>agents.ts:1563 — CLI fallback `paseo run -d ... <prompt>` — the prompt is the agent's task<br>agents.ts:1652-1654 — default front-desk prompt is a fixed instruction string<br>agents.ts:1380-1428 — spawn-authority guard is deterministic policy over caller id and cwd |
+| Agent record normalisation, metrics projection, deterministic-state derivation | `server/agents.ts` | 51 | 2335 | `deterministic` | `normalizeRawAgent`, `normalizeAgentMetrics`, `deriveDeterministicState`, `categorizeAgent` | agents.ts:227-253 — copies token/cost/turn counters off the record, no inference<br>agents.ts:255-348 — `deriveDeterministicState` is ordered `if`/`includes` matching over status and error text<br>agents.ts:281-296 — quota/spawn/timeout classification is literal substring matching |
+| Fleet topology, workspace mapping, permission scope, on-disk metadata | `server/agents.ts` | 51 | 2335 | `deterministic` | `buildAgentTree`, `getWorkspaceProjectMap`, `findScopeMatchingPermission`, `getAgentDiskMetadataMap`, `checkRepoMainDirty` | agents.ts:425-543 — `buildAgentTree` links parents to children from ids<br>agents.ts:689-707 — `checkRepoMainDirty` shells `git status` and parses the result<br>agents.ts:758 — `fetchPaseoAgents` reads `paseo ls --json` |
+| Agent session spawning, front-desk and orchestrator lifecycle, spawn-authority guard | `server/agents.ts` | 51 | 2335 | `hybrid` | `spawnPaseoAgent`, `handleUppidiCreateFrontDesk`, `handleUppidiAddOrchestrator`, `evaluateSpawnAuthority` | agents.ts:1519 — `context.paseo.agents.create(createPayload)` creates a model-backed session<br>agents.ts:1563 — CLI fallback `paseo run -d ... <prompt>` — the prompt is the agent's task<br>agents.ts:1652-1654 — default front-desk prompt is a fixed instruction string<br>agents.ts:1380-1428 — spawn-authority guard is deterministic policy over caller id and cwd |
 | Forgejo host/token resolution and classified API reads | `server/forgejo-api.ts` | 11 | 123 | `deterministic` | `resolveForgejoHost`, `resolveForgejoToken`, `forgejoApiGet`, `forgejoToken` | forgejo-api.ts:9-11 — host is `process.env.FORGEJO_HOST` or a constant<br>forgejo-api.ts:24-47 — token is read from env or parsed out of `~/.config/tea/config.yml`<br>forgejo-api.ts:88-122 — one GET, three outcomes: ok / http-error / unreachable |
 | Issue read and label-derived attention/status projection | `server/issues.ts` | 1 | 103 | `deterministic` | `handleUppidiIssues` | issues.ts:20-32 — single `GET /api/v1/repos/<repo>/issues`<br>issues.ts:55-64 — attention is exact label matching against three known spellings<br>issues.ts:66-73 — status is a fixed precedence over `state/*` and `review/*` labels |
 | Hook-service RPC handlers, endpoint resolution, x-comms presence probe | `server/hook.ts` | 11 | 227 | `deterministic` | `resolveHookUrl`, `handleHookStatus`, `handleHookQueues`, `handleHookConfigure`, `handleHookLogTail` | hook.ts:42-78 — ordered fallback: explicit arg, env, live router, settings, persisted config, loopback<br>hook.ts:87-96 — status is a `fetch` with a 4s timeout<br>hook.ts:105-111 — `isPluginInstalled` tolerates absence to `false` and never throws |
@@ -77,6 +77,7 @@ See *What this table does not cover* below for the sessions themselves.
 | Role-to-model assignment, persistence, and available-model discovery | `server/role-models.ts` | 6 | 167 | `contested` | `DEFAULT_ROLE_MODELS`, `loadSavedRoleModels`, `saveRoleModels`, `discoverAvailableModels`, `handleUppidiSetRoleModel` | role-models.ts:18-54 — defaults are a literal role -> model map<br>role-models.ts:56-69 — load merges saved JSON over defaults<br>role-models.ts:98-101 — discovery shells `paseo provider list --json`<br>agents.ts:1455-1468 — but the consumer uses this to pick the model a spawned session runs on |
 | CI runner discovery across repo/org/user scopes plus local containers | `server/runners.ts` | 6 | 273 | `deterministic` | `runnerScopeEndpoints`, `normalizeForgejoRunners`, `fetchLocalContainers`, `handleUppidiRunners` | runners.ts:58-71 — three endpoint paths derived from `owner/repo`<br>runners.ts:78-118 — projection counts entries lacking id/name as skipped rather than inventing labels<br>runners.ts:145-148 — local runners are `podman ps --format json`<br>runners.ts:232-241 — fleet status is a fixed decision table over per-scope outcomes |
 | Plugin settings storage, legacy router-config migration | `server/settings.ts` | 5 | 152 | `deterministic` | `getLegacyRouterConfig`, `migrateLegacyConfigIfNeeded`, `getUppidiFleetSettingsStorage` | settings.ts:18-63 — first existing candidate path wins; malformed files are skipped<br>settings.ts:65-119 — migration is a key-by-key patch of undefined fields<br>settings.ts:123-148 — storage is a singleton over `PluginStorage` with a schema |
+| Fleet MCP tool declarations, schemas, execution dispatchers, and RPC handlers | `server/mcp-tools.ts` | 8 | 325 | `deterministic` | `FLEET_MCP_TOOLS`, `executeFleetCheckBoard`, `executeFleetWatchdogAudit`, `executeFleetTool`, `handleFleetToolList`, `handleFleetToolExecute` | mcp-tools.ts:31-104 — typed JSON schemas for board check and watchdog tools<br>mcp-tools.ts:130-185 — deterministic board-checker execution with argument validation<br>mcp-tools.ts:187-210 — deterministic watchdog audit execution and markdown rendering |
 
 - **Agent record normalisation, metrics projection, deterministic-state derivation** (`server/agents.ts`) — THE TELEMETRY ROW. It reads token counts, cost and turn state produced by an LLM session, and it is fully deterministic: same record in, same state out. Observing a model is not being one. The substring table at 281-296 is a fixed vocabulary, not a learned judgement.
 - **Fleet topology, workspace mapping, permission scope, on-disk metadata** (`server/agents.ts`) — Subprocess and filesystem reads. Same inputs, same tree; nothing here consults a model.
@@ -96,20 +97,23 @@ See *What this table does not cover* below for the sessions themselves.
 - **Role-to-model assignment, persistence, and available-model discovery** (`server/role-models.ts`) — Performs no inference and takes no decision that depends on one, so by the test used everywhere else in this table it is deterministic. It is contested because it is the plugin's only surface whose entire purpose is choosing which model other rows spawn -- the AI/LLM character of the fleet is set here and executed in `agents.ts`. The bucket depends on whether you classify a control surface or the thing it controls.
 - **CI runner discovery across repo/org/user scopes plus local containers** (`server/runners.ts`) — CI capacity, not model capacity. A runner executes jobs; nothing here invokes a model.
 - **Plugin settings storage, legacy router-config migration** (`server/settings.ts`) — Key-presence migration. No inference, no timing dependence.
+- **Fleet MCP tool declarations, schemas, execution dispatchers, and RPC handlers** (`server/mcp-tools.ts`) — Declares fleet MCP tools and dispatches executions with argument validation. Fully deterministic control plane; does not query an LLM.
 
 ## Client
 
 | Moving part | File | File exports | File loc | Classification | Anchors | Evidence |
 | --- | --- | ---: | ---: | --- | --- | --- |
-| Barrel re-export for surface, tree-view and panel | `client/index.ts` | 0 | 3 | `deterministic` | whole file | client/index.ts:1-3 — three `export *` statements, no code |
+| Barrel re-export for surface, tree-view, panel and tooling | `client/index.ts` | 0 | 4 | `deterministic` | whole file | client/index.ts:1-4 — four `export *` statements, no code |
+| Fleet tooling surface: schema-driven manual runner and result viewer | `client/tooling.tsx` | 2 | 392 | `deterministic` | `UppidiFleetToolingView` | tooling.tsx:40-75 — retrieves tool definitions and manages dynamic schema form state<br>tooling.tsx:77-135 — validates required parameters and dispatches RPC tool execution<br>tooling.tsx:185-330 — renders schema-driven form fields with typed controls |
 | Workspace panel wrapper, flair, panel registration | `client/panel.tsx` | 7 | 46 | `deterministic` | `UPPIDI_FLEET_FLAIR`, `UppidiFleetPanel`, `registerWorkspacePanel` | panel.tsx:10-18 — flair is a static `VisualFlair` literal<br>panel.tsx:20-30 — the panel delegates to the tree view<br>panel.tsx:37-46 — registration wraps `client.addWorkspacePanel` |
-| Fleet surface: tabs, router status badge, attention card, role-model and metrics dashboards | `client/surface.tsx` | 13 | 2325 | `deterministic` | `UppidiFleetSurface`, `UppidiBrandMark`, `UppidiTopHeaderBar`, `AttentionAgentCard`, `resolveRouterStatusBadge` | surface.tsx:295-306 — router badge is a three-way branch on two booleans<br>surface.tsx:499 — the surface reads every dataset over `useRpc`<br>surface.tsx:1281-1300 — model selection is a `Select` writing the role-model RPC<br>surface.tsx:682-685 — the write reports the server's own message, not a local guess |
+| Fleet surface: tabs, router status badge, attention card, role-model and metrics dashboards | `client/surface.tsx` | 13 | 2329 | `deterministic` | `UppidiFleetSurface`, `UppidiBrandMark`, `UppidiTopHeaderBar`, `AttentionAgentCard`, `resolveRouterStatusBadge` | surface.tsx:295-306 — router badge is a three-way branch on two booleans<br>surface.tsx:499 — the surface reads every dataset over `useRpc`<br>surface.tsx:1281-1300 — model selection is a `Select` writing the role-model RPC<br>surface.tsx:682-685 — the write reports the server's own message, not a local guess |
 | Agent tree rendering: status lights, health gauges, metrics cards, rows, project groups | `client/tree-view.tsx` | 37 | 2818 | `deterministic` | `UppidiFleetTreeView`, `AgentStatusLight`, `AgentStateDot`, `AgentHealthGauge`, `AgentMetricsCard`, `OrchestratorRow`, +3 more | tree-view.tsx:387-403 — relative time is arithmetic on a timestamp<br>tree-view.tsx:450 — health gauge reads thresholds computed server-side<br>tree-view.tsx:2042 — the tree view is a pure function of the agents array |
 | Static fleet fixtures for client tests | `client/testing/fleet-fixtures.ts` | 8 | 387 | `deterministic` | `agentsPayload`, `issuesPayload`, `metricsPayload`, `runnersPayload`, `hookQueuesPayload` | fleet-fixtures.ts:222-370 — seven payload builders returning fixed records<br>fleet-fixtures.ts:32 — one wide-worktree geometry constant |
 | Render harness: host element stubs, rpc stubs, provider wrapper | `client/testing/fleet-harness.ts` | 27 | 225 | `deterministic` | `getFleetHarness`, `useToast`, `Icon`, `useRevealedText` | fleet-harness.ts:28-58 — host components stubbed to inert React elements<br>fleet-harness.ts:70-80 — toast, icon, scroll/flatlist and copyText stubs<br>fleet-harness.ts:111 — the harness is assembled once and awaited |
 | Layout measurement double for mobile/zebra assertions | `client/testing/flex-measure.ts` | 5 | 438 | `deterministic` | `measureText`, `resolveStyle`, `findHorizontalOverflows` | flex-measure.ts:153 — text width is computed from the style, not a real layout pass<br>flex-measure.ts:371 — overflow findings are walked off the resolved style tree |
 
-- **Barrel re-export for surface, tree-view and panel** (`client/index.ts`) — Pure re-export barrel.
+- **Barrel re-export for surface, tree-view, panel and tooling** (`client/index.ts`) — Pure re-export barrel.
+- **Fleet tooling surface: schema-driven manual runner and result viewer** (`client/tooling.tsx`) — Manual schema-driven tool runner surface. Queries tool schemas and displays execution output.
 - **Workspace panel wrapper, flair, panel registration** (`client/panel.tsx`) — Chrome around the tree view. No model.
 - **Fleet surface: tabs, router status badge, attention card, role-model and metrics dashboards** (`client/surface.tsx`) — Renders server state and writes back through the deterministic role-model and settings RPCs. The model picker configures another row's spawn; it does not run a model, so it stays deterministic here.
 - **Agent tree rendering: status lights, health gauges, metrics cards, rows, project groups** (`client/tree-view.tsx`) — The largest file in the client half and still fully deterministic: it displays whatever the server classified. Displaying an LLM's state is not being one.
@@ -121,14 +125,14 @@ See *What this table does not cover* below for the sessions themselves.
 
 | Moving part | File | File exports | File loc | Classification | Anchors | Evidence |
 | --- | --- | ---: | ---: | --- | --- | --- |
-| 24 RPC contracts (zod schemas + input/output types) and the fleet settings contract | `shared/contracts.ts` | 177 | 1434 | `deterministic` | `uppidiFleetSettingsContract`, `uppidiFleetSettingsSchema` | contracts.ts:54-1258 — 24 `defineContract`/`defineSettingsContract` objects across the file<br>contracts.ts:1250-1256 — the fleet settings schema is a `z.object`<br>index.server.ts:81-103 — every one of them is bound to a handler there |
+| 26 RPC contracts (zod schemas + input/output types) and the fleet settings contract | `shared/contracts.ts` | 191 | 1491 | `deterministic` | `uppidiFleetSettingsContract`, `uppidiFleetSettingsSchema` | contracts.ts:54-1258 — 26 `defineContract`/`defineSettingsContract` objects across the file<br>contracts.ts:1250-1256 — the fleet settings schema is a `z.object`<br>index.server.ts:81-105 — every one of them is bound to a handler there |
 | Settings re-export barrel | `shared/settings.ts` | 3 | 5 | `deterministic` | whole file | shared/settings.ts:1-5 — re-exports three names from `contracts.js` |
 | Filtering, sorting, health-gauge derivation, project grouping, bulk-archive eligibility | `shared/sort-filter.ts` | 44 | 1070 | `deterministic` | `filterIssues`, `sortIssues`, `filterQueues`, `sortAgents`, `filterRunners`, `filterMetricCandidates`, +4 more | sort-filter.ts:148 — health gauge buckets counters against fixed thresholds<br>sort-filter.ts:484-540 — bulk-archive eligibility is an explicit ordered rule list<br>sort-filter.ts:875 — project grouping is set/dict work over agent records |
 | Attention/state label unions and Forgejo issue/repo shapes | `shared/types.ts` | 4 | 49 | `deterministic` | `AttentionLabel`, `StateLabel`, `ForgeIssue`, `ForgeRepoInfo` | types.ts:1-11 — two string-literal unions<br>types.ts:13-49 — two interfaces |
 | Generated plugin version stamp | `shared/version.ts` | 1 | 2 | `deterministic` | `PLUGIN_VERSION` | version.ts:1-2 — `0.1.0+<git sha>`, written by the helper's `stampVersion` |
 | Declared helper expectation, resolution mode, helper content digest | `shared/helper-version.ts` | 3 | 29 | `deterministic` | `HELPER_VERSION`, `HELPER_SERVED_FROM`, `HELPER_REVISION` | helper-version.ts:19-20 — version and `checkout` resolution mode as literals<br>helper-version.ts:29 — sha256 digest of `packages/paseo-plugin-helper/src`<br>helper-version.ts:10-15 — nothing reads these and believes them; `helper-resolution.test.mjs` and `doctor-live.mjs` re-derive instead |
 
-- **24 RPC contracts (zod schemas + input/output types) and the fleet settings contract** (`shared/contracts.ts`) — The wire vocabulary. Schemas describe model-shaped concepts (agent metrics, model candidates) but a schema is a validator, not a model.
+- **26 RPC contracts (zod schemas + input/output types) and the fleet settings contract** (`shared/contracts.ts`) — The wire vocabulary. Schemas describe model-shaped concepts (agent metrics, model candidates) but a schema is a validator, not a model.
 - **Settings re-export barrel** (`shared/settings.ts`) — Pure re-export barrel.
 - **Filtering, sorting, health-gauge derivation, project grouping, bulk-archive eligibility** (`shared/sort-filter.ts`) — 44 exports, every one a pure function of its arguments. Shared verbatim by client and server, which is why both halves of the UI agree by construction.
 - **Attention/state label unions and Forgejo issue/repo shapes** (`shared/types.ts`) — Type-only. No runtime behaviour at all.
@@ -141,9 +145,15 @@ See *What this table does not cover* below for the sessions themselves.
 | --- | --- | ---: | ---: | --- | --- | --- |
 | ESM resolve-hook registration for `node --test` | `test/register-ts-hooks.mjs` | 0 | 6 | `deterministic` | whole file | register-ts-hooks.mjs:4-6 — `register('./resolve-ts-hooks.mjs', import.meta.url)` |
 | TS specifier resolution fallback for the node test runner | `test/resolve-ts-hooks.mjs` | 1 | 64 | `deterministic` | `resolve` | resolve-ts-hooks.mjs:32-63 — calls `next()` first and only falls back on `ERR_MODULE_NOT_FOUND`<br>resolve-ts-hooks.mjs:45 — a real `.json`/`.node` specifier keeps failing loudly<br>resolve-ts-hooks.mjs:48-53 — deliberately no `.tsx` probe: node type-stripping cannot load JSX |
+| Standalone CLI entrypoint for board checking and triage ranking | `bin/fleet-board-check.mjs` | 0 | 114 | `deterministic` | `fleet-board-check`, `runIssuesCheck` | fleet-board-check.mjs:20-55 — parses CLI flags (--repo, --role, --force, --all, --json)<br>fleet-board-check.mjs:75-95 — runs issues check and sets exit code 1 on actionable candidates, 0 on clean |
+| Standalone CLI entrypoint for fleet watchdog health auditing | `bin/fleet-watchdog.mjs` | 0 | 117 | `deterministic` | `runWatchdogAudit`, `renderWatchdogAuditMarkdown` | fleet-watchdog.mjs:20-60 — parses CLI flags (--front-desk-id, --recover/--no-recover, --json)<br>fleet-watchdog.mjs:80-98 — executes auditFleet and exits with non-zero code on unresolved anomalies |
+| Standalone MCP stdio JSON-RPC 2.0 server | `bin/fleet-mcp-server.mjs` | 0 | 120 | `deterministic` | `executeFleetTool`, `FLEET_MCP_TOOLS` | fleet-mcp-server.mjs:25-50 — stdio readline transport for JSON-RPC 2.0 messages<br>fleet-mcp-server.mjs:60-110 — dispatches initialize, ping, tools/list, and tools/call |
 
 - **ESM resolve-hook registration for `node --test`** (`test/register-ts-hooks.mjs`) — Loaded via `node --import`. A separate file because a hooks module must be registered, not imported.
 - **TS specifier resolution fallback for the node test runner** (`test/resolve-ts-hooks.mjs`) — Build-time only. It replaced an `npx tsx` shellout that was in no package.json and absent from the lockfile (12-16) — a silent download of whatever was current that day. Worth recording as the repo's own worked example of the drift class this matrix is generated to prevent.
+- **Standalone CLI entrypoint for board checking and triage ranking** (`bin/fleet-board-check.mjs`) — Standalone executable CLI wrapping server/issues-check.ts with identical arguments and exit code contract.
+- **Standalone CLI entrypoint for fleet watchdog health auditing** (`bin/fleet-watchdog.mjs`) — Standalone executable CLI wrapping HookRouter watchdog health audit with recovery controls.
+- **Standalone MCP stdio JSON-RPC 2.0 server** (`bin/fleet-mcp-server.mjs`) — Exposes fleet tools over standard Model Context Protocol stdio transport for any MCP-compatible client.
 
 ## Test suites
 
@@ -165,15 +175,20 @@ that enforces the invariant; this table is the readable view of the same fact.
 | `client/search-height.test.ts` | client/search-height | `test:tsx` | 171 | `deterministic` |
 | `client/tree-zebra.test.tsx` | Tree zebra striping | `test:tsx` | 47 | `deterministic` |
 | `server/agents.test.ts` | Agent normalisation, state derivation, spawn-authority and archive paths | `test:node` | 772 | `deterministic` |
+| `server/fleet-reset.test.ts` | server/fleet-reset | **no runner names it** | 166 | `deterministic` |
 | `server/fleet.test.ts` | Cross-surface fleet behaviour | `test:node` | 1196 | `deterministic` |
 | `server/hook-router.test.ts` | Webhook classification, coalescing, queueing, watchdog taxonomy, handoff | `test:node` | 2748 | `deterministic` |
 | `server/hook.test.ts` | Hook-service handlers, endpoint resolution, unreachable-path shapes | `test:node` | 377 | `deterministic` |
 | `server/issues-check.test.ts` | Ported stale-WIP sweep fixtures, checker retirement guard (#733) | `test:node` | 165 | `deterministic` |
 | `server/issues.test.ts` | server/issues | `test:node` | 88 | `deterministic` |
+| `server/mcp-tools.test.ts` | MCP tool definitions, schema validation, and dispatch fixtures | `test:node` | 111 | `deterministic` |
 | `server/metrics.test.ts` | Rollup arithmetic, candidate derivation, receipt persistence | `test:node` | 279 | `deterministic` |
 | `server/runners.test.ts` | Runner scope merge, normalisation, fleet-status decision table | `test:node` | 357 | `deterministic` |
 | `shared/contracts.test.ts` | Contract schema validation | `test:node` | 873 | `deterministic` |
 | `shared/sort-filter.test.ts` | Filter, sort, gauge and grouping functions | `test:node` | 1326 | `deterministic` |
+| `test/fleet-board-check-cli.test.mjs` | Standalone fleet-board-check CLI options and exit codes | `test:node` | 46 | `deterministic` |
+| `test/fleet-mcp-server.test.mjs` | MCP stdio protocol handshake, tools/list and execution over stdin/stdout | `test:node` | 104 | `deterministic` |
+| `test/fleet-watchdog-cli.test.mjs` | Standalone fleet-watchdog CLI options, recency validation, and diagnostic run | `test:node` | 60 | `deterministic` |
 
 Every suite is `deterministic` on the same test used for the source rows: a test asserts a fixed
 expected value, and an assertion that had to be re-tuned against a model's output would be a
@@ -199,26 +214,31 @@ matrix above is the judgement half.
 
 | File | Layer | Loc | Exports | Top-level exported names |
 | --- | --- | ---: | ---: | --- |
+| `bin/fleet-board-check.mjs` | script | 114 | 0 | — |
+| `bin/fleet-mcp-server.mjs` | script | 120 | 0 | — |
+| `bin/fleet-watchdog.mjs` | script | 117 | 0 | — |
 | `client/cross-repo-issues.test.ts` | client | 265 | 0 | — |
 | `client/entry.test.ts` | client | 1270 | 0 | — |
 | `client/fleet-state-filter-row.test.ts` | client | 49 | 0 | — |
-| `client/index.ts` | client | 3 | 0 | — |
+| `client/index.ts` | client | 4 | 0 | — |
 | `client/issue-metrics-bar.test.ts` | client | 64 | 0 | — |
 | `client/metrics-bar-parity.test.ts` | client | 81 | 0 | — |
 | `client/mobile-layout.test.ts` | client | 270 | 0 | — |
 | `client/panel.tsx` | client | 46 | 7 | `UPPIDI_FLEET_FLAIR`, `UPPIDI_FORGE_FLAIR`, `UppidiFleetPanel`, `UppidiFleetWorkspacePanel`, `UppidiForgePanel`, `UppidiForgeWorkspacePanel`, `registerWorkspacePanel` |
 | `client/role-model-picker.test.ts` | client | 62 | 0 | — |
 | `client/search-height.test.ts` | client | 171 | 0 | — |
-| `client/surface.tsx` | client | 2325 | 13 | `AttentionAgentCard`, `AttentionAgentCardProps`, `ResetStateModal`, `ResetStateModalProps`, `RouterStatusBadge`, `SurfaceTab`, `TeardownModal`, `UppidiBrandMark`, `UppidiFleetSurface`, `UppidiForgeSurface`, `UppidiTopHeaderBar`, `UppidiTopHeaderBarProps` …+1 more |
+| `client/surface.tsx` | client | 2329 | 13 | `AttentionAgentCard`, `AttentionAgentCardProps`, `ResetStateModal`, `ResetStateModalProps`, `RouterStatusBadge`, `SurfaceTab`, `TeardownModal`, `UppidiBrandMark`, `UppidiFleetSurface`, `UppidiForgeSurface`, `UppidiTopHeaderBar`, `UppidiTopHeaderBarProps` …+1 more |
 | `client/testing/fleet-fixtures.ts` | client | 387 | 8 | `WIDE_WORKTREE`, `agentsPayload`, `agentsPayloadNoFrontDesk`, `hookQueuesPayload`, `installPayloads`, `issuesPayload`, `metricsPayload`, `runnersPayload` |
 | `client/testing/fleet-harness.ts` | client | 225 | 27 | `ActivityIndicator`, `Animated`, `Appearance`, `Dimensions`, `Easing`, `FlatList`, `FleetRenderHarness`, `Icon`, `Image`, `Linking`, `Modal`, `PanResponder` …+15 more |
 | `client/testing/flex-measure.ts` | client | 438 | 5 | `OverflowFinding`, `StyleValue`, `findHorizontalOverflows`, `measureText`, `resolveStyle` |
+| `client/tooling.tsx` | client | 392 | 2 | `UppidiFleetToolingProps`, `UppidiFleetToolingView` |
 | `client/tree-view.tsx` | client | 2818 | 37 | `AgentAttentionBanner`, `AgentAttentionBannerProps`, `AgentHealthGauge`, `AgentHealthGaugeProps`, `AgentLabelsRow`, `AgentMetricsCard`, `AgentMetricsCardProps`, `AgentStateDot`, `AgentStatusLight`, `AgentStatusLightProps`, `AgentStatusLightsRow`, `AgentStatusLightsRowProps` …+25 more |
 | `client/tree-zebra.test.tsx` | client | 47 | 0 | — |
 | `index.client.tsx` | entry | 84 | 8 | `UPPIDI_FLEET_FLAIR`, `UPPIDI_FORGE_FLAIR`, `UppidiFleetPanel`, `UppidiFleetSurface`, `UppidiForgePanel`, `UppidiForgeSurface`, `contribute`, `registerWorkspacePanel` |
-| `index.server.ts` | entry | 152 | 1 | `contribute` |
+| `index.server.ts` | entry | 157 | 1 | `contribute` |
 | `server/agents.test.ts` | server | 772 | 0 | — |
-| `server/agents.ts` | server | 2333 | 51 | `DEFAULT_AUTO_ACCEPT_PROVIDERS`, `DEFAULT_SPAWN_MODE_PROVIDERS`, `ExecFileAsyncFn`, `RawAgentRecord`, `RawPendingPermissionLike`, `SPAWN_AUTHORITY_WORKER_ERROR`, `SPAWN_AUTHORITY_WORKSPACE_ERROR`, `SpawnAuthorityDecision`, `SpawnCapabilities`, `SpawnCapabilityResult`, `allowPermission`, `applyParentProjectInheritance` …+39 more |
+| `server/agents.ts` | server | 2335 | 51 | `DEFAULT_AUTO_ACCEPT_PROVIDERS`, `DEFAULT_SPAWN_MODE_PROVIDERS`, `ExecFileAsyncFn`, `RawAgentRecord`, `RawPendingPermissionLike`, `SPAWN_AUTHORITY_WORKER_ERROR`, `SPAWN_AUTHORITY_WORKSPACE_ERROR`, `SpawnAuthorityDecision`, `SpawnCapabilities`, `SpawnCapabilityResult`, `allowPermission`, `applyParentProjectInheritance` …+39 more |
+| `server/fleet-reset.test.ts` | server | 166 | 0 | — |
 | `server/fleet.test.ts` | server | 1196 | 0 | — |
 | `server/forgejo-api.ts` | server | 123 | 11 | `DEFAULT_FORGEJO_HOST`, `FORGEJO_API_TIMEOUT_MS`, `FetchLike`, `ForgejoApiResult`, `TokenResolverFn`, `forgejoApiGet`, `forgejoToken`, `resolveForgejoHost`, `resolveForgejoToken`, `setFetchForTest`, `setTokenResolverForTest` |
 | `server/hook-router.test.ts` | server | 2748 | 0 | — |
@@ -229,6 +249,8 @@ matrix above is the judgement half.
 | `server/issues-check.ts` | server | 1071 | 39 | `EFFORT_WEIGHTS`, `FeedbackInfo`, `ForgejoComment`, `ForgejoIssue`, `ISSUES_CHECK_DEFAULT_HOSTNAME`, `ISSUES_CHECK_DEFAULT_REPO`, `ISSUES_CHECK_DEFAULT_STALE_WIP_HOURS`, `IssueSignature`, `IssuesCheckIo`, `IssuesCheckOptions`, `IssuesCheckOutcome`, `IssuesCheckRole` …+27 more |
 | `server/issues.test.ts` | server | 88 | 0 | — |
 | `server/issues.ts` | server | 103 | 1 | `handleUppidiIssues` |
+| `server/mcp-tools.test.ts` | server | 111 | 0 | — |
+| `server/mcp-tools.ts` | server | 325 | 8 | `FLEET_MCP_TOOLS`, `FleetToolCallResult`, `executeFleetCheckBoard`, `executeFleetTool`, `executeFleetWatchdogAudit`, `handleFleetToolExecute`, `handleFleetToolList`, `renderWatchdogAuditMarkdown` |
 | `server/metrics.test.ts` | server | 279 | 0 | — |
 | `server/metrics.ts` | server | 700 | 19 | `AppendRollupResult`, `BASELINE_CANDIDATES`, `DEFAULT_TASK_PROFILES`, `FleetMetrics`, `MAX_ROLLUP_RECEIPTS`, `METRICS_PRIVACY_NOTICE`, `ModelRollup`, `RollupAgentInput`, `RollupAgentMetrics`, `appendRollupReceipt`, `computeModelRollups`, `defaultMetricsFilePath` …+7 more |
 | `server/role-models.ts` | server | 167 | 6 | `DEFAULT_ROLE_MODELS`, `discoverAvailableModels`, `handleUppidiRoleModels`, `handleUppidiSetRoleModel`, `loadSavedRoleModels`, `saveRoleModels` |
@@ -236,13 +258,16 @@ matrix above is the judgement half.
 | `server/runners.ts` | server | 273 | 6 | `ExecFileAsyncFn`, `fetchLocalContainers`, `handleUppidiRunners`, `normalizeForgejoRunners`, `runnerScopeEndpoints`, `setExecFileAsyncForTest` |
 | `server/settings.ts` | server | 152 | 5 | `LegacyRouterConfig`, `getLegacyRouterConfig`, `getUppidiFleetSettingsStorage`, `migrateLegacyConfigIfNeeded`, `resetUppidiFleetSettingsStorageInstance` |
 | `shared/contracts.test.ts` | shared | 873 | 0 | — |
-| `shared/contracts.ts` | shared | 1434 | 177 | `AgentAttentionReason`, `AgentAttentionReasonSchema`, `AgentBlockDetail`, `AgentBlockDetailSchema`, `AgentLifecycleState`, `AgentLifecycleStateSchema`, `AttentionLabel`, `AttentionLabelSchema`, `CandidateModelMetrics`, `CandidateModelMetricsSchema`, `DEFAULT_PROJECT`, `DeterministicAgentState` …+165 more |
+| `shared/contracts.ts` | shared | 1491 | 191 | `AgentAttentionReason`, `AgentAttentionReasonSchema`, `AgentBlockDetail`, `AgentBlockDetailSchema`, `AgentLifecycleState`, `AgentLifecycleStateSchema`, `AttentionLabel`, `AttentionLabelSchema`, `CandidateModelMetrics`, `CandidateModelMetricsSchema`, `DEFAULT_PROJECT`, `DeterministicAgentState` …+179 more |
 | `shared/helper-version.ts` | shared | 29 | 3 | `HELPER_REVISION`, `HELPER_SERVED_FROM`, `HELPER_VERSION` |
 | `shared/settings.ts` | shared | 5 | 3 | `UppidiFleetSettings`, `uppidiFleetSettingsContract`, `uppidiFleetSettingsSchema` |
 | `shared/sort-filter.test.ts` | shared | 1326 | 0 | — |
 | `shared/sort-filter.ts` | shared | 1070 | 44 | `AgentPreset`, `AgentSortField`, `BuildProjectGroupsOptions`, `BuildProjectGroupsResult`, `DEFAULT_HEALTH_GAUGE_THRESHOLDS`, `HealthGauge`, `HealthGaugeKind`, `HealthGaugeSegment`, `HealthGaugeThresholds`, `HealthGaugeTone`, `IssuePreset`, `IssueSortField` …+32 more |
 | `shared/types.ts` | shared | 49 | 4 | `AttentionLabel`, `ForgeIssue`, `ForgeRepoInfo`, `StateLabel` |
 | `shared/version.ts` | shared | 2 | 1 | `PLUGIN_VERSION` |
+| `test/fleet-board-check-cli.test.mjs` | script | 46 | 0 | — |
+| `test/fleet-mcp-server.test.mjs` | script | 104 | 0 | — |
+| `test/fleet-watchdog-cli.test.mjs` | script | 60 | 0 | — |
 | `test/register-ts-hooks.mjs` | script | 6 | 0 | — |
 | `test/resolve-ts-hooks.mjs` | script | 64 | 1 | `resolve` |
 

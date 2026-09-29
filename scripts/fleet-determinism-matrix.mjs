@@ -95,6 +95,7 @@ function layerOf(rel) {
   if (rel.startsWith(`${PLUGIN}/server/`)) return "server";
   if (rel.startsWith(`${PLUGIN}/client/`)) return "client";
   if (rel.startsWith(`${PLUGIN}/shared/`)) return "shared";
+  if (rel.startsWith(`${PLUGIN}/bin/`)) return "script";
   if (rel === `${PLUGIN}/index.server.ts`) return "entry";
   if (rel === `${PLUGIN}/index.client.tsx`) return "entry";
   if (rel.startsWith(`${PLUGIN}/test/`)) return "script";
@@ -497,6 +498,28 @@ const PARTS = [
     ],
     note: "Key-presence migration. No inference, no timing dependence.",
   },
+  {
+    file: `${PLUGIN}/server/mcp-tools.ts`,
+    part: "Fleet MCP tool declarations, schemas, execution dispatchers, and RPC handlers",
+    layer: "server",
+    label: DETERMINISTIC,
+    anchors: {
+      exports: [
+        "FLEET_MCP_TOOLS",
+        "executeFleetCheckBoard",
+        "executeFleetWatchdogAudit",
+        "executeFleetTool",
+        "handleFleetToolList",
+        "handleFleetToolExecute",
+      ],
+    },
+    evidence: [
+      [`mcp-tools.ts:31-104`, "typed JSON schemas for board check and watchdog tools"],
+      [`mcp-tools.ts:130-185`, "deterministic board-checker execution with argument validation"],
+      [`mcp-tools.ts:187-210`, "deterministic watchdog audit execution and markdown rendering"],
+    ],
+    note: "Declares fleet MCP tools and dispatches executions with argument validation. Fully deterministic control plane; does not query an LLM.",
+  },
 
   // ---------------------------------------------------------------- client ---
   {
@@ -513,12 +536,27 @@ const PARTS = [
   },
   {
     file: `${PLUGIN}/client/index.ts`,
-    part: "Barrel re-export for surface, tree-view and panel",
+    part: "Barrel re-export for surface, tree-view, panel and tooling",
     layer: "client",
     label: DETERMINISTIC,
     anchors: {},
-    evidence: [[`client/index.ts:1-3`, "three `export *` statements, no code"]],
+    evidence: [[`client/index.ts:1-4`, "four `export *` statements, no code"]],
     note: "Pure re-export barrel.",
+  },
+  {
+    file: `${PLUGIN}/client/tooling.tsx`,
+    part: "Fleet tooling surface: schema-driven manual runner and result viewer",
+    layer: "client",
+    label: DETERMINISTIC,
+    anchors: {
+      exports: ["UppidiFleetToolingView"],
+    },
+    evidence: [
+      [`tooling.tsx:40-75`, "retrieves tool definitions and manages dynamic schema form state"],
+      [`tooling.tsx:77-135`, "validates required parameters and dispatches RPC tool execution"],
+      [`tooling.tsx:185-330`, "renders schema-driven form fields with typed controls"],
+    ],
+    note: "Manual schema-driven tool runner surface. Queries tool schemas and displays execution output.",
   },
   {
     file: `${PLUGIN}/client/panel.tsx`,
@@ -615,14 +653,14 @@ const PARTS = [
   // ---------------------------------------------------------------- shared ---
   {
     file: `${PLUGIN}/shared/contracts.ts`,
-    part: "24 RPC contracts (zod schemas + input/output types) and the fleet settings contract",
+    part: "26 RPC contracts (zod schemas + input/output types) and the fleet settings contract",
     layer: "shared",
     label: DETERMINISTIC,
     anchors: { exports: ["uppidiFleetSettingsContract", "uppidiFleetSettingsSchema"] },
     evidence: [
-      [`contracts.ts:54-1258`, "24 `defineContract`/`defineSettingsContract` objects across the file"],
+      [`contracts.ts:54-1258`, "26 `defineContract`/`defineSettingsContract` objects across the file"],
       [`contracts.ts:1250-1256`, "the fleet settings schema is a `z.object`"],
-      [`index.server.ts:81-103`, "every one of them is bound to a handler there"],
+      [`index.server.ts:81-105`, "every one of them is bound to a handler there"],
     ],
     note: "The wire vocabulary. Schemas describe model-shaped concepts (agent metrics, model candidates) but a schema is a validator, not a model.",
   },
@@ -716,6 +754,42 @@ const PARTS = [
     ],
     note: "Build-time only. It replaced an `npx tsx` shellout that was in no package.json and absent from the lockfile (12-16) — a silent download of whatever was current that day. Worth recording as the repo's own worked example of the drift class this matrix is generated to prevent.",
   },
+  {
+    file: `${PLUGIN}/bin/fleet-board-check.mjs`,
+    part: "Standalone CLI entrypoint for board checking and triage ranking",
+    layer: "script",
+    label: DETERMINISTIC,
+    anchors: { symbols: ["fleet-board-check", "runIssuesCheck"] },
+    evidence: [
+      [`fleet-board-check.mjs:20-55`, "parses CLI flags (--repo, --role, --force, --all, --json)"],
+      [`fleet-board-check.mjs:75-95`, "runs issues check and sets exit code 1 on actionable candidates, 0 on clean"],
+    ],
+    note: "Standalone executable CLI wrapping server/issues-check.ts with identical arguments and exit code contract.",
+  },
+  {
+    file: `${PLUGIN}/bin/fleet-watchdog.mjs`,
+    part: "Standalone CLI entrypoint for fleet watchdog health auditing",
+    layer: "script",
+    label: DETERMINISTIC,
+    anchors: { symbols: ["runWatchdogAudit", "renderWatchdogAuditMarkdown"] },
+    evidence: [
+      [`fleet-watchdog.mjs:20-60`, "parses CLI flags (--front-desk-id, --recover/--no-recover, --json)"],
+      [`fleet-watchdog.mjs:80-98`, "executes auditFleet and exits with non-zero code on unresolved anomalies"],
+    ],
+    note: "Standalone executable CLI wrapping HookRouter watchdog health audit with recovery controls.",
+  },
+  {
+    file: `${PLUGIN}/bin/fleet-mcp-server.mjs`,
+    part: "Standalone MCP stdio JSON-RPC 2.0 server",
+    layer: "script",
+    label: DETERMINISTIC,
+    anchors: { symbols: ["executeFleetTool", "FLEET_MCP_TOOLS"] },
+    evidence: [
+      [`fleet-mcp-server.mjs:25-50`, "stdio readline transport for JSON-RPC 2.0 messages"],
+      [`fleet-mcp-server.mjs:60-110`, "dispatches initialize, ping, tools/list, and tools/call"],
+    ],
+    note: "Exposes fleet tools over standard Model Context Protocol stdio transport for any MCP-compatible client.",
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -736,6 +810,10 @@ const SUITE_NOTES = {
   "server/issues-check.test.ts": "Ported stale-WIP sweep fixtures, checker retirement guard (#733)",
   "server/metrics.test.ts": "Rollup arithmetic, candidate derivation, receipt persistence",
   "server/runners.test.ts": "Runner scope merge, normalisation, fleet-status decision table",
+  "server/mcp-tools.test.ts": "MCP tool definitions, schema validation, and dispatch fixtures",
+  "test/fleet-board-check-cli.test.mjs": "Standalone fleet-board-check CLI options and exit codes",
+  "test/fleet-watchdog-cli.test.mjs": "Standalone fleet-watchdog CLI options, recency validation, and diagnostic run",
+  "test/fleet-mcp-server.test.mjs": "MCP stdio protocol handshake, tools/list and execution over stdin/stdout",
   "client/entry.test.ts": "Surface/panel registration and teardown",
   "client/fleet-state-filter-row.test.ts": "Fleet state filter row rendering",
   "client/issue-metrics-bar.test.ts": "Issue metrics bar rendering",

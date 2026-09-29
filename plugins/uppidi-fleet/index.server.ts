@@ -25,6 +25,8 @@ import {
   uppidiToggleRepoMuteContract,
   uppidiFleetSettingsContract,
   uppidiFleetTeardownContract,
+  uppidiFleetToolListContract,
+  uppidiFleetToolExecuteContract,
   uppidiFleetResetStateContract,
 } from "./shared/contracts.js";
 import { handleUppidiIssues } from "./server/issues.js";
@@ -56,6 +58,7 @@ import {
 import { handleUppidiRoleModels, handleUppidiSetRoleModel } from "./server/role-models.js";
 import { handleUppidiRunners } from "./server/runners.js";
 import { handleUppidiFleetMetrics } from "./server/metrics.js";
+import { handleFleetToolList, handleFleetToolExecute } from "./server/mcp-tools.js";
 import { startHookRouter, getActiveHookRouter } from "./server/hook-router.js";
 import { createPluginLogger, registerSettingsRpc } from "paseo-plugin-helper/server";
 import { getUppidiFleetSettingsStorage } from "./server/settings.js";
@@ -107,6 +110,8 @@ export default function contribute(server: PluginServerContext) {
   server.handle(uppidiToggleRepoMuteContract, handleUppidiToggleRepoMute);
   server.handle(uppidiFleetTeardownContract, handleFleetTeardown);
   server.handle(uppidiFleetResetStateContract, handleFleetResetState);
+  server.handle(uppidiFleetToolListContract, handleFleetToolList);
+  server.handle(uppidiFleetToolExecuteContract, handleFleetToolExecute);
 
   const settingsStorage = getUppidiFleetSettingsStorage();
   registerSettingsRpc(server, uppidiFleetSettingsContract, settingsStorage, {

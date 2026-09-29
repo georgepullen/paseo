@@ -1875,7 +1875,7 @@ export class HookRouter {
   }
 
   private getPaseo(): PaseoApi | null {
-    return this.activePaseo ?? (this.server as any).paseo ?? null;
+    return this.activePaseo ?? (this.server as any)?.paseo ?? null;
   }
 
   public readFrontDesk(): FrontDeskRecord | null {

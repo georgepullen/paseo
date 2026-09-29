@@ -98,8 +98,9 @@ import {
   UppidiFleetTreeView,
   UppidiForgeTreeView,
 } from "./tree-view.js";
+import { UppidiFleetToolingView } from "./tooling.js";
 
-export type SurfaceTab = "tree" | "dashboard" | "settings";
+export type SurfaceTab = "tree" | "dashboard" | "tooling" | "settings";
 
 /**
  * Narrows a possibly-partial RPC collection to an array. A truncated or legacy
@@ -143,6 +144,7 @@ const EXTRA_METRIC_PRESETS: Array<{
 const tabs = [
   { id: "tree", label: "Agents & Fleet", shortLabel: "Fleet", icon: "FolderTree" },
   { id: "dashboard", label: "Work Queue", shortLabel: "Queue", icon: "LayoutDashboard" },
+  { id: "tooling", label: "Tooling", shortLabel: "Tools", icon: "Terminal" },
   { id: "settings", label: "Settings", shortLabel: "Settings", icon: "Sliders" },
 ];
 
@@ -1880,6 +1882,8 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
           </Collapsible>
 
         </Stack>
+      ) : activeTab === "tooling" ? (
+        <UppidiFleetToolingView />
       ) : activeTab === "tree" ? (
         <UppidiFleetTreeView
           agentsData={agentsData}

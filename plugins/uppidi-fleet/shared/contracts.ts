@@ -1431,4 +1431,61 @@ export function extractAgentProject(
   return DEFAULT_PROJECT;
 }
 
+// Fleet Tooling Contracts (Issue #738)
+export const UppidiToolPropertySchema = z.object({
+  type: z.string().or(z.array(z.string())),
+  description: z.string().optional(),
+  default: z.unknown().optional(),
+  enum: z.array(z.string()).optional(),
+});
+export type UppidiToolProperty = z.infer<typeof UppidiToolPropertySchema>;
+
+export const UppidiToolInputSchema = z.object({
+  type: z.literal("object"),
+  properties: z.record(z.string(), z.any()),
+  required: z.array(z.string()).optional(),
+});
+export type UppidiToolInput = z.infer<typeof UppidiToolInputSchema>;
+
+export const UppidiToolDefinitionSchema = z.object({
+  name: z.string(),
+  description: z.string(),
+  inputSchema: UppidiToolInputSchema,
+});
+export type UppidiToolDefinition = z.infer<typeof UppidiToolDefinitionSchema>;
+
+export const UppidiFleetToolListOutputSchema = z.object({
+  ok: z.boolean(),
+  tools: z.array(UppidiToolDefinitionSchema).default([]),
+  error: z.string().optional(),
+});
+export type UppidiFleetToolListOutput = z.infer<typeof UppidiFleetToolListOutputSchema>;
+
+export const uppidiFleetToolListContract = defineContract({
+  name: "uppidi-fleet.tool-list",
+  description: "List available fleet tools and their JSON schemas for manual execution",
+  input: z.object({}),
+  output: UppidiFleetToolListOutputSchema,
+});
+
+export const UppidiFleetToolExecuteInputSchema = z.object({
+  toolName: z.string(),
+  arguments: z.record(z.string(), z.unknown()).default({}),
+});
+export type UppidiFleetToolExecuteInput = z.infer<typeof UppidiFleetToolExecuteInputSchema>;
+
+export const UppidiFleetToolExecuteOutputSchema = z.object({
+  ok: z.boolean(),
+  output: z.string().optional(),
+  isError: z.boolean().default(false),
+  error: z.string().optional(),
+});
+export type UppidiFleetToolExecuteOutput = z.infer<typeof UppidiFleetToolExecuteOutputSchema>;
+
+export const uppidiFleetToolExecuteContract = defineContract({
+  name: "uppidi-fleet.tool-execute",
+  description: "Execute a fleet tool (board check or watchdog audit) via schema arguments",
+  input: UppidiFleetToolExecuteInputSchema,
+  output: UppidiFleetToolExecuteOutputSchema,
+});
 
