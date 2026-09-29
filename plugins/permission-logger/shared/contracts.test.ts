@@ -22,6 +22,11 @@ describe("PermissionAuditEntrySchema", () => {
     expect(parsed.decision).toBe("allow");
   });
 
+  it("parses an entry with pending decision", () => {
+    const parsed = PermissionAuditEntrySchema.parse({ ...BASE_ENTRY, decision: "pending" });
+    expect(parsed.decision).toBe("pending");
+  });
+
   it("parses a fully attributed deny entry", () => {
     const parsed = PermissionAuditEntrySchema.parse({
       ...BASE_ENTRY,

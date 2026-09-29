@@ -51,11 +51,20 @@ export class PermissionLogStore {
     return entries;
   }
 
+  readLatest(): PermissionAuditEntry[] {
+    const all = this.readAll();
+    const byId = new Map<string, PermissionAuditEntry>();
+    for (const entry of all) {
+      byId.set(entry.id, entry);
+    }
+    return Array.from(byId.values());
+  }
+
   query(filter: PermissionQueryFilter): { entries: PermissionAuditEntry[]; total: number } {
     const fromMs = filter.from ? Date.parse(filter.from) : NaN;
     const toMs = filter.to ? Date.parse(filter.to) : NaN;
     const search = filter.search?.trim().toLowerCase() ?? "";
-    const matched = this.readAll().filter((entry) => {
+    const matched = this.readLatest().filter((entry) => {
       if (filter.agentId && entry.agentId !== filter.agentId) return false;
       if (filter.model && entry.agentModel !== filter.model) return false;
       if (filter.provider && entry.agentProvider !== filter.provider) return false;
