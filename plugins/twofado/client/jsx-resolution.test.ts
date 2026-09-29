@@ -33,7 +33,6 @@ const SURFACE_FILES = [
   "index.client.tsx",
   "client/approvals.tsx",
   "client/ask.tsx",
-  "client/error-boundary.tsx",
 ];
 
 // Identifiers supplied by the JSX runtime rather than a module binding.

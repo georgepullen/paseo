@@ -11,6 +11,7 @@ import {
   Badge,
   Button,
   Card,
+  CardHeader,
   CodeBlock,
   Collapsible,
   CommandBox,
@@ -32,7 +33,6 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { Easing, Text, View } from "react-native";
-import { ErrorBoundary } from "./error-boundary";
 import { AskItem, type AskSelectionPayload } from "./ask";
 import {
   approvalAck,
@@ -303,26 +303,7 @@ function ApprovalHeaderIconInner(props: PluginButtonIconProps) {
 }
 
 export function ApprovalHeaderIcon(props: PluginButtonIconProps) {
-  const { theme, size } = props;
-  return (
-    <ErrorBoundary
-      label="ApprovalHeaderIcon"
-      // The fallback must not depend on any host-injected SDK binding (the old
-      // fallback rendered `<Icon>`): those ship as `export {}` and are
-      // undefined when the host runtime lacks them — the same environment
-      // that makes the guarded tree throw. Plain react-native elements keep
-      // the fallback itself renderable (#555).
-      fallback={
-        <View style={{ width: size, height: size, alignItems: "center", justifyContent: "center" }}>
-          <Text style={{ color: theme.colors.statusDanger, fontSize: size * 0.6, fontWeight: "700" }}>
-            !
-          </Text>
-        </View>
-      }
-    >
-      <ApprovalHeaderIconInner {...props} />
-    </ErrorBoundary>
-  );
+  return <ApprovalHeaderIconInner {...props} />;
 }
 
 function SectionHeader({ title, count }: { title: string; count?: number }) {
@@ -1305,7 +1286,7 @@ function SettingsTab() {
   return (
     <View style={{ gap: 10 }}>
       <Card variant="flat" style={{ gap: 8 }}>
-        <Card.Header
+        <CardHeader
           title="2fado daemon"
           subtitle="Socket connection to 2fadod"
           icon="Server"
@@ -1345,7 +1326,7 @@ function SettingsTab() {
       </Card>
 
       <Card variant="flat" style={{ gap: 8 }}>
-        <Card.Header
+        <CardHeader
           title="Telegram notifications"
           subtitle="Where approvals are delivered and who can act on them"
           icon="Send"
@@ -1817,7 +1798,7 @@ function ApprovalSurfaceInner({
         }}
       >
         <View style={{ width: "100%", gap: 10 }}>
-          <Card.Header
+          <CardHeader
             title="2fado approvals"
             subtitle="Privileged command gating"
             icon="ShieldCheck"
@@ -1984,36 +1965,5 @@ function ApprovalSurfaceInner({
 }
 
 export function ApprovalSurface(props: PluginSurfaceProps) {
-  const { theme } = props;
-  return (
-    <ErrorBoundary
-      label="ApprovalSurface"
-      // The fallback must not depend on any host-injected SDK binding (Icon,
-      // ModalBody, PluginThemeProvider): those ship as `export {}` and are
-      // undefined when the host runtime lacks them — the same environment
-      // that makes the guarded tree throw. Plain react-native elements keep
-      // the fallback itself renderable (#555).
-      fallback={
-        <View
-          style={{
-            backgroundColor: theme.colors.surface0,
-            borderWidth: 3,
-            borderColor: theme.colors.statusDanger,
-            borderRadius: 8,
-            padding: 16,
-            gap: 6,
-          }}
-        >
-          <Text style={{ color: theme.colors.statusDanger, fontSize: 14, fontWeight: "600" }}>
-            !!! 2fado panel hit a render error
-          </Text>
-          <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12 }}>
-            Details are in the plugin logs. Re-open the panel to retry.
-          </Text>
-        </View>
-      }
-    >
-      <ApprovalSurfaceInner {...props} />
-    </ErrorBoundary>
-  );
+  return <ApprovalSurfaceInner {...props} />;
 }
