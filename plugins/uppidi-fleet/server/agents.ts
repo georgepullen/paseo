@@ -31,6 +31,8 @@ import type {
   UppidiToggleRepoMuteOutput,
   FleetTeardownInput,
   FleetTeardownOutput,
+  FleetResetStateInput,
+  FleetResetStateOutput,
 } from "../shared/contracts.js";
 import {
   extractAgentWorktree,
@@ -619,7 +621,8 @@ export function applyParentProjectInheritance(agents: UppidiAgent[]): void {
 export function getQuotaAlertAgentIds(): Set<string> {
   const ids = new Set<string>();
   try {
-    const alertPath = path.join(os.homedir(), ".paseo", "limit-alerts.json");
+    const paseoDir = process.env.PASEO_DIR || path.join(process.env.HOME || os.homedir(), ".paseo");
+    const alertPath = path.join(paseoDir, "limit-alerts.json");
     if (fs.existsSync(alertPath)) {
       const content = fs.readFileSync(alertPath, "utf-8");
       const parsed = JSON.parse(content);
@@ -641,7 +644,8 @@ export function getQuotaAlertAgentIds(): Set<string> {
 export function getAgentDiskMetadataMap(): Map<string, Partial<RawAgentRecord>> {
   const metaMap = new Map<string, Partial<RawAgentRecord>>();
   try {
-    const agentsDir = path.join(os.homedir(), ".paseo", "agents");
+    const paseoDir = process.env.PASEO_DIR || path.join(process.env.HOME || os.homedir(), ".paseo");
+    const agentsDir = path.join(paseoDir, "agents");
     if (!fs.existsSync(agentsDir)) return metaMap;
 
     const subdirs = fs.readdirSync(agentsDir, { withFileTypes: true }).filter((d) => d.isDirectory());
@@ -1116,6 +1120,227 @@ export async function handleFleetTeardown(
     return {
       ok: false,
       tornDown: { workers: 0, orchestrators: 0, frontdesk: 0 },
+      errors: [err?.message || String(err)],
+      error: err?.message || String(err),
+    };
+  }
+}
+
+/**
+ * Reset fleet state (Issue #764):
+ * Purge persisted/stale cache and status in ~/.cache and plugin storage directory
+ * (board-state, queues), clear in-memory queues if active, and notify registered
+ * orchestrators via paseo send --steer so they do not rely on stale context.
+ */
+export async function handleFleetResetState(
+  input: FleetResetStateInput,
+  context: PluginHandlerContext
+): Promise<FleetResetStateOutput> {
+  const errors: string[] = [];
+  let cacheFiles = 0;
+  let boardStateFiles = 0;
+  let queueFiles = 0;
+  let notifiedOrchestrators = 0;
+
+  try {
+    const home = process.env.HOME ?? os.homedir();
+
+    // 1. Purge ~/.cache/forgejo-board-state*.json and ~/.cache/forgejo-issues/
+    const cacheDir = join(home, ".cache");
+    if (fs.existsSync(cacheDir)) {
+      try {
+        const files = fs.readdirSync(cacheDir);
+        for (const file of files) {
+          if (file.startsWith("forgejo-board-state") && file.endsWith(".json")) {
+            try {
+              fs.unlinkSync(join(cacheDir, file));
+              cacheFiles++;
+            } catch (err: any) {
+              errors.push(`Failed to delete cache file ${file}: ${err?.message || String(err)}`);
+            }
+          }
+        }
+      } catch (err: any) {
+        errors.push(`Failed to read cache dir ${cacheDir}: ${err?.message || String(err)}`);
+      }
+
+      const issuesCacheDir = join(cacheDir, "forgejo-issues");
+      if (fs.existsSync(issuesCacheDir)) {
+        try {
+          const issueFiles = fs.readdirSync(issuesCacheDir);
+          for (const file of issueFiles) {
+            try {
+              fs.unlinkSync(join(issuesCacheDir, file));
+              cacheFiles++;
+            } catch (err: any) {
+              errors.push(`Failed to delete issue cache file ${file}: ${err?.message || String(err)}`);
+            }
+          }
+        } catch (err: any) {
+          errors.push(`Failed to read issue cache dir ${issuesCacheDir}: ${err?.message || String(err)}`);
+        }
+      }
+    }
+
+    // 2. Purge plugin storage directory: board-state and queues
+    const pluginDataDir = join(home, ".paseo", "plugin-data", "xpufx", "uppidi-fleet");
+    const boardStateDir = join(pluginDataDir, "board-state");
+    if (fs.existsSync(boardStateDir)) {
+      try {
+        const files = fs.readdirSync(boardStateDir);
+        for (const file of files) {
+          if (file.endsWith(".json")) {
+            try {
+              fs.unlinkSync(join(boardStateDir, file));
+              boardStateFiles++;
+            } catch (err: any) {
+              errors.push(`Failed to delete board-state file ${file}: ${err?.message || String(err)}`);
+            }
+          }
+        }
+      } catch (err: any) {
+        errors.push(`Failed to read board-state dir ${boardStateDir}: ${err?.message || String(err)}`);
+      }
+    }
+
+    // Also check legacy ~/.paseo/forgejo-hook/ if any
+    const legacyBoardStateDir = join(home, ".paseo", "forgejo-hook", "board-state");
+    if (fs.existsSync(legacyBoardStateDir)) {
+      try {
+        const files = fs.readdirSync(legacyBoardStateDir);
+        for (const file of files) {
+          if (file.endsWith(".json")) {
+            try {
+              fs.unlinkSync(join(legacyBoardStateDir, file));
+              boardStateFiles++;
+            } catch {}
+          }
+        }
+      } catch {}
+    }
+
+    // 3. Clear queues on router and on disk
+    const router = getActiveHookRouter();
+    if (router && typeof (router as any).clearAllQueues === "function") {
+      try {
+        queueFiles += router.clearAllQueues();
+      } catch (err: any) {
+        errors.push(`Failed to clear router queues: ${err?.message || String(err)}`);
+      }
+    } else {
+      const queueDir = process.env.HOOK_QUEUE_DIR ?? join(pluginDataDir, "queues");
+      if (fs.existsSync(queueDir)) {
+        try {
+          const files = fs.readdirSync(queueDir);
+          for (const file of files) {
+            if (file.endsWith(".json")) {
+              try {
+                fs.unlinkSync(join(queueDir, file));
+                queueFiles++;
+              } catch (err: any) {
+                errors.push(`Failed to delete queue file ${file}: ${err?.message || String(err)}`);
+              }
+            }
+          }
+        } catch (err: any) {
+          errors.push(`Failed to read queue dir ${queueDir}: ${err?.message || String(err)}`);
+        }
+      }
+    }
+
+    // 4. Notify registered orchestrators via paseo send --steer
+    if (input.notifyOrchestrators !== false) {
+      const orchestratorIds = new Set<string>();
+
+      // From router if active
+      if (router && typeof (router as any).listOrchestratorAgentIds === "function") {
+        for (const id of router.listOrchestratorAgentIds()) {
+          if (id) orchestratorIds.add(id);
+        }
+      }
+
+      // From plugin data orchestrator registration directory
+      const orchestratorDir = process.env.HOOK_STATE_DIR ?? join(pluginDataDir, "orchestrators");
+      if (fs.existsSync(orchestratorDir)) {
+        try {
+          const files = fs.readdirSync(orchestratorDir);
+          for (const file of files) {
+            if (file.endsWith(".json") && file !== "frontdesk.json") {
+              try {
+                const raw = fs.readFileSync(join(orchestratorDir, file), "utf8");
+                const parsed = JSON.parse(raw);
+                if (parsed && typeof parsed.agentId === "string" && parsed.agentId.trim()) {
+                  orchestratorIds.add(parsed.agentId.trim());
+                }
+              } catch {}
+            }
+          }
+        } catch {}
+      }
+
+      // Also check active Paseo agents to catch any running orchestrator
+      try {
+        const liveAgents = await fetchPaseoAgents(context);
+        for (const a of liveAgents) {
+          if (a.category === "orchestrator" && (a.status === "running" || a.status === "idle")) {
+            orchestratorIds.add(a.id);
+          }
+        }
+      } catch {}
+
+      const resetNotice =
+        "[uppidi-fleet] Fleet state reset: cache, board-state, and event queues have been purged by operator. " +
+        "Stale status has been cleared; please refresh your context and do not rely on previous cached state.";
+
+      for (const orchId of orchestratorIds) {
+        let sent = false;
+        if (router && typeof (router as any).deliverMessage === "function") {
+          try {
+            sent = await router.deliverMessage(orchId, resetNotice, { noWait: true, steer: true });
+          } catch {}
+        }
+        if (!sent) {
+          try {
+            if (context?.paseo?.agents?.ref) {
+              const agentRef = context.paseo.agents.ref(orchId);
+              await agentRef.send(resetNotice, { steer: true } as any);
+              sent = true;
+            } else {
+              await execFileAsync("paseo", ["send", "--no-wait", "--steer", orchId, resetNotice], { timeout: 5000 });
+              sent = true;
+            }
+          } catch (err: any) {
+            errors.push(`Failed to notify orchestrator ${orchId}: ${err?.message || String(err)}`);
+          }
+        }
+        if (sent) {
+          notifiedOrchestrators++;
+        }
+      }
+    }
+
+    appendHookLog(`[info] [fleet-reset] State reset completed: ${cacheFiles} cache, ${boardStateFiles} board-state, ${queueFiles} queues purged; ${notifiedOrchestrators} orchestrator(s) notified.`);
+
+    return {
+      ok: errors.length === 0,
+      cleared: {
+        cacheFiles,
+        boardStateFiles,
+        queueFiles,
+      },
+      notifiedOrchestrators,
+      errors,
+      message: `Reset fleet state: purged ${cacheFiles} cache file(s), ${boardStateFiles} board-state file(s), ${queueFiles} queue file(s); notified ${notifiedOrchestrators} orchestrator(s).`,
+    };
+  } catch (err: any) {
+    return {
+      ok: false,
+      cleared: {
+        cacheFiles,
+        boardStateFiles,
+        queueFiles,
+      },
+      notifiedOrchestrators,
       errors: [err?.message || String(err)],
       error: err?.message || String(err),
     };
