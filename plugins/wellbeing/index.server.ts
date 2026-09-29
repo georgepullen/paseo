@@ -1,45 +1,21 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
-import { PluginStorage, createPluginLogger, registerSettingsRpc } from "paseo-plugin-helper/server";
+import { createPluginLogger } from "paseo-plugin-helper/server";
 import {
-  wellbeingSettingsContract,
   statusRpc,
   toggleBedModeRpc,
   snoozeAlertRpc,
   recordActivityRpc,
-  type WellbeingSettings,
+  DEFAULT_SETTINGS,
   type ActivitySource,
 } from "./shared/contracts.js";
 import { PresenceTracker } from "./server/presence.js";
+import { registerWellbeingServerSettings } from "./server/settings.js";
 
 const log = createPluginLogger("wellbeing");
 
-const DEFAULT_SETTINGS: WellbeingSettings = {
-  workingHours: { start: "09:00", end: "18:00" },
-  windDownTime: "22:30",
-  wakeUpTime: "07:30",
-  bedMode: false,
-  maxSessionContinuousMinutes: 180,
-  idleTimeoutMinutes: 15,
-  fatigueAlertCooldownMinutes: 60,
-  notifyVia2fado: true,
-};
-
 export default function contribute(server: PluginServerContext) {
-  const storage = new PluginStorage<WellbeingSettings>("wellbeing", "settings.json", {
-    defaultData: DEFAULT_SETTINGS,
-    schema: wellbeingSettingsContract.schema,
-  });
-
-  const initialSettings = storage.read() ?? DEFAULT_SETTINGS;
-  const tracker = new PresenceTracker(initialSettings);
-
-  // Register settings RPCs
-  registerSettingsRpc(server, wellbeingSettingsContract, storage, {
-    onUpdate: (next) => {
-      tracker.updateSettings(next);
-      log.info("wellbeing settings updated", { bedMode: next.bedMode, windDown: next.windDownTime });
-    },
-  });
+  const tracker = new PresenceTracker(DEFAULT_SETTINGS);
+  const settingsHandle = registerWellbeingServerSettings(server, tracker, DEFAULT_SETTINGS);
 
   // Register wellbeing RPC handlers
   server.handle(statusRpc, () => {
@@ -111,5 +87,6 @@ export default function contribute(server: PluginServerContext) {
 
   return () => {
     clearInterval(timer);
+    settingsHandle.dispose();
   };
 }

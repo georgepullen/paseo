@@ -1,7 +1,9 @@
 import { z } from "zod";
+import { defineSettings } from "@getpaseo/plugin";
 import { defineContract, defineSettingsContract } from "paseo-plugin-helper/shared";
 
 export const WELLBEING_VERSION = "0.2.1";
+export const WELLBEING_SETTINGS_ID = "wellbeing";
 
 export const CircadianWindowSchema = z.object({
   start: z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/, "HH:MM format required"),
@@ -20,6 +22,17 @@ export const WellbeingSettingsSchema = z.object({
   notifyVia2fado: z.boolean().default(true),
 });
 export type WellbeingSettings = z.infer<typeof WellbeingSettingsSchema>;
+
+export const DEFAULT_SETTINGS: WellbeingSettings = {
+  workingHours: { start: "09:00", end: "18:00" },
+  windDownTime: "22:30",
+  wakeUpTime: "07:30",
+  bedMode: false,
+  maxSessionContinuousMinutes: 180,
+  idleTimeoutMinutes: 15,
+  fatigueAlertCooldownMinutes: 60,
+  notifyVia2fado: true,
+};
 
 export const OperatorPhaseSchema = z.enum([
   "working",
@@ -67,6 +80,13 @@ export const WellbeingStatusSchema = z.object({
   settings: WellbeingSettingsSchema,
 });
 export type WellbeingStatus = z.infer<typeof WellbeingStatusSchema>;
+
+export const wellbeingSettingsDefinition = defineSettings({
+  id: WELLBEING_SETTINGS_ID,
+  scope: "host",
+  version: 1,
+  schema: WellbeingSettingsSchema,
+});
 
 export const wellbeingSettingsContract = defineSettingsContract({
   name: "wellbeing.settings",

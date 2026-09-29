@@ -232,9 +232,9 @@ This is the exact instruction string that agents and orchestrators read from
 
 ## 4. Configuration
 
-Settings are persisted through the standard `paseo-plugin-helper` settings
-contract under the name `wellbeing.settings`, and are readable/writable via three
-RPCs (see [§7.5](#75-wellbeing-settings--settingsget--update--reset)).
+Settings are managed via upstream Paseo 0.9's native `server.registerSettings()`
+handle (`wellbeing` definition, scoped to host), providing automatic `read()` and
+reactive `subscribe()` change notifications directly to `PresenceTracker` (see [§7.5](#75-native-settings-handle--settingswellbeing-rpcs)).
 
 ### 4.1 Settings fields
 
@@ -663,23 +663,24 @@ Snooze fatigue alerts.
 **Side effects:** sets `snoozedUntilTs`, persists state, and (while active)
 suppresses both `extended-stretch` phases and fatigue alerts.
 
-### 7.5 `wellbeing.settings` — `.get` / `.update` / `.reset`
+### 7.5 Native Settings Handle & `settings.wellbeing.*` RPCs
 
-Registered via `registerSettingsRpc` against `wellbeingSettingsContract`
-(name `wellbeing.settings`). Three concrete RPCs are exposed:
+Registered via `server.registerSettings(wellbeingSettingsDefinition)` (ID `wellbeing`).
+Upstream Paseo 0.9 automatically provides native host RPCs (`settings.wellbeing.read`,
+`write`, `reset`) and persists the host configuration document.
 
-| RPC | Input | Output | Behaviour |
-| --- | --- | --- | --- |
-| `wellbeing.settings.get` | `void \| {}` | `WellbeingSettings` | Reads persisted settings. |
-| `wellbeing.settings.update` | Partial `WellbeingSettings` | `WellbeingSettings` | Merges the partial, validates, persists, and calls `tracker.updateSettings`. |
-| `wellbeing.settings.reset` | `void \| {}` | `WellbeingSettings` | Restores schema defaults and calls `tracker.updateSettings`. |
+On the daemon server, `WellbeingSettingsHandle` captures the `PluginSettings` handle
+returned by `registerSettings()`:
+- **Baseline read:** On startup, `handle.read()` reads the initial settings and seeds
+  `tracker.updateSettings()`.
+- **Change subscription:** `handle.subscribe()` listens for changes and updates
+  `PresenceTracker` immediately whenever settings are updated from client surfaces
+  or host settings screens.
+- **Graceful degradation:** If running on Paseo < 0.9 (where `registerSettings` returned
+  `void`), the server degrades cleanly to in-memory defaults without crashing.
 
-On `update`/`reset`, `onUpdate` calls `tracker.updateSettings(next)`, which
-re-seeds `manualBedMode` from `settings.bedMode` **only when no manual override
-exists**. It also logs `wellbeing settings updated`.
-
-> The client surface reads settings from the `wellbeing.status` payload, not from
-> `settings.get`, so the two are always consistent within one status poll.
+> The client surface reads settings from the `wellbeing.status` payload, so the
+> UI and daemon presence calculations are always consistent.
 
 ---
 
@@ -687,7 +688,7 @@ exists**. It also logs `wellbeing settings updated`.
 
 | Path | Contents | Managed by |
 | --- | --- | --- |
-| `~/.paseo/plugin-data/xpufx/wellbeing/settings.json` | User settings (`WellbeingSettings`). | `PluginStorage` |
+| `~/.paseo/plugin-settings/wellbeing/wellbeing.json` | Host user settings (`WellbeingSettings`). | Upstream Paseo `registerSettings` |
 | `~/.paseo/plugin-data/xpufx/wellbeing/wellbeing-state.json` | Presence counters & timestamps (`PresenceStateData`). | `PresenceTracker` (atomic writes) |
 | `~/.config/paseo/wellbeing-state.json` | **Legacy** state; auto-migrated once to the canonical path. | `PresenceTracker` (read-only after migration) |
 
@@ -695,15 +696,17 @@ Source layout:
 
 ```
 plugins/wellbeing/
-├── index.server.ts        # daemon entry: settings storage, RPC handlers, event wiring, heartbeat
+├── index.server.ts        # daemon entry: native settings registration, RPC handlers, event wiring, heartbeat
 ├── index.client.tsx       # client entry: initClientHelpers + sidebar surface registration
 ├── client/
 │   ├── surface.tsx        # WellbeingSurface React component (dashboard + controls)
 │   └── entry.test.ts      # static test: entry injects required host deps
 ├── server/
 │   ├── presence.ts        # PresenceTracker: the deterministic model
-│   └── presence.test.ts   # unit tests: circadian math, streaks, fatigue, bed mode, migration
-├── shared/contracts.ts    # Zod schemas + RPC contract definitions
+│   ├── presence.test.ts   # unit tests: circadian math, streaks, fatigue, bed mode, migration
+│   ├── settings.ts        # WellbeingSettingsHandle: native upstream 0.9 settings handle
+│   └── settings.test.ts   # unit tests: handle initialization, read, and change notification
+├── shared/contracts.ts    # Zod schemas + RPC & settings definition
 ├── paseo-plugin.json      # plugin id + Paseo version requirement
 └── package.json           # workspace package, test/typecheck scripts
 ```
