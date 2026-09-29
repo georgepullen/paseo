@@ -2782,15 +2782,12 @@ export class HookRouter {
   }
 
   public async runBoardSweep(repos?: string[], io?: IssuesCheckIo): Promise<BoardSweepResult> {
-    const targets = Array.from(
-      new Set(
-        (repos ?? this.getEnrolledRepos()).filter((k) => {
-          if (!k || k === "frontdesk") return false;
-          const parts = k.split("/").filter(Boolean);
-          return parts.length >= 2;
-        }),
-      ),
-    );
+    const rawTargets = (repos ?? this.getEnrolledRepos()).filter((k) => {
+      if (!k || k === "frontdesk") return false;
+      const parts = k.split("/").filter(Boolean);
+      return parts.length >= 2;
+    });
+    const targets = Array.from(new Set(rawTargets.map((k) => canonicalRepoKey(k) ?? k)));
     const actionable: Array<{ repo: string; count: number; dispatchable: number }> = [];
     const errors: Array<{ repo: string; error: string }> = [];
     for (const repo of targets) {
