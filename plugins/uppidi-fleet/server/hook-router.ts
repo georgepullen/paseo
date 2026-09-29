@@ -2775,6 +2775,7 @@ export class HookRouter {
     const outcome = await runIssuesCheck({
       hostname,
       repo: ownerRepo,
+      all: true,
       io: io ?? createDefaultIssuesCheckIo(),
     });
     return { repo, ok: true, candidates: outcome.rankedCandidates };

@@ -413,26 +413,19 @@ export function isDispatchableCandidate(labelSet: Set<string>): boolean {
   if (setIntersects(labelSet, ["flag/stop-work", "flag/wont-do", "attention/3-ignore", "attention/2-ignore", "state/4-done"])) {
     return false;
   }
-  // Gated on user
-  if (setIntersects(labelSet, ["attention/1-user", "attention/2-user"])) return false;
+  // Gated on user attention
+  if (setIntersects(labelSet, ["attention/1-user", "attention/2-user", "attention/user"])) return false;
   // Dependency or upstream blocked
   if (setIntersects(labelSet, ["dep/blocked", "upstream/1-blocked"])) return false;
   // Oversized or needs splitting
   if (setIntersects(labelSet, ["size/3-chunk", "linked/0-needs-split"])) return false;
-  // Shaping stages
-  if (setIntersects(labelSet, ["spec/0-needed", "spec/1-checklist"])) return false;
-  // Verification stages (work already completed by worker)
+  // Active WIP (worker already assigned and actively executing)
+  if (labelSet.has("state/1-wip")) return false;
+  // Deliverable verification or review stages (pending orchestrator verification/PR merge)
   if (setIntersects(labelSet, ["state/3-verify", "state/2-review"])) return false;
 
-  // Must be spec/2-approved (or emergency SOS)
-  if (labelSet.has("spec/2-approved") || labelSet.has("priority/0-SOS")) {
-    // Must have agent attention
-    if (["attention/1-agent", "attention/0-agent", "attention/agent", "priority/0-SOS"].some((a) => labelSet.has(a))) {
-      return true;
-    }
-  }
-
-  return false;
+  // Natural autonomous dispatch: Open tickets without user blockers or hard stops
+  return true;
 }
 
 function setIntersects(set: Set<string>, labels: readonly string[]): boolean {
@@ -514,21 +507,12 @@ export function classifyCandidate(
     };
   }
 
-  // Holding for operator approval (checklist written, awaits spec/2-approved)
-  if (labelSet.has("spec/1-checklist")) {
+  // Active WIP
+  if (labelSet.has("state/1-wip")) {
     return {
-      category: "gated_spec",
+      category: "in_progress",
       is_dispatchable: false,
-      reason: "Specification checklist formulated: holding for operator approval (spec/2-approved)",
-    };
-  }
-
-  // Pre-code shaping
-  if (labelSet.has("spec/0-needed")) {
-    return {
-      category: "shaping",
-      is_dispatchable: false,
-      reason: "Pre-code shaping required: Orchestrator must formulate specification & checklist (spec/0-needed)",
+      reason: "Work in progress by worker",
     };
   }
 
@@ -550,12 +534,12 @@ export function classifyCandidate(
     };
   }
 
-  // Orchestrator explicit triage
-  if (labelSet.has("attention/0-orchestrator") || labelSet.has("attention/orchestrator")) {
+  // Pre-code shaping
+  if (labelSet.has("spec/0-needed")) {
     return {
-      category: "orchestrator_triage",
+      category: "shaping",
       is_dispatchable: false,
-      reason: "Requires Orchestrator triage / investigation",
+      reason: "Pre-code shaping required: Orchestrator must formulate specification & checklist (spec/0-needed)",
     };
   }
 
@@ -566,7 +550,16 @@ export function classifyCandidate(
     return {
       category: "dispatchable",
       is_dispatchable: true,
-      reason: `Dispatchable worker task${targetStr} (spec approved, unblocked, ready for autonomous execution - NO APPROVAL NEEDED)`,
+      reason: `Dispatchable task${targetStr} (unblocked, ready for autonomous execution)`,
+    };
+  }
+
+  // Orchestrator explicit triage
+  if (labelSet.has("attention/0-orchestrator") || labelSet.has("attention/orchestrator")) {
+    return {
+      category: "orchestrator_triage",
+      is_dispatchable: false,
+      reason: "Requires Orchestrator triage / investigation",
     };
   }
 
@@ -606,6 +599,7 @@ export function isActionable(labelSet: Set<string>, role: IssuesCheckRole = "orc
   if (labelSet.has("dep/blocked") || labelSet.has("upstream/1-blocked")) return true; // Dependency monitoring
   if (["attention/1-agent", "attention/0-agent", "attention/agent"].some((a) => labelSet.has(a))) return true;
   if (labelSet.has("spec/2-approved")) return true;
+  if (isDispatchableCandidate(labelSet)) return true;
   return false;
 }
 
