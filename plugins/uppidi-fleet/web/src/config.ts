@@ -1,4 +1,4 @@
-export const DEFAULT_DAEMON_HOST = "127.0.0.1:6767";
+export const DEFAULT_DAEMON_HOST = "10.20.30.24:6767";
 export const DEFAULT_HTTP_PORT_FALLBACK = 6767;
 
 function readProcessEnv(name: string): string | undefined {

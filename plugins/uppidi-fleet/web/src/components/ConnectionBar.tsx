@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { DEFAULT_DAEMON_HOST } from "../config.js";
 import type { ConnectionStatus } from "../daemon/connection.js";
 
 interface ConnectionBarProps {
@@ -37,7 +38,7 @@ export function ConnectionBar({ status, host, wsUrl, onConnect, onDisconnect }: 
           className="input"
           value={draft}
           onChange={(event) => setDraft(event.target.value)}
-          placeholder="127.0.0.1:6767"
+          placeholder={DEFAULT_DAEMON_HOST}
           spellCheck={false}
           autoComplete="off"
         />

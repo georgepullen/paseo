@@ -12,8 +12,9 @@ afterEach(() => {
 });
 
 describe("resolveDaemonHost", () => {
-  it("defaults to 127.0.0.1:6767", () => {
-    expect(resolveDaemonHost()).toBe(DEFAULT_DAEMON_HOST);
+  it("defaults to 10.20.30.24:6767", () => {
+    expect(DEFAULT_DAEMON_HOST).toBe("10.20.30.24:6767");
+    expect(resolveDaemonHost()).toBe("10.20.30.24:6767");
   });
 
   it("honours VITE_PASEO_DAEMON_HOST", () => {
@@ -29,7 +30,7 @@ describe("resolveDaemonHost", () => {
 
 describe("resolveDaemonWsUrl", () => {
   it("prefixes bare host:port with ws://", () => {
-    expect(resolveDaemonWsUrl("127.0.0.1:6767")).toBe("ws://127.0.0.1:6767");
+    expect(resolveDaemonWsUrl("10.20.30.24:6767")).toBe("ws://10.20.30.24:6767");
   });
 
   it("passes explicit ws urls through", () => {
@@ -38,20 +39,20 @@ describe("resolveDaemonWsUrl", () => {
 
   it("prefers VITE_PASEO_DAEMON_URL", () => {
     vi.stubEnv("VITE_PASEO_DAEMON_URL", "ws://relay:9999");
-    expect(resolveDaemonWsUrl("127.0.0.1:6767")).toBe("ws://relay:9999");
+    expect(resolveDaemonWsUrl("10.20.30.24:6767")).toBe("ws://relay:9999");
   });
 });
 
 describe("resolveDaemonHttpUrl", () => {
   it("maps ws to http and wss to https", () => {
-    expect(resolveDaemonHttpUrl("127.0.0.1:6767")).toBe("http://127.0.0.1:6767");
+    expect(resolveDaemonHttpUrl("10.20.30.24:6767")).toBe("http://10.20.30.24:6767");
     expect(resolveDaemonHttpUrl("wss://fleet.example/x")).toBe("https://fleet.example/x");
   });
 });
 
 describe("splitHostPort", () => {
   it("splits host and port", () => {
-    expect(splitHostPort("127.0.0.1:6767")).toEqual({ host: "127.0.0.1", port: 6767 });
+    expect(splitHostPort("10.20.30.24:6767")).toEqual({ host: "10.20.30.24", port: 6767 });
   });
 
   it("falls back to the daemon port for bare hosts", () => {
