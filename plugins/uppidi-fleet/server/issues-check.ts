@@ -209,7 +209,8 @@ function labelSet(issue: ForgejoIssue): Set<string | undefined> {
 
 export function cacheFilePath(repo: string): string {
   const slug = repo.replaceAll("/", "_");
-  return join(homedir(), ".cache", `forgejo-board-state-${slug}.json`);
+  const home = process.env.HOME ?? homedir();
+  return join(home, ".paseo", "plugin-data", "xpufx", "uppidi-fleet", "board-state", `${slug}.json`);
 }
 
 /**

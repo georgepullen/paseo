@@ -59,7 +59,11 @@ export function getRouterConfigPath(): string {
     return process.env.FORGE_HOOK_CONFIG;
   }
   const home = process.env.HOME ?? os.homedir();
-  return join(home, ".config", "uppidi-fleet", "router-config.json");
+  const scopedPath = join(home, ".paseo", "plugin-data", "xpufx", "uppidi-fleet", "router-config.json");
+  if (existsSync(scopedPath)) return scopedPath;
+  const legacyPath = join(home, ".config", "uppidi-fleet", "router-config.json");
+  if (existsSync(legacyPath)) return legacyPath;
+  return scopedPath;
 }
 
 export function loadRouterConfig(customPath?: string): RouterConfig {
@@ -1527,9 +1531,10 @@ export class HookRouter {
     }
 
     const home = process.env.HOME ?? os.homedir();
-    this.queueDir = options?.queueDir ?? process.env.HOOK_QUEUE_DIR ?? join(home, ".config", "uppidi-fleet", "queues");
+    const scopedRoot = join(home, ".paseo", "plugin-data", "xpufx", "uppidi-fleet");
+    this.queueDir = options?.queueDir ?? process.env.HOOK_QUEUE_DIR ?? join(scopedRoot, "queues");
     this.stateDir =
-      options?.stateDir ?? process.env.HOOK_STATE_DIR ?? join(home, ".paseo", "forgejo-hook", "orchestrators");
+      options?.stateDir ?? process.env.HOOK_STATE_DIR ?? join(scopedRoot, "orchestrators");
 
     this.coalesceDisable =
       options?.coalesceDisable ??
