@@ -3003,6 +3003,70 @@ export class HookRouter {
     return this.pausedQueues.has(key);
   }
 
+  public clearQueue(key: string): number {
+    let count = 0;
+    const target = this.queueFilePath(key);
+    try {
+      if (existsSync(target)) {
+        unlinkSync(target);
+        count++;
+      }
+    } catch {}
+    this.queues.delete(key);
+    this.busyQueues.delete(key);
+    this.busyAttempts.delete(key);
+    this.draining.delete(key);
+    const timer = this.backoffTimers.get(key);
+    if (timer) {
+      clearTimeout(timer);
+      this.backoffTimers.delete(key);
+    }
+    return count;
+  }
+
+  public clearFrontDesk(): number {
+    let count = 0;
+    const parentDir = dirname(this.stateDir);
+    const candidates = [
+      join(this.stateDir, "frontdesk.json"),
+      join(parentDir, "frontdesk.json"),
+      join(this.queueDir, "frontdesk.json"),
+    ];
+
+    for (const p of candidates) {
+      if (existsSync(p)) {
+        try {
+          unlinkSync(p);
+          count++;
+        } catch {}
+      }
+    }
+
+    count += this.clearQueue("frontdesk");
+    this.coalesceBuffers.delete("frontdesk");
+    this.sosStates.delete("frontdesk");
+    this.log(`[info] Cleared frontdesk registration and queues (${count} state file(s) removed)`);
+    return count;
+  }
+
+  public clearAllOrchestrators(): number {
+    let count = 0;
+    try {
+      if (existsSync(this.stateDir)) {
+        const files = readdirSync(this.stateDir);
+        for (const file of files) {
+          if (!file.endsWith(".json") || file === "frontdesk.json") continue;
+          try {
+            unlinkSync(join(this.stateDir, file));
+            count++;
+          } catch {}
+        }
+      }
+    } catch {}
+    this.log(`[info] Purged all orchestrators (${count} file(s) removed)`);
+    return count;
+  }
+
   public clearAllQueues(): number {
     let count = 0;
     for (const key of this.queues.keys()) {
@@ -3017,7 +3081,7 @@ export class HookRouter {
     try {
       if (existsSync(this.queueDir)) {
         for (const file of readdirSync(this.queueDir)) {
-          if (file.endsWith(".json")) {
+          if (file.endsWith(".json") || file.endsWith(".jsonl")) {
             try {
               unlinkSync(join(this.queueDir, file));
               count++;
@@ -3026,6 +3090,12 @@ export class HookRouter {
         }
       }
     } catch {}
+    for (const timer of this.backoffTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.backoffTimers.clear();
+    this.busyQueues.clear();
+    this.draining.clear();
     this.queues.clear();
     this.busyAttempts.clear();
     this.log(`[info] Purged all queues (${count} file(s) removed)`);

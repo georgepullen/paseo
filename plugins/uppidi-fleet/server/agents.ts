@@ -1085,21 +1085,19 @@ export async function handleFleetTeardown(
   context: PluginHandlerContext
 ): Promise<FleetTeardownOutput> {
   try {
-    const agents = await fetchPaseoAgents(context);
+    const targetSet = new Set(input.targets);
     const targetCategories = new Set(
       input.targets.map((t) => teardownTargetToCategory(t))
     );
 
-    const agentsToTeardown = agents.filter((a) => targetCategories.has(a.category));
-
-    if (agentsToTeardown.length === 0) {
-      return {
-        ok: true,
-        tornDown: { workers: 0, orchestrators: 0, frontdesk: 0 },
-        errors: [],
-        message: "No agents found matching the selected teardown targets",
-      };
+    let agents: UppidiAgent[] = [];
+    try {
+      agents = await fetchPaseoAgents(context);
+    } catch {
+      // If fetching fails, proceed with state cleanup
     }
+
+    const agentsToTeardown = agents.filter((a) => targetCategories.has(a.category));
 
     const tornDown = { workers: 0, orchestrators: 0, frontdesk: 0 };
     const errors: string[] = [];
@@ -1115,13 +1113,167 @@ export async function handleFleetTeardown(
       }
     }
 
+    const router = getActiveHookRouter();
+    const home = process.env.HOME ?? os.homedir();
+    const persistedDir = getPersistedStateDir();
+    const pluginDataDir = join(home, ".paseo", "plugin-data", "xpufx", "uppidi-fleet");
+
+    // Clean up Front Desk state if targeted (#774)
+    if (targetSet.has("frontdesk")) {
+      const fdCandidates = new Set<string>([
+        join(persistedDir, "frontdesk.json"),
+        join(path.dirname(persistedDir), "frontdesk.json"),
+        join(persistedDir, "orchestrators", "frontdesk.json"),
+        join(pluginDataDir, "frontdesk.json"),
+        join(pluginDataDir, "orchestrators", "frontdesk.json"),
+        join(home, ".paseo", "forgejo-hook", "frontdesk.json"),
+        join(home, ".paseo", "forgejo-hook", "orchestrators", "frontdesk.json"),
+      ]);
+      if (router?.stateDir) {
+        fdCandidates.add(join(router.stateDir, "frontdesk.json"));
+        fdCandidates.add(join(path.dirname(router.stateDir), "frontdesk.json"));
+      }
+      if (router?.queueDir) {
+        fdCandidates.add(join(router.queueDir, "frontdesk.json"));
+      }
+
+      for (const file of fdCandidates) {
+        try {
+          if (fs.existsSync(file)) {
+            fs.unlinkSync(file);
+          }
+        } catch (err: any) {
+          errors.push(`Failed to delete frontdesk state file ${file}: ${err?.message || String(err)}`);
+        }
+      }
+
+      if (router) {
+        try {
+          if (typeof (router as any).clearFrontDesk === "function") {
+            (router as any).clearFrontDesk();
+          } else if (typeof (router as any).clearQueue === "function") {
+            (router as any).clearQueue("frontdesk");
+          }
+        } catch (err: any) {
+          errors.push(`Failed to clean up router frontdesk state: ${err?.message || String(err)}`);
+        }
+      }
+    }
+
+    // Clean up Orchestrators state if targeted (#774)
+    if (targetSet.has("orchestrators")) {
+      const orchDirs = new Set<string>([
+        join(persistedDir, "orchestrators"),
+        join(pluginDataDir, "orchestrators"),
+        join(home, ".paseo", "forgejo-hook", "orchestrators"),
+      ]);
+      if (router?.stateDir) {
+        orchDirs.add(router.stateDir);
+      }
+
+      for (const dir of orchDirs) {
+        try {
+          if (fs.existsSync(dir)) {
+            const files = fs.readdirSync(dir);
+            for (const file of files) {
+              if (file.endsWith(".json")) {
+                if (file === "frontdesk.json" && !targetSet.has("frontdesk")) {
+                  continue;
+                }
+                try {
+                  fs.unlinkSync(join(dir, file));
+                } catch (err: any) {
+                  errors.push(`Failed to delete orchestrator file ${file}: ${err?.message || String(err)}`);
+                }
+              }
+            }
+          }
+        } catch (err: any) {
+          errors.push(`Failed to read orchestrators dir ${dir}: ${err?.message || String(err)}`);
+        }
+      }
+
+      if (router) {
+        try {
+          if (typeof (router as any).clearAllOrchestrators === "function") {
+            (router as any).clearAllOrchestrators();
+          }
+        } catch (err: any) {
+          errors.push(`Failed to clear router orchestrator mappings: ${err?.message || String(err)}`);
+        }
+      }
+    }
+
+    // Clean up worker / repo queues if workers is targeted or general teardown (#774)
+    const isGeneralTeardown =
+      targetSet.has("workers") && targetSet.has("orchestrators") && targetSet.has("frontdesk");
+    if (targetSet.has("workers") || isGeneralTeardown) {
+      if (router) {
+        try {
+          if (isGeneralTeardown && typeof (router as any).clearAllQueues === "function") {
+            (router as any).clearAllQueues();
+          } else if (typeof (router as any).clearQueue === "function") {
+            const queueKeys = (router as any).queues
+              ? Array.from(((router as any).queues as Map<string, any>).keys())
+              : [];
+            for (const key of queueKeys) {
+              if (key === "frontdesk" && !targetSet.has("frontdesk")) continue;
+              (router as any).clearQueue(key);
+            }
+          }
+        } catch (err: any) {
+          errors.push(`Failed to clear router worker queues: ${err?.message || String(err)}`);
+        }
+      }
+
+      const queueDirs = new Set<string>([
+        join(pluginDataDir, "queues"),
+        join(home, ".paseo", "forgejo-hook", "queues"),
+      ]);
+      if (process.env.HOOK_QUEUE_DIR) {
+        queueDirs.add(process.env.HOOK_QUEUE_DIR);
+      }
+      if (router?.queueDir) {
+        queueDirs.add(router.queueDir);
+      }
+
+      for (const qDir of queueDirs) {
+        try {
+          if (fs.existsSync(qDir)) {
+            const files = fs.readdirSync(qDir);
+            for (const file of files) {
+              if (file.endsWith(".json") || file.endsWith(".jsonl")) {
+                if (file.startsWith("frontdesk") && !targetSet.has("frontdesk")) {
+                  continue;
+                }
+                try {
+                  fs.unlinkSync(join(qDir, file));
+                } catch (err: any) {
+                  errors.push(`Failed to delete queue file ${file}: ${err?.message || String(err)}`);
+                }
+              }
+            }
+          }
+        } catch (err: any) {
+          errors.push(`Failed to read queue dir ${qDir}: ${err?.message || String(err)}`);
+        }
+      }
+    }
+
     const totalTornDown = tornDown.workers + tornDown.orchestrators + tornDown.frontdesk;
+
+    let message = "";
+    if (totalTornDown === 0 && agentsToTeardown.length === 0) {
+      message = "No agents found matching the selected teardown targets";
+    } else {
+      message = `Torn down ${totalTornDown} agent(s) — ${tornDown.workers} workers, ${tornDown.orchestrators} orchestrators, ${tornDown.frontdesk} frontdesk`;
+    }
 
     return {
       ok: errors.length === 0 || totalTornDown > 0,
       tornDown,
       errors,
-      message: `Torn down ${totalTornDown} agent(s) — ${tornDown.workers} workers, ${tornDown.orchestrators} orchestrators, ${tornDown.frontdesk} frontdesk`,
+      message,
     };
   } catch (err: any) {
     return {

@@ -2746,3 +2746,61 @@ describe("hook-router taxonomy recovery pipeline (#529)", () => {
     assert.equal(delivered.some((d) => d.id === "persisted-agent"), false, "persisted marker suppresses steer");
   });
 });
+
+describe("hook-router teardown cleanup methods (#774)", () => {
+  let tempDir: string;
+  let queueDir: string;
+  let stateDir: string;
+  let router: HookRouter;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "paseo-teardown-router-test-"));
+    queueDir = join(tempDir, "queues");
+    stateDir = join(tempDir, "state");
+    router = new HookRouter(null, { queueDir, stateDir, port: 0 });
+  });
+
+  afterEach(() => {
+    try {
+      rmSync(tempDir, { recursive: true, force: true });
+    } catch {}
+  });
+
+  it("clearFrontDesk unlinks frontdesk state files and clears frontdesk queue", () => {
+    router.writeFrontDesk("fd-test-agent", "operator");
+    router.enqueue("frontdesk", "queued fd msg");
+    assert.equal(router.readFrontDesk()?.agentId, "fd-test-agent");
+    assert.equal(router.getQueue("frontdesk").length, 1);
+
+    const cleared = router.clearFrontDesk();
+    assert.ok(cleared >= 1);
+    assert.equal(router.readFrontDesk(), null);
+    assert.equal(router.getQueue("frontdesk").length, 0);
+  });
+
+  it("clearAllOrchestrators unlinks all orchestrator files but preserves frontdesk", () => {
+    router.writeOrchestrator("repo-a", "agent-a");
+    router.writeOrchestrator("repo-b", "agent-b");
+    router.writeFrontDesk("fd-keep", "operator");
+
+    assert.equal(router.listOrchestratorRecords().length, 2);
+
+    const cleared = router.clearAllOrchestrators();
+    assert.equal(cleared, 2);
+    assert.equal(router.listOrchestratorRecords().length, 0);
+    assert.equal(router.readOrchestrator("repo-a"), null);
+    assert.equal(router.readOrchestrator("repo-b"), null);
+    assert.equal(router.readFrontDesk()?.agentId, "fd-keep");
+  });
+
+  it("clearQueue removes in-memory queue, timers, and persisted queue file", () => {
+    router.enqueue("test-repo", "item 1");
+    router.enqueue("test-repo", "item 2");
+    assert.equal(router.getQueue("test-repo").length, 2);
+
+    const cleared = router.clearQueue("test-repo");
+    assert.ok(cleared >= 1);
+    assert.equal(router.getQueue("test-repo").length, 0);
+  });
+});
+

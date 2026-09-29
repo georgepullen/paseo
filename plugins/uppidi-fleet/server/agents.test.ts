@@ -1,4 +1,4 @@
-import { describe, it } from "node:test";
+import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -30,7 +30,11 @@ import {
   spawnPaseoAgent,
   handleUppidiFrontDeskActivity,
   handleUppidiFrontDeskPrompt,
+  handleFleetTeardown,
+  getPersistedStateDir,
+  resolveRegisteredFrontDeskAgentId,
 } from "./agents.js";
+import { HookRouter, setActiveHookRouter } from "./hook-router.js";
 import { DEFAULT_PROJECT } from "../shared/contracts.js";
 
 describe("authoritative agent project resolution (#530)", () => {
@@ -886,3 +890,195 @@ describe("two-tier spawn authority guard (#573)", () => {
     });
   });
 });
+
+describe("Fleet teardown state cleanup (#774)", () => {
+  let tmpDir: string;
+  let prevHookStateDir: string | undefined;
+  let prevHookQueueDir: string | undefined;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "uppidi-fleet-teardown-test-"));
+    prevHookStateDir = process.env.HOOK_STATE_DIR;
+    prevHookQueueDir = process.env.HOOK_QUEUE_DIR;
+    process.env.HOOK_STATE_DIR = tmpDir;
+    process.env.HOOK_QUEUE_DIR = path.join(tmpDir, "queues");
+    setExecFileAsyncForTest(async () => ({ stdout: "[]", stderr: "" }));
+  });
+
+  afterEach(() => {
+    setExecFileAsyncForTest(null);
+    setActiveHookRouter(null);
+    if (prevHookStateDir !== undefined) process.env.HOOK_STATE_DIR = prevHookStateDir;
+    else delete process.env.HOOK_STATE_DIR;
+    if (prevHookQueueDir !== undefined) process.env.HOOK_QUEUE_DIR = prevHookQueueDir;
+    else delete process.env.HOOK_QUEUE_DIR;
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch {}
+  });
+
+  it("deletes frontdesk.json and clears active router when frontdesk is targeted", async () => {
+    const fdFile = path.join(tmpDir, "frontdesk.json");
+    const orchDir = path.join(tmpDir, "orchestrators");
+    fs.mkdirSync(orchDir, { recursive: true });
+    const repoFile = path.join(orchDir, "repo.json");
+
+    fs.writeFileSync(fdFile, JSON.stringify({ agentId: "agent-fd-dead" }), "utf8");
+    fs.writeFileSync(repoFile, JSON.stringify({ agentId: "agent-orch-live", key: "repo" }), "utf8");
+
+    const router = new HookRouter(null, {
+      stateDir: tmpDir,
+      queueDir: path.join(tmpDir, "queues"),
+      port: 0,
+    });
+    router.writeFrontDesk("agent-fd-dead");
+    router.enqueue("frontdesk", "queued message");
+    setActiveHookRouter(router);
+
+    assert.equal(resolveRegisteredFrontDeskAgentId(), "agent-fd-dead");
+    assert.equal(fs.existsSync(fdFile), true);
+    assert.equal(fs.existsSync(repoFile), true);
+
+    const mockContext = {
+      paseo: {
+        agents: {
+          list: async () => ({ entries: [] }),
+          ref: () => ({ archive: async () => ({ ok: true }) }),
+        },
+      },
+    } as any;
+
+    const res = await handleFleetTeardown(
+      { targets: ["frontdesk"], confirm: true },
+      mockContext
+    );
+
+    assert.equal(res.ok, true);
+    assert.equal(fs.existsSync(fdFile), false, "frontdesk.json must be unlinked");
+    assert.equal(resolveRegisteredFrontDeskAgentId(), null, "Front Desk agent ID must resolve to null");
+    assert.equal(router.readFrontDesk(), null, "active router frontdesk registration must be cleared");
+    assert.equal(router.getQueue("frontdesk").length, 0, "active router frontdesk queue must be cleared");
+    assert.equal(fs.existsSync(repoFile), true, "orchestrator state file must be preserved when not targeted");
+  });
+
+  it("deletes orchestrators/*.json and clears active router orchestrators when targeted", async () => {
+    const fdFile = path.join(tmpDir, "frontdesk.json");
+    const orchDir = path.join(tmpDir, "orchestrators");
+    fs.mkdirSync(orchDir, { recursive: true });
+    const repoA = path.join(orchDir, "repo-a.json");
+    const repoB = path.join(orchDir, "repo-b.json");
+
+    fs.writeFileSync(fdFile, JSON.stringify({ agentId: "agent-fd-keep" }), "utf8");
+    fs.writeFileSync(repoA, JSON.stringify({ agentId: "agent-orch-a", key: "repo-a" }), "utf8");
+    fs.writeFileSync(repoB, JSON.stringify({ agentId: "agent-orch-b", key: "repo-b" }), "utf8");
+
+    const router = new HookRouter(null, {
+      stateDir: orchDir,
+      queueDir: path.join(tmpDir, "queues"),
+      port: 0,
+    });
+    router.writeOrchestrator("repo-a", "agent-orch-a");
+    router.writeOrchestrator("repo-b", "agent-orch-b");
+    setActiveHookRouter(router);
+
+    assert.equal(router.listOrchestratorRecords().length, 2);
+
+    const mockContext = {
+      paseo: {
+        agents: {
+          list: async () => ({ entries: [] }),
+          ref: () => ({ archive: async () => ({ ok: true }) }),
+        },
+      },
+    } as any;
+
+    const res = await handleFleetTeardown(
+      { targets: ["orchestrators"], confirm: true },
+      mockContext
+    );
+
+    assert.equal(res.ok, true);
+    assert.equal(fs.existsSync(repoA), false, "repo-a.json must be unlinked");
+    assert.equal(fs.existsSync(repoB), false, "repo-b.json must be unlinked");
+    assert.equal(router.listOrchestratorRecords().length, 0, "active router orchestrators must be cleared");
+    assert.equal(fs.existsSync(fdFile), true, "frontdesk.json must be preserved when not targeted");
+  });
+
+  it("clears worker queues when workers or all targets are targeted", async () => {
+    const queueDir = path.join(tmpDir, "queues");
+    fs.mkdirSync(queueDir, { recursive: true });
+    const workerQ = path.join(queueDir, "worker-queue.json");
+    fs.writeFileSync(workerQ, JSON.stringify([{ id: "w1" }]), "utf8");
+
+    const router = new HookRouter(null, {
+      stateDir: tmpDir,
+      queueDir,
+      port: 0,
+    });
+    router.enqueue("worker-task", "job 1");
+    setActiveHookRouter(router);
+
+    const mockContext = {
+      paseo: {
+        agents: {
+          list: async () => ({ entries: [] }),
+          ref: () => ({ archive: async () => ({ ok: true }) }),
+        },
+      },
+    } as any;
+
+    const res = await handleFleetTeardown(
+      { targets: ["workers"], confirm: true },
+      mockContext
+    );
+
+    assert.equal(res.ok, true);
+    assert.equal(fs.existsSync(workerQ), false, "worker queue file must be unlinked");
+    assert.equal(router.getQueue("worker-task").length, 0, "router worker queue must be cleared");
+  });
+
+  it("archives matching live agents and cleans state files on general teardown", async () => {
+    const fdFile = path.join(tmpDir, "frontdesk.json");
+    const orchDir = path.join(tmpDir, "orchestrators");
+    fs.mkdirSync(orchDir, { recursive: true });
+    const repoFile = path.join(orchDir, "repo.json");
+
+    fs.writeFileSync(fdFile, JSON.stringify({ agentId: "agent-fd" }), "utf8");
+    fs.writeFileSync(repoFile, JSON.stringify({ agentId: "agent-orch" }), "utf8");
+
+    const archivedAgents: string[] = [];
+    const mockContext = {
+      paseo: {
+        agents: {
+          list: async () => ({
+            entries: [
+              { id: "agent-fd", name: "Front Desk", labels: { role: "front-desk" }, status: "idle" },
+              { id: "agent-orch", name: "Orchestrator", labels: { role: "orchestrator" }, status: "idle" },
+              { id: "agent-worker", name: "Worker", labels: { role: "worker" }, status: "idle" },
+            ],
+          }),
+          ref: (id: string) => ({
+            archive: async () => {
+              archivedAgents.push(id);
+              return { ok: true };
+            },
+          }),
+        },
+      },
+    } as any;
+
+    const res = await handleFleetTeardown(
+      { targets: ["frontdesk", "orchestrators", "workers"], confirm: true },
+      mockContext
+    );
+
+    assert.equal(res.ok, true);
+    assert.equal(res.tornDown.frontdesk, 1);
+    assert.equal(res.tornDown.orchestrators, 1);
+    assert.equal(res.tornDown.workers, 1);
+    assert.deepEqual(archivedAgents.sort(), ["agent-fd", "agent-orch", "agent-worker"].sort());
+    assert.equal(fs.existsSync(fdFile), false);
+    assert.equal(fs.existsSync(repoFile), false);
+  });
+});
+
