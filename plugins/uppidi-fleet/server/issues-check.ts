@@ -3,7 +3,7 @@
 // The Python original was the plugin's only hard runtime dependency: the board
 // sweep exec'd that script from the operator's ~/bin every 15 minutes because
 // it could not run in the daemon's node context. This module moves the logic
-// into the plugin. `fgjx` remains the Forgejo transport (operator-provided,
+// into the plugin. `teax` remains the Forgejo transport (operator-provided,
 // same as before); only the Python interpreter dependency is gone.
 //
 // Parity with the Python original is proved, not assumed: the ported regression
@@ -185,7 +185,7 @@ export function boardIdentityConfig(env: Record<string, string | undefined> = pr
 /**
  * Transport failure of the issues query. Divergence from the Python original
  * (recorded in docs/issues-check-parity.md): the script treated a failing
- * `fgjx` call as an empty board and exited 0 silently, which is exactly the
+ * `teax` call as an empty board and exited 0 silently, which is exactly the
  * silent degradation #733 removes. Here the failure propagates to the caller.
  */
 export class IssuesCheckTransportError extends Error {
@@ -321,7 +321,7 @@ export async function recoverStaleWipIssue(
       STALE_WIP_REMINDER_MARKER;
     const posted = await io.runStaleWipCommand(
       [
-        "fgjx",
+        "teax",
         "api",
         "-X",
         "POST",
@@ -338,7 +338,7 @@ export async function recoverStaleWipIssue(
     }
   }
   const recovered = await io.runStaleWipCommand([
-    "fgjx",
+    "teax",
     "issue",
     "edit",
     String(number),
@@ -625,10 +625,10 @@ export interface IssuesCheckIo {
   saveCache(state: Record<string, IssueSignature>, repo: string): Promise<void>;
 }
 
-/** One fgjx invocation; mirrors the Python `run_cmd` contract (stdout only). */
-function fgjxRun(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+/** One teax invocation; mirrors the Python `run_cmd` contract (stdout only). */
+function teaxRun(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve) => {
-    const child = spawn("fgjx", args, { stdio: ["ignore", "pipe", "pipe"] });
+    const child = spawn("teax", args, { stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
     child.stdout?.on("data", (chunk) => {
@@ -656,7 +656,7 @@ function parseJsonList<T>(stdout: string): T[] | null {
 }
 
 /**
- * Default IO: `fgjx` as the Forgejo transport and `~/.cache` for board state —
+ * Default IO: `teax` as the Forgejo transport and `~/.cache` for board state —
  * the same plumbing the Python original used, minus the Python interpreter.
  * Unlike the original, a failing issues query is an error, not an empty board:
  * that conflation was the silent degradation #733 removes.
@@ -664,7 +664,7 @@ function parseJsonList<T>(stdout: string): T[] | null {
 export function createDefaultIssuesCheckIo(): IssuesCheckIo {
   return {
     async getOpenIssues(hostname, repo) {
-      const res = await fgjxRun([
+      const res = await teaxRun([
         "api",
         `repos/${repo}/issues?state=open&sort=updated&order=desc`,
         "--hostname",
@@ -673,14 +673,14 @@ export function createDefaultIssuesCheckIo(): IssuesCheckIo {
       if (res.code !== 0) {
         return {
           ok: false,
-          error: `fgjx issues query failed (rc=${res.code}): ${res.stderr.trim() || "no output"}`,
+          error: `teax issues query failed (rc=${res.code}): ${res.stderr.trim() || "no output"}`,
         };
       }
       const out = res.stdout.trim();
       if (!out) return { ok: true, issues: [] };
       const issues = parseJsonList<ForgejoIssue>(out);
       if (!issues) {
-        return { ok: false, error: "fgjx issues query returned non-list output" };
+        return { ok: false, error: "teax issues query returned non-list output" };
       }
       return { ok: true, issues };
     },
@@ -688,7 +688,7 @@ export function createDefaultIssuesCheckIo(): IssuesCheckIo {
     // Comment reads stay best-effort ([] on failure), as in the original:
     // they only gate feedback detection, never the whole run.
     async getLatestComments(hostname, repo, issueNumber, count = 3) {
-      const res = await fgjxRun(["api", `repos/${repo}/issues/${issueNumber}/comments`, "--hostname", hostname]);
+      const res = await teaxRun(["api", `repos/${repo}/issues/${issueNumber}/comments`, "--hostname", hostname]);
       if (res.code !== 0) return [];
       const out = res.stdout.trim();
       if (!out) return [];
@@ -697,7 +697,7 @@ export function createDefaultIssuesCheckIo(): IssuesCheckIo {
     },
 
     async getIssueComments(hostname, repo, issueNumber) {
-      const res = await fgjxRun(["api", `repos/${repo}/issues/${issueNumber}/comments`, "--hostname", hostname]);
+      const res = await teaxRun(["api", `repos/${repo}/issues/${issueNumber}/comments`, "--hostname", hostname]);
       if (res.code !== 0) return [];
       const out = res.stdout.trim();
       if (!out) return [];

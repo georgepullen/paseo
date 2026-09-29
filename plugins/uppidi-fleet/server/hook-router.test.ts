@@ -2180,14 +2180,14 @@ describe("hook-router HTTP handoff, prune, and board sweep routes (#458)", () =>
   it("board sweep reports a failed repo check loudly instead of a silent ok:false (#733)", async () => {
     const result = await router.runBoardSweep(
       ["forge.test/xpufx-org/paseo"],
-      failingBoardIo("fgjx issues query failed (rc=7): boom"),
+      failingBoardIo("teax issues query failed (rc=7): boom"),
     );
     assert.equal(result.ok, true);
     assert.equal(result.swept, 1);
     assert.equal(result.actionable.length, 0);
     assert.equal(result.errors?.length, 1);
     assert.equal(result.errors?.[0].repo, "forge.test/xpufx-org/paseo");
-    assert.match(result.errors?.[0].error ?? "", /fgjx issues query failed/);
+    assert.match(result.errors?.[0].error ?? "", /teax issues query failed/);
     assert.ok(
       getHookLogs().some((line) => line.includes("[error] board check failed for forge.test/xpufx-org/paseo")),
     );
@@ -2207,7 +2207,7 @@ describe("hook-router HTTP handoff, prune, and board sweep routes (#458)", () =>
       process.env.PATH = `${binDir}:${prevPath ?? ""}`;
       const result = await router.runBoardSweep(
         ["forge.test/xpufx-org/paseo"],
-        failingBoardIo("fgjx issues query failed (rc=127): not found"),
+        failingBoardIo("teax issues query failed (rc=127): not found"),
       );
       assert.equal(result.notified, 1);
       const sent = readFileSync(sendLog, "utf8");
