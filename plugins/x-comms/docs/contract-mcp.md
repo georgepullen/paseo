@@ -1,20 +1,42 @@
 # x-comms MCP server — features contract
 
-Derived from `plugins/x-comms/mcp/paseo-x-comms.mjs` as it stands, not from what
-it was designed to do. Every row below was read out of the source named in its
-*Where* cell. Where the shipped docs and the code disagree, the code wins and
-the disagreement is recorded in [`contract-drift.md`](contract-drift.md).
+Derived from `plugins/x-comms/mcp/paseo-x-comms.mjs` as it stands, updated with
+the post-0.8 / 0.10 modern Paseo architecture and the Zero-Registry mandate
+(#706). Every row below was read out of the source named in its *Where* cell.
+Where the shipped docs and the code disagree, the code wins and the disagreement
+is recorded in [`contract-drift.md`](contract-drift.md).
 
+The companion evolution specification detailing pre-0.8 obsoletions and modern
+post-0.8/0.10 capabilities is [`contract-evolution.md`](contract-evolution.md).
 The companion contract for the plugin that embeds and injects this server is
 [`contract-plugin.md`](contract-plugin.md).
+
+### Post-0.8 / 0.10 Overhaul & Zero-Registry Respec
+
+Under operator directive for #706 (*"no registry dependency. QUICK!"*), the MCP
+server is respecified to operate with **zero registry dependency**:
+* **Direct SDK & E2EE Relay**: Direct in-process `@getpaseo/client` `DaemonClient`
+  with `DaemonClientRelayE2eeTransport` replaces CLI subprocess shellouts
+  (`execFile("paseo", [...])`).
+* **Zero Registry Dependency**: Static `registry.json` file writes are replaced by
+  self-contained pairing URLs (`https://app.paseo.sh/#offer=...`) and direct
+  in-memory peer sessions.
+* **Sanitized ACP Identifiers**: Server identifiers use sanitized underscore scheme
+  `x-comms_<serverId>` (never dotted `x-comms.<serverId>`), preventing ACP `-32602`
+  errors during `session/new`.
+* **Reactive Event Streams & Direct Permissions**: Polling loops and CLI permission
+  probes are replaced by native WebSocket event subscriptions and `respondToPermission`.
 
 ## What this process is
 
 A single-file, dependency-light Node ≥18 stdio MCP server. It is a **client** of
-Paseo daemons: it never runs a daemon, and it only talks to agents. Every daemon
-interaction is an `execFile("paseo", [...])` shell-out, so `--host` is an opaque
-string that Paseo classifies: a value containing `#offer=` is a relay connection
-(E2EE), anything else is a direct host target.
+Paseo daemons: it never runs a daemon, and it only talks to agents.
+
+* **Pre-0.8 Legacy**: Used `execFile("paseo", [...])` CLI shellouts and read/wrote
+  `~/.paseo/paseo-x-comms/registry.json`.
+* **Post-0.8 / 0.10 Modern**: Connects directly via `@getpaseo/client` `DaemonClient`.
+  For relay offers (`#offer=...`), it wraps the connection in `DaemonClientRelayE2eeTransport`
+  (`@getpaseo/relay/e2ee`) for authenticated, end-to-end encrypted messaging without CLI overhead.
 
 It ships two ways:
 
@@ -83,6 +105,9 @@ Three things a caller must know:
 * **`source` is `"registry"` or `"configured-host"`**, and configured hosts
   override nothing: the merge is `{ ...configured, ...manual }`, so a manual entry
   with the same name wins.
+* **Zero-Registry Respec (Post-0.8 / 0.10)**: Under the zero-registry mandate (#706),
+  this tool transitions from listing static disk entries to listing active authenticated
+  peer sessions established via direct pairing offers (`#offer=...`).
 
 ### 1.2 `x_comms_add_daemon`
 
@@ -93,6 +118,11 @@ Three things a caller must know:
   duplicate check. An existing name is **silently overwritten**. A direct
   `tcp://…` or relay offer is stored verbatim.
 * **Depends on** — fs.
+* **Zero-Registry Respec (Post-0.8 / 0.10)**: Deprecated as a file-writing operation.
+  In modern zero-registry operation, peer daemons do not need to be pre-registered
+  into a local file; agents pass self-contained pairing URLs (`https://app.paseo.sh/#offer=...`)
+  directly to `x_comms_send`, `x_comms_inspect`, etc. This tool is preserved as an in-memory
+  session aliasing shim for backward compatibility.
 
 This is the tool-facing twin of the plugin's `daemon.add` RPC, and it is
 **materially weaker**: the plugin validates the name charset, rejects duplicates,
@@ -107,65 +137,88 @@ entry is invalid. The MCP write path does none of that.
   `~/.paseo/hosts.json`, a distinct error saying so explicitly: the daemon is
   managed via configured hosts and cannot be removed from here.
 * **Depends on** — fs.
+* **Zero-Registry Respec (Post-0.8 / 0.10)**: Deprecated file mutation shim. Under
+  zero-registry architecture, evicts the peer session from the active in-memory connection pool.
 
 ### 1.4 `x_comms_list_agents`
 
-* **Does** — `paseo ls --host <target> --json`.
-* **I/O** — in `{ daemon }` → the CLI's JSON, verbatim.
-* **Fails** — an unknown alias throws the unknown-daemon diagnostic **before** any
-  Paseo attempt. A transport failure throws the redacted first line of stderr.
+* **Does** — lists agents on the target daemon.
+  * *Legacy pre-0.8*: `execFile("paseo", ["ls", "--host", target, "--json"])`.
+  * *Post-0.8 / 0.10*: Direct SDK query via `DaemonClient.fetchAgents()` or `observeAgents()`
+    over `DaemonClientRelayE2eeTransport`.
+* **I/O** — in `{ daemon }` → structured agent list.
+* **Fails** — an unknown alias or malformed pairing offer throws before dialing.
+  A transport failure returns typed error codes without child process exit noise.
 * **Depends on** — peer.
 
 ### 1.5 `x_comms_inspect`
 
-* **Does** — `paseo inspect <agentId> --host <target> --json`.
-* **I/O** — in `{ daemon, agentId }` → the CLI's JSON, verbatim.
+* **Does** — inspects target agent metadata and status.
+  * *Legacy pre-0.8*: `execFile("paseo", ["inspect", agentId, "--host", target, "--json"])`.
+  * *Post-0.8 / 0.10*: Direct SDK call `DaemonClient.inspectAgent(agentId)` over E2EE channel.
+* **I/O** — in `{ daemon, agentId }` → structured inspection record.
 * **Fails** — as above.
 * **Depends on** — peer.
 
 ### 1.6 `x_comms_send`
 
 * **Does** — the whole send contract. Detailed in [§3](#3-the-send-path).
-* **I/O** — in `{ daemon, agentId, prompt, fromAgentId?, fromAgentName?, messageId?, notifyOnFinish? }` → on dispatch, the CLI's own JSON payload; on queue, a synthesized `{ delivery: "queued", daemon, agentId, reason, queueDepth, expiresAt, messageId }`; on refusal, `{ error, delivery: "dropped", daemon, agentId }`.
+  * *Legacy pre-0.8*: Shelled out to `execFile("paseo", ["send", ...])`. Lacked support
+    for `--message-id` and `--no-wait` CLI flags.
+  * *Post-0.8 / 0.10*: Dispatches directly via `@getpaseo/client` `DaemonClient.sendAgentPrompt()`.
+    Natively supports idempotency `messageId`, returns typed delivery acknowledgments, and
+    eliminates child process spawning overhead.
+* **I/O** — in `{ daemon, agentId, prompt, fromAgentId?, fromAgentName?, messageId?, notifyOnFinish? }` → on dispatch, the daemon's own JSON payload; on queue, a synthesized `{ delivery: "queued", daemon, agentId, reason, queueDepth, expiresAt, messageId }`; on refusal, `{ error, delivery: "dropped", daemon, agentId }`.
 * **Fails** — `isError` for an unknown alias, a self-message, a full queue, or a
   transport failure.
 * **Depends on** — peer + fs.
 
 ### 1.7 `x_comms_logs`
 
-* **Does** — `paseo logs <agentId> --host <target> --json`.
-* **I/O** — in `{ daemon, agentId }` → the CLI's JSON, verbatim.
+* **Does** — fetches agent activity logs.
+  * *Legacy pre-0.8*: `execFile("paseo", ["logs", agentId, "--host", target, "--json"])`.
+  * *Post-0.8 / 0.10*: Streams logs via `DaemonClient.subscribeAgentTimeline()` or fetches history via SDK.
+* **I/O** — in `{ daemon, agentId }` → structured log records.
 * **Fails** — as `list_agents`.
 * **Depends on** — peer.
 
 ### 1.8 `x_comms_wait`
 
-* **Does** — `paseo wait <agentId> [--timeout N] --host <target> --json`.
-* **I/O** — in `{ daemon, agentId, timeoutSeconds? }` → `{ status: "idle" | "permission" | "timeout" | … }` as the CLI reports it.
+* **Does** — waits for target agent to complete its current turn.
+  * *Legacy pre-0.8*: `execFile("paseo", ["wait", agentId, "--host", target, "--json"])`.
+  * *Post-0.8 / 0.10*: Replaces polling with reactive WebSocket subscription (`DaemonClient.observeEvents()`),
+    waking immediately upon turn completion (`agent.turn_ended`).
+* **I/O** — in `{ daemon, agentId, timeoutSeconds? }` → `{ status: "idle" | "permission" | "timeout" | … }`.
 * **Fails** — an unknown alias throws. A remote `permission` status is a normal
   return, not an error.
 * **Depends on** — peer.
 
-`timeoutSeconds` maps to the CLI's `--timeout` and is passed through unclamped
+`timeoutSeconds` maps to the timeout and is passed through unclamped
 beyond `z.number().int().positive()`.
 
 ### 1.9 `x_comms_list_permissions`
 
-* **Does** — `paseo permit ls --host <target> --json`.
-* **I/O** — in `{ daemon }` → the CLI's JSON, verbatim.
+* **Does** — lists pending tool approval requests for target daemon.
+  * *Legacy pre-0.8*: `execFile("paseo", ["permit", "ls", "--host", target, "--json"])`.
+  * *Post-0.8 / 0.10*: Queries Paseo's native permission protocol hook via `DaemonClient.listPendingPermissions()`.
+* **I/O** — in `{ daemon }` → structured list of pending requests (`{ requestId, agentId, tool, parameters }`).
 * **Fails / Depends on** — as `list_agents` / peer.
 
 ### 1.10 `x_comms_allow_permission`
 
-* **Does** — `paseo permit allow <agentId> [reqId] [--all] [--input <json>] --host <target> --json`.
-* **I/O** — in `{ daemon, agentId, reqId?, all?, input? }` → the CLI's JSON.
+* **Does** — grants permission for an agent's pending tool call.
+  * *Legacy pre-0.8*: `execFile("paseo", ["permit", "allow", ...])`.
+  * *Post-0.8 / 0.10*: Calls Paseo protocol method `DaemonClient.respondToPermission(agentId, reqId, { decision: "allow", input })`.
+* **I/O** — in `{ daemon, agentId, reqId?, all?, input? }` → protocol response confirmation.
 * **Fails** — throws `provide reqId or all=true` when neither is given.
 * **Depends on** — peer.
 
 ### 1.11 `x_comms_deny_permission`
 
-* **Does** — `paseo permit deny <agentId> [reqId] [--all] [--message M] [--interrupt] --host <target> --json`.
-* **I/O** — in `{ daemon, agentId, reqId?, all?, message?, interrupt? }` → the CLI's JSON.
+* **Does** — denies permission for an agent's pending tool call.
+  * *Legacy pre-0.8*: `execFile("paseo", ["permit", "deny", ...])`.
+  * *Post-0.8 / 0.10*: Calls Paseo protocol method `DaemonClient.respondToPermission(agentId, reqId, { decision: "deny", message })`.
+* **I/O** — in `{ daemon, agentId, reqId?, all?, message?, interrupt? }` → protocol response confirmation.
 * **Fails** — throws `provide reqId or all=true` when neither is given.
 * **Depends on** — peer.
 
@@ -440,11 +493,15 @@ Two ordering details that are not in the shipped docs:
 
 * **Depends on** — local.
 
-### C12 · Paseo shell-out with cancellation
+### C12 · Paseo shell-out with cancellation (Pre-0.8 Obsolete Pattern)
 
 `runPaseo()` wraps `execFile` with a per-call timeout (default **120 000 ms**,
 `PASEO_X_COMMS_TIMEOUT_MS`), a 16 MB `maxBuffer`, and MCP cancellation wiring.
 
+* **Pre-0.8 Obsolete Pattern**: Shelling out to the `paseo` CLI is being replaced
+  in post-0.8/0.10 by direct `@getpaseo/client` `DaemonClient` invocations. SDK-native
+  cancellation passes `AbortSignal` directly through the WebSocket/E2EE transport,
+  eliminating child process spawning, `SIGTERM` kills, and JSON unmarshaling overhead.
 * On success: stdout is `JSON.parse`d, falling back to the trimmed string when it
   is not JSON — so a tool can return either shape.
 * On abort: the child is killed with `SIGTERM` and the promise rejects with

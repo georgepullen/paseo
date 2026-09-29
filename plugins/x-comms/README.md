@@ -201,6 +201,7 @@ and what to use if you need a real guarantee are in
 ├── skills/
 │   └── recipient-envelope/SKILL.md # Distributable form of the recipient instructions
 ├── docs/
+│   ├── contract-evolution.md # Post-0.8 overhaul, pre-0.8 obsoletions, zero-registry respec
 │   ├── contract-plugin.md    # Features contract for this plugin surface
 │   ├── contract-mcp.md       # Features contract for the embedded MCP server
 │   ├── contract-drift.md     # Documented-vs-actual asymmetry ledger
