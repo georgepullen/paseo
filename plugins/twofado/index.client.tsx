@@ -9,12 +9,10 @@ import {
   SettingsSwitch,
 } from "@getpaseo/plugin/client/ui";
 import {
-  getOptionalClientHost,
   initClientHelpers,
   registerHelperSettingsScreen,
   registerSidebarSurface,
 } from "paseo-plugin-helper/client";
-import { ErrorBoundary } from "./client/error-boundary";
 import {
   ApprovalHeaderIcon,
   ApprovalSurface,
@@ -24,40 +22,7 @@ import {
 import { approvalSettings } from "./shared/approval";
 
 export default function contribute(client: PluginClientContext) {
-  // TEMPORARY DIAGNOSTICS (#555) — strip once cause is known.
-  try {
-    const args = { Icon, Modal, useRpc, useToast, ScrollView } as Record<string, unknown>;
-    const probe = Object.entries(args)
-      .map(([key, value]) =>
-        `${key}=${value === undefined ? "undefined" : value === null ? "null" : typeof value}`
-      )
-      .join(", ");
-    console.warn(`[2fado] initClientHelpers args: ${probe}`);
-  } catch (err) {
-    console.warn("[2fado] initClientHelpers probe failed:", err);
-  }
-
   initClientHelpers({ Icon, Modal, useRpc, useToast, ScrollView });
-
-  // TEMPORARY DIAGNOSTICS (#555) — strip once cause is known.
-  try {
-    const host = getOptionalClientHost();
-    if (!host) {
-      console.warn("[2fado] post-init client host: initClientHelpers stored nothing (host returning undefined)");
-    } else {
-      const hostProbe = Object.entries(host as unknown as Record<string, unknown>)
-        .map(([key, value]) => {
-          if (value === null) return `${key}=null`;
-          if (typeof value !== "function") return `${key}=${typeof value}`;
-          const name = (value as { name?: string }).name;
-          return `${key}=function${name ? `:${name}` : ":(anonymous)"}`;
-        })
-        .join(", ");
-      console.warn(`[2fado] post-init client host: ${hostProbe}`);
-    }
-  } catch (err) {
-    console.warn("[2fado] post-init host probe failed:", err);
-  }
 
   const removeSettings = registerHelperSettingsScreen(client, approvalSettings, {
     ui: { SettingsCard, SettingsSection, SettingsSwitch, SettingsSelect, SettingsInput },
@@ -66,11 +31,6 @@ export default function contribute(client: PluginClientContext) {
     icon: "ShieldCheck",
   });
 
-  const Surface = (props: PluginSurfaceProps) => (
-    <ErrorBoundary label="approvals surface" fallback={null}>
-      <ApprovalSurface {...props} />
-    </ErrorBoundary>
-  );
   // Helper primitive instead of a handrolled surface registration: besides
   // injecting the theme provider it marks the subtree as helper-scroll-owned,
   // so the page owns a working scroll region on a wide desktop window
@@ -79,7 +39,7 @@ export default function contribute(client: PluginClientContext) {
     id: "approvals",
     title: "2fado",
     icon: "ShieldCheck",
-    Component: Surface,
+    Component: ApprovalSurface,
   });
   client.addCommandCenterItem({
     id: "open-approvals",
