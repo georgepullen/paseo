@@ -33,8 +33,15 @@ import type {
   FleetTeardownOutput,
   FleetResetStateInput,
   FleetResetStateOutput,
+  UppidiFrontDeskActivityInput,
+  UppidiFrontDeskActivityOutput,
+  UppidiFrontDeskActivityItem,
+  UppidiFrontDeskPromptInput,
+  UppidiFrontDeskPromptOutput,
 } from "../shared/contracts.js";
 import {
+  parseTranscriptToActivityItems,
+  isSignalActivityItem,
   extractAgentWorktree,
   extractAgentProject,
   getPendingPermissionAction,
@@ -2329,6 +2336,259 @@ export async function handleUppidiToggleRepoMute(
       isMuted: false,
       mutedRepos: [],
       error: err?.message || String(err),
+    };
+  }
+}
+
+// --- Front Desk Watch Surface & Direct Operator Prompt Handlers (Issue #710) ---
+
+/**
+ * Fetches recent activity/timeline items for the active Front Desk agent,
+ * supporting signal-only filtering and full transcript recovery.
+ */
+export async function handleUppidiFrontDeskActivity(
+  input: UppidiFrontDeskActivityInput,
+  context?: PluginHandlerContext
+): Promise<UppidiFrontDeskActivityOutput> {
+  try {
+    let targetAgentId = input.agentId?.trim() || resolveRegisteredFrontDeskAgentId();
+    if (!targetAgentId) {
+      try {
+        const live = await fetchPaseoAgents(context);
+        const fd = live.find((a) => a.category === "front-desk" && a.status !== "closed" && a.status !== "failed");
+        if (fd) targetAgentId = fd.id;
+      } catch {}
+    }
+
+    if (!targetAgentId) {
+      return {
+        ok: false,
+        agentId: null,
+        items: [],
+        totalCount: 0,
+        signalCount: 0,
+        error: "No active Front Desk agent found",
+      };
+    }
+
+    let rawTranscript = "";
+    let items: UppidiFrontDeskActivityItem[] = [];
+    let agentTitle: string | undefined;
+    let agentStatus: string | undefined;
+    let agentMode: string | undefined;
+    let fetchedFromSdk = false;
+
+    // 1. Try fetching structured timeline through Paseo API
+    try {
+      if (context?.paseo?.agents?.ref) {
+        const agentRef = context.paseo.agents.ref(targetAgentId);
+        const result = await agentRef.timeline.refetch({
+          direction: "tail",
+          limit: input.limit ?? 50,
+        });
+        if (result && Array.isArray(result.entries)) {
+          fetchedFromSdk = true;
+          if (result.agent) {
+            agentTitle = result.agent.title ?? undefined;
+            agentStatus = (result.agent as any).status ?? undefined;
+            agentMode = (result.agent as any).modeId ?? undefined;
+          }
+          items = result.entries.map((entry, idx) => {
+            const item = entry.item;
+            const ts = entry.timestamp || new Date().toISOString();
+            const id = `tl-${entry.seqStart ?? idx}`;
+
+            if (item.type === "user_message") {
+              const isWatchdog = item.text.startsWith("[Fleet ");
+              return {
+                id,
+                timestamp: ts,
+                type: "user" as const,
+                role: isWatchdog ? "watchdog" : "operator",
+                title: isWatchdog ? "Fleet Watchdog / Sweep" : "Operator",
+                text: item.text,
+                isSignal: true,
+              };
+            } else if (item.type === "assistant_message") {
+              return {
+                id,
+                timestamp: ts,
+                type: "assistant" as const,
+                role: "front-desk",
+                title: "Front Desk",
+                text: item.text,
+                isSignal: true,
+              };
+            } else if (item.type === "reasoning") {
+              return {
+                id,
+                timestamp: ts,
+                type: "thought" as const,
+                role: "front-desk",
+                title: "Reasoning",
+                text: item.text,
+                isSignal: false,
+              };
+            } else if (item.type === "tool_call") {
+              const toolName = (item as any).name || (item as any).toolName || "tool";
+              const toolInput = (item as any).arguments || (item as any).input || {};
+              const toolText = typeof toolInput === "string" ? toolInput : JSON.stringify(toolInput);
+              const isHeartbeat = toolName.toLowerCase().includes("heartbeat");
+              const isDispatch =
+                toolName.toLowerCase().includes("send") ||
+                toolName.toLowerCase().includes("dispatch") ||
+                toolName.toLowerCase().includes("permit") ||
+                toolName.toLowerCase().includes("spawn") ||
+                toolName.toLowerCase().includes("create_agent") ||
+                toolName.toLowerCase().includes("kill_agent") ||
+                toolName.toLowerCase().includes("archive");
+              return {
+                id,
+                timestamp: ts,
+                type: isHeartbeat ? ("heartbeat" as const) : isDispatch ? ("dispatch" as const) : ("tool" as const),
+                role: isHeartbeat ? "heartbeat" : isDispatch ? "dispatch" : "tool",
+                title: isDispatch ? `Dispatch (${toolName})` : toolName,
+                text: `[${toolName}] ${toolText}`,
+                detail: toolText,
+                toolName,
+                status: (item as any).status,
+                isSignal: isDispatch,
+              };
+            } else {
+              return {
+                id,
+                timestamp: ts,
+                type: "system" as const,
+                role: "system",
+                text: (item as any).text || (item as any).message || JSON.stringify(item),
+                isSignal: true,
+              };
+            }
+          });
+        }
+      }
+    } catch {
+      // Paseo SDK timeline refetch failed; fall back to CLI logs below
+    }
+
+    // 2. Fall back to CLI logs if SDK didn't provide entries
+    if (!fetchedFromSdk || items.length === 0) {
+      try {
+        const limit = input.limit ?? 50;
+        const { stdout } = await execFileAsync("paseo", ["logs", targetAgentId, "--tail", String(limit)], {
+          timeout: 8000,
+        });
+        rawTranscript = stdout;
+        items = parseTranscriptToActivityItems(stdout);
+      } catch (cliErr: any) {
+        if (items.length === 0) {
+          return {
+            ok: false,
+            agentId: targetAgentId,
+            items: [],
+            totalCount: 0,
+            signalCount: 0,
+            error: `Failed to fetch activity: ${cliErr?.message || String(cliErr)}`,
+          };
+        }
+      }
+    }
+
+    // Resolve agent metadata if not yet populated
+    if (!agentTitle || !agentStatus) {
+      try {
+        const live = await fetchPaseoAgents(context);
+        const match = live.find((a) => a.id === targetAgentId);
+        if (match) {
+          agentTitle = agentTitle || match.name || "Front Desk";
+          agentStatus = agentStatus || match.status;
+          agentMode = agentMode || match.deterministicState;
+        }
+      } catch {}
+    }
+
+    const signalCount = items.filter(isSignalActivityItem).length;
+
+    return {
+      ok: true,
+      agentId: targetAgentId,
+      agentTitle,
+      status: agentStatus,
+      mode: agentMode,
+      items,
+      totalCount: items.length,
+      signalCount,
+      rawTranscript: rawTranscript || undefined,
+    };
+  } catch (err: any) {
+    return {
+      ok: false,
+      agentId: input.agentId || null,
+      items: [],
+      totalCount: 0,
+      signalCount: 0,
+      error: `Failed to query Front Desk activity: ${err?.message || String(err)}`,
+    };
+  }
+}
+
+/**
+ * Sends a direct operator prompt to the active Front Desk agent.
+ */
+export async function handleUppidiFrontDeskPrompt(
+  input: UppidiFrontDeskPromptInput,
+  context?: PluginHandlerContext
+): Promise<UppidiFrontDeskPromptOutput> {
+  try {
+    const prompt = input.prompt?.trim();
+    if (!prompt) {
+      return { ok: false, error: "Prompt cannot be empty" };
+    }
+
+    let targetAgentId = input.agentId?.trim() || resolveRegisteredFrontDeskAgentId();
+    if (!targetAgentId) {
+      try {
+        const live = await fetchPaseoAgents(context);
+        const fd = live.find((a) => a.category === "front-desk" && a.status !== "closed" && a.status !== "failed");
+        if (fd) targetAgentId = fd.id;
+      } catch {}
+    }
+
+    if (!targetAgentId) {
+      return { ok: false, error: "No active Front Desk agent found to receive prompt" };
+    }
+
+    const router = getActiveHookRouter();
+    let sent = false;
+
+    if (router && typeof (router as any).deliverMessage === "function") {
+      try {
+        sent = await router.deliverMessage(targetAgentId, prompt, { steer: true, noWait: true });
+      } catch {}
+    }
+
+    if (!sent) {
+      if (context?.paseo?.agents?.ref) {
+        const agentRef = context.paseo.agents.ref(targetAgentId);
+        await agentRef.send(prompt, { steer: true } as any);
+        sent = true;
+      } else {
+        await execFileAsync("paseo", ["send", "--no-wait", "--steer", targetAgentId, prompt], { timeout: 8000 });
+        sent = true;
+      }
+    }
+
+    appendHookLog(`[info] [front-desk-prompt] Sent prompt to Front Desk (${targetAgentId}): "${prompt.slice(0, 80)}"`);
+
+    return {
+      ok: true,
+      agentId: targetAgentId,
+      message: `Prompt sent to Front Desk (${targetAgentId.slice(0, 8)})`,
+    };
+  } catch (err: any) {
+    return {
+      ok: false,
+      error: `Failed to send prompt to Front Desk: ${err?.message || String(err)}`,
     };
   }
 }

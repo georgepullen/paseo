@@ -28,6 +28,8 @@ import {
   SPAWN_AUTHORITY_WORKER_ERROR,
   SPAWN_AUTHORITY_WORKSPACE_ERROR,
   spawnPaseoAgent,
+  handleUppidiFrontDeskActivity,
+  handleUppidiFrontDeskPrompt,
 } from "./agents.js";
 import { DEFAULT_PROJECT } from "../shared/contracts.js";
 
@@ -769,4 +771,118 @@ describe("two-tier spawn authority guard (#573)", () => {
     }
   });
 
+  describe("Front Desk Watch & Console Handlers (#710)", () => {
+    it("handleUppidiFrontDeskActivity returns error when no front desk agent is found", async () => {
+      const originalEnv = process.env.HOOK_STATE_DIR;
+      process.env.HOOK_STATE_DIR = path.join(os.tmpdir(), `paseo-empty-fd-${Date.now()}`);
+      fs.mkdirSync(process.env.HOOK_STATE_DIR, { recursive: true });
+
+      try {
+        const res = await handleUppidiFrontDeskActivity({}, {
+          paseo: {
+            agents: {
+              list: async () => ({
+                entries: [
+                  { id: "worker-agent", title: "Worker Agent", category: "worker", status: "idle" },
+                ],
+              }),
+            },
+          },
+        } as any);
+        assert.equal(res.ok, false);
+        assert.equal(res.error, "No active Front Desk agent found");
+      } finally {
+        if (originalEnv === undefined) delete process.env.HOOK_STATE_DIR;
+        else process.env.HOOK_STATE_DIR = originalEnv;
+      }
+    });
+
+    it("handleUppidiFrontDeskActivity fetches and normalizes timeline entries from SDK context", async () => {
+      const mockEntries = [
+        {
+          timestamp: "2026-09-29T10:00:00Z",
+          item: { type: "user_message", text: "Please investigate issue #710" },
+        },
+        {
+          timestamp: "2026-09-29T10:00:01Z",
+          item: { type: "reasoning", text: "I should inspect the worktree" },
+        },
+        {
+          timestamp: "2026-09-29T10:00:02Z",
+          item: {
+            type: "tool_call",
+            name: "send_agent_prompt",
+            arguments: { agentId: "worker-1", prompt: "Run tests" },
+          },
+        },
+        {
+          timestamp: "2026-09-29T10:00:03Z",
+          item: {
+            type: "assistant_message",
+            text: "Dispatched prompt to worker-1",
+          },
+        },
+      ];
+
+      const context: any = {
+        paseo: {
+          agents: {
+            ref: (id: string) => ({
+              timeline: {
+                refetch: async () => ({
+                  entries: mockEntries,
+                  agent: { id, title: "Front Desk Test", status: "running", modeId: "auto" },
+                }),
+              },
+            }),
+          },
+        },
+      };
+
+      const res = await handleUppidiFrontDeskActivity({ agentId: "agent-fd-test" }, context);
+      assert.equal(res.ok, true);
+      assert.equal(res.agentId, "agent-fd-test");
+      assert.equal(res.agentTitle, "Front Desk Test");
+      assert.equal(res.totalCount, 4);
+      // user, dispatch, and assistant are signals; reasoning is noise
+      assert.equal(res.signalCount, 3);
+      assert.equal(res.items[0].type, "user");
+      assert.equal(res.items[0].isSignal, true);
+      assert.equal(res.items[1].type, "thought");
+      assert.equal(res.items[1].isSignal, false);
+      assert.equal(res.items[2].type, "dispatch");
+      assert.equal(res.items[2].isSignal, true);
+      assert.equal(res.items[3].type, "assistant");
+      assert.equal(res.items[3].isSignal, true);
+    });
+
+    it("handleUppidiFrontDeskPrompt validates input and delivers prompt", async () => {
+      // 1. Empty prompt rejected
+      const emptyRes = await handleUppidiFrontDeskPrompt({ prompt: "   " });
+      assert.equal(emptyRes.ok, false);
+      assert.equal(emptyRes.error, "Prompt cannot be empty");
+
+      // 2. Successful delivery through context agent ref
+      let sentPrompt = "";
+      const context: any = {
+        paseo: {
+          agents: {
+            ref: (id: string) => ({
+              send: async (text: string) => {
+                sentPrompt = text;
+              },
+            }),
+          },
+        },
+      };
+
+      const res = await handleUppidiFrontDeskPrompt(
+        { agentId: "agent-fd-test", prompt: "Hello Front Desk" },
+        context
+      );
+      assert.equal(res.ok, true);
+      assert.equal(sentPrompt, "Hello Front Desk");
+      assert.equal(res.agentId, "agent-fd-test");
+    });
+  });
 });

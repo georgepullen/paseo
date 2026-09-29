@@ -1,5 +1,5 @@
 import React, { useMemo, useRef, useState, useEffect } from "react";
-import { Animated, Linking, Platform, Text, View } from "react-native";
+import { Animated, Linking, Platform, Pressable, ScrollView, Text, View } from "react-native";
 import {
   AttentionBeacon,
   Badge,
@@ -15,9 +15,11 @@ import {
   SearchInput,
   Stack,
   StatusDot,
+  TextInput,
   copyToClipboard,
   usePluginTheme,
   useRpcMutation,
+  useRpcQuery,
 } from "paseo-plugin-helper/client";
 import { useToast } from "@getpaseo/plugin/client/react-native";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
@@ -27,6 +29,7 @@ import {
   type DeterministicAgentState,
   type UppidiAgentsOutput,
   type DeterministicStateConfig,
+  type UppidiFrontDeskActivityItem,
   getAgentCategoryIcon,
   getDeterministicStateConfig,
   getPendingPermissionAction,
@@ -39,6 +42,9 @@ import {
   uppidiAddOrchestratorContract,
   uppidiReplaceOrchestratorContract,
   uppidiToggleRepoMuteContract,
+  uppidiFrontDeskActivityContract,
+  uppidiFrontDeskPromptContract,
+  isSignalActivityItem,
   extractAgentWorktree,
   extractAgentProject,
 } from "../shared/contracts.js";
@@ -705,6 +711,8 @@ export function FrontDeskHero({
   onCreateFrontDesk,
   onReplaceFrontDesk,
   isActionLoading = false,
+  isWatchOpen = false,
+  onToggleWatch,
 }: {
   node?: UppidiAgentTreeNode | null;
   orchestrators?: UppidiAgent[];
@@ -716,6 +724,8 @@ export function FrontDeskHero({
   onCreateFrontDesk?: () => Promise<void> | void;
   onReplaceFrontDesk?: (existingAgentId?: string) => Promise<void> | void;
   isActionLoading?: boolean;
+  isWatchOpen?: boolean;
+  onToggleWatch?: () => void;
 }) {
   const [metricsOpen, setMetricsOpen] = useState(false);
 
@@ -940,6 +950,18 @@ export function FrontDeskHero({
               />
             )}
 
+            {/* Watch & Console Drawer Toggle (#710) */}
+            {onToggleWatch && (
+              <Button
+                label={isWatchOpen ? "Hide Console" : "Watch & Console"}
+                icon={isWatchOpen ? "ChevronUp" : "Terminal"}
+                variant={isWatchOpen ? "primary" : "ghost"}
+                size="sm"
+                onPress={onToggleWatch}
+                accessibilityLabel="Toggle Front Desk Watch and Console drawer"
+              />
+            )}
+
             <Button
               icon="Archive"
               variant="ghost"
@@ -1017,6 +1039,402 @@ export function FrontDeskHero({
   );
 }
 
+// --- Front Desk Watch Surface & Console Drawer (Issue #710) ---
+
+export interface FrontDeskWatchDrawerProps {
+  node?: UppidiAgentTreeNode | null;
+  isOpen: boolean;
+  onToggle: () => void;
+  colors: any;
+  typography: any;
+}
+
+export function FrontDeskWatchDrawer({
+  node,
+  isOpen,
+  onToggle,
+  colors,
+  typography,
+}: FrontDeskWatchDrawerProps) {
+  const [filterMode, setFilterMode] = useState<"signal" | "all">("signal");
+  const [promptText, setPromptText] = useState("");
+  const toast = useToast();
+
+  const agent = node?.agent;
+  const agentId = agent?.id;
+
+  const {
+    data: activityData,
+    isLoading,
+    refetch,
+  } = useRpcQuery(
+    uppidiFrontDeskActivityContract,
+    { agentId, limit: 60 },
+    {
+      refetchInterval: isOpen && agentId ? 4000 : 0,
+      enabled: Boolean(isOpen && agentId),
+    }
+  );
+
+  const sendPromptMutation = useRpcMutation(uppidiFrontDeskPromptContract);
+
+  const items: UppidiFrontDeskActivityItem[] = useMemo(() => {
+    return activityData?.items ?? [];
+  }, [activityData?.items]);
+
+  const signalCount = activityData?.signalCount ?? items.filter(isSignalActivityItem).length;
+  const totalCount = activityData?.totalCount ?? items.length;
+
+  const displayedItems = useMemo(() => {
+    if (filterMode === "signal") {
+      return items.filter(isSignalActivityItem);
+    }
+    return items;
+  }, [items, filterMode]);
+
+    const handleSendPrompt = async () => {
+    const text = promptText.trim();
+    if (!text) return;
+    if (!agentId) {
+      toast.error("No active Front Desk session available to receive prompt");
+      return;
+    }
+
+    try {
+      const res = await sendPromptMutation.mutateAsync({ agentId, prompt: text });
+      if (res.ok) {
+        setPromptText("");
+        toast.show("Instruction dispatched to Front Desk");
+        void refetch();
+      } else {
+        toast.error(`Failed to send prompt: ${res.error || "Unknown error"}`);
+      }
+    } catch (err: any) {
+      toast.error(`Failed to send prompt: ${err?.message || String(err)}`);
+    }
+  };
+
+  if (!agent) {
+    if (!isOpen) return null;
+    return (
+      <Card
+        variant="flat"
+        style={{
+          marginTop: -4,
+          marginBottom: 10,
+          borderTopLeftRadius: 0,
+          borderTopRightRadius: 0,
+          borderColor: colors.border,
+          borderTopWidth: 0,
+          padding: 14,
+        }}
+      >
+        <EmptyState
+          title="Front Desk Console Inactive"
+          description="Create or spawn a Front Desk session above to start watching its activity stream."
+          icon="Inbox"
+        />
+      </Card>
+    );
+  }
+
+  return (
+    <Card
+      variant="flat"
+      style={{
+        marginTop: -6,
+        marginBottom: 12,
+        borderTopLeftRadius: 0,
+        borderTopRightRadius: 0,
+        borderColor: colors.border,
+        borderTopWidth: 1,
+        borderTopColor: colors.border,
+        backgroundColor: colors.surface0,
+        overflow: "hidden",
+      }}
+    >
+      {/* Drawer Header & Quick Status Strip */}
+      <Pressable
+        onPress={onToggle}
+        accessibilityRole="button"
+        accessibilityLabel={isOpen ? "Collapse Front Desk Watch & Console drawer" : "Unroll Front Desk Watch & Console drawer"}
+        style={{
+          flexDirection: "row",
+          justifyContent: "space-between",
+          alignItems: "center",
+          paddingHorizontal: 14,
+          paddingVertical: 8,
+          backgroundColor: colors.surface1,
+          borderBottomWidth: isOpen ? 1 : 0,
+          borderBottomColor: colors.border,
+        }}
+      >
+        <Row align="center" gap="sm">
+          <Icon name={isOpen ? "ChevronDown" : "ChevronRight"} size={16} color={colors.foregroundMuted} />
+          <Icon name="Terminal" size={15} color={colors.accent || colors.primary} />
+          <Text style={{ ...typography.body, fontWeight: "600", fontSize: 12, color: colors.foreground }}>
+            Front Desk Watch & Console
+          </Text>
+          <Badge
+            label={isOpen ? "Live Stream" : "Watch Drawer"}
+            variant="neutral"
+            size="sm"
+            textStyle={{ fontSize: 10 }}
+          />
+        </Row>
+
+        <Row align="center" gap="xs">
+          {totalCount > 0 && (
+            <Badge
+              label={`${signalCount} signal / ${totalCount} events`}
+              variant="neutral"
+              styleVariant="outline"
+              size="sm"
+              textStyle={{ fontSize: 10 }}
+            />
+          )}
+          <Text style={{ fontSize: 11, color: colors.foregroundMuted }}>
+            {isOpen ? "Collapse" : "Unroll"}
+          </Text>
+        </Row>
+      </Pressable>
+
+      {/* Expanded Console Body */}
+      {isOpen && (
+        <Stack gap={10} style={{ padding: 14 }}>
+          {/* Subheader: Signal Toggle Bar & Quick Controls */}
+          <Row justify="space-between" align="center" wrap gap="sm">
+            <Row align="center" gap="xs">
+              <Text style={{ fontSize: 11, fontWeight: "600", color: colors.foregroundMuted }}>
+                Feed Filter:
+              </Text>
+              <Button
+                label={`Signal Only (${signalCount})`}
+                icon="Zap"
+                size="sm"
+                variant={filterMode === "signal" ? "primary" : "ghost"}
+                onPress={() => setFilterMode("signal")}
+                style={{ paddingVertical: 2, paddingHorizontal: 8, minHeight: 24 }}
+              />
+              <Button
+                label={`Full Feed (${totalCount})`}
+                icon="List"
+                size="sm"
+                variant={filterMode === "all" ? "primary" : "ghost"}
+                onPress={() => setFilterMode("all")}
+                style={{ paddingVertical: 2, paddingHorizontal: 8, minHeight: 24 }}
+              />
+            </Row>
+
+            <Row align="center" gap="xs">
+              <Button
+                label="Reload"
+                icon="RefreshCw"
+                size="sm"
+                variant="ghost"
+                loading={isLoading}
+                disabled={isLoading}
+                onPress={() => {
+                  void refetch();
+                }}
+                style={{ paddingVertical: 2, paddingHorizontal: 8, minHeight: 24 }}
+              />
+            </Row>
+          </Row>
+
+          {/* Activity Timeline View */}
+          <View
+            style={{
+              maxHeight: 380,
+              minHeight: 120,
+              borderWidth: 1,
+              borderColor: colors.border,
+              borderRadius: 6,
+              backgroundColor: colors.surface1,
+              overflow: "hidden",
+            }}
+          >
+            <ScrollView
+              nestedScrollEnabled
+              contentContainerStyle={{ padding: 10, gap: 8 }}
+              showsVerticalScrollIndicator
+            >
+              {isLoading && items.length === 0 ? (
+                <EmptyState
+                  title="Streaming Front Desk Activity..."
+                  description="Connecting to Front Desk timeline stream and gathering turn events."
+                  icon="Terminal"
+                />
+              ) : displayedItems.length === 0 ? (
+                <EmptyState
+                  title={filterMode === "signal" ? "No Signal Events" : "No Activity Yet"}
+                  description={
+                    filterMode === "signal"
+                      ? "No operator prompts, agent decisions, or dispatches recorded yet in recent turns. Switch to 'Full Feed' to view raw tool calls."
+                      : "Front Desk session is awaiting its first turn."
+                  }
+                  icon="Inbox"
+                />
+              ) : (
+                displayedItems.map((item) => (
+                  <FrontDeskActivityRow
+                    key={item.id}
+                    item={item}
+                    colors={colors}
+                    typography={typography}
+                  />
+                ))
+              )}
+            </ScrollView>
+          </View>
+
+          {/* Direct Operator Prompt Bar */}
+          <View
+            style={{
+              borderTopWidth: 1,
+              borderTopColor: colors.border,
+              paddingTop: 8,
+              marginTop: 2,
+            }}
+          >
+            <Row align="flex-end" gap="sm">
+              <View style={{ flex: 1 }}>
+                <TextInput
+                  value={promptText}
+                  onChangeText={setPromptText}
+                  placeholder={`Send direct prompt to Front Desk (${agent.shortId || agent.name})...`}
+                  onSubmitEditing={handleSendPrompt}
+                  disabled={sendPromptMutation.isPending}
+                  style={{ marginBottom: 0 }}
+                  multiline={false}
+                />
+              </View>
+              <Button
+                label="Send"
+                icon="Send"
+                variant="primary"
+                size="md"
+                loading={sendPromptMutation.isPending}
+                disabled={sendPromptMutation.isPending || !promptText.trim()}
+                onPress={handleSendPrompt}
+                style={{ minHeight: 36, paddingHorizontal: 16 }}
+              />
+            </Row>
+          </View>
+        </Stack>
+      )}
+    </Card>
+  );
+}
+
+export function FrontDeskActivityRow({
+  item,
+  colors,
+  typography,
+}: {
+  item: UppidiFrontDeskActivityItem;
+  colors: any;
+  typography: any;
+}) {
+  const isUser = item.type === "user";
+  const isAssistant = item.type === "assistant";
+  const isDispatch = item.type === "dispatch";
+  const isDecision = item.type === "decision";
+  const isError = item.type === "error";
+  const isThought = item.type === "thought";
+  const isHeartbeat = item.type === "heartbeat";
+
+  const badgeVariant: "accent" | "success" | "warning" | "danger" | "neutral" = isUser
+    ? "accent"
+    : isAssistant
+    ? "success"
+    : isDispatch
+    ? "warning"
+    : isError
+    ? "danger"
+    : "neutral";
+
+  const badgeStyleVariant: "tinted" | "outline" = isThought || isHeartbeat || item.type === "tool"
+    ? "outline"
+    : "tinted";
+
+  const badgeLabel = isUser
+    ? item.role === "watchdog"
+      ? "Sweep Alert"
+      : "Operator"
+    : isAssistant
+    ? "Front Desk"
+    : isDispatch
+    ? "Dispatch"
+    : isError
+    ? "Error"
+    : isDecision
+    ? "Decision"
+    : isThought
+    ? "Thought"
+    : isHeartbeat
+    ? "Heartbeat"
+    : item.toolName || "Tool";
+
+  const borderColor = isUser
+    ? colors.accent || colors.primary
+    : isAssistant
+    ? colors.statusSuccess
+    : isDispatch
+    ? colors.statusWarning
+    : isError
+    ? colors.statusDanger
+    : colors.border;
+
+  return (
+    <View
+      style={{
+        padding: 8,
+        borderRadius: 6,
+        borderLeftWidth: 3,
+        borderLeftColor: borderColor,
+        backgroundColor: colors.surface0,
+        gap: 4,
+      }}
+    >
+      <Row justify="space-between" align="center" gap="xs">
+        <Row align="center" gap="xs">
+          <Badge
+            label={badgeLabel}
+            variant={badgeVariant}
+            styleVariant={badgeStyleVariant}
+            size="sm"
+            textStyle={{ fontSize: 10 }}
+          />
+          {item.title && item.title !== badgeLabel && (
+            <Text style={{ fontSize: 11, fontWeight: "600", color: colors.foregroundMuted }}>
+              {item.title}
+            </Text>
+          )}
+        </Row>
+        {item.timestamp && (
+          <Text style={{ fontSize: 10, color: colors.foregroundMuted, fontFamily: "monospace" }}>
+            {formatRelativeTime(item.timestamp)}
+          </Text>
+        )}
+      </Row>
+
+      <Text
+        style={{
+          ...typography.body,
+          fontSize: 12,
+          color: isThought ? colors.foregroundMuted : colors.foreground,
+          fontStyle: isThought ? "italic" : "normal",
+          fontFamily: isDispatch || item.type === "tool" ? "monospace" : undefined,
+          lineHeight: 18,
+        }}
+        selectable
+      >
+        {item.text}
+      </Text>
+    </View>
+  );
+}
 
 export function getDisplayableAgentLabels(agent: UppidiAgent): Array<{ key: string; value: string; display: string }> {
   if (!agent.labels || typeof agent.labels !== "object") return [];
@@ -2067,6 +2485,7 @@ export const UppidiFleetTreeView: React.FC<UppidiFleetTreeViewProps> = ({
   // Collapsible tracking states
   const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>({});
   const [collapsedOrchestrators, setCollapsedOrchestrators] = useState<Record<string, boolean>>({});
+  const [isWatchOpen, setIsWatchOpen] = useState(false);
 
   const archiveAgentMutation = useRpcMutation(uppidiArchiveAgentContract);
   const archiveBulkMutation = useRpcMutation(uppidiArchiveInactiveAgentsContract);
@@ -2648,6 +3067,17 @@ export const UppidiFleetTreeView: React.FC<UppidiFleetTreeViewProps> = ({
         onCreateFrontDesk={handleCreateFrontDesk}
         onReplaceFrontDesk={handleReplaceFrontDesk}
         isActionLoading={frontDeskLoading}
+        isWatchOpen={isWatchOpen}
+        onToggleWatch={() => setIsWatchOpen((open) => !open)}
+      />
+
+      {/* Front Desk Watch & Console Drawer (Immediately below Front Desk card, #710) */}
+      <FrontDeskWatchDrawer
+        node={displayFrontDeskNode}
+        isOpen={isWatchOpen}
+        onToggle={() => setIsWatchOpen((open) => !open)}
+        colors={colors}
+        typography={typography}
       />
 
       {/* 2. Top-Level Project Groups (Enrolled Fleet Roster) */}

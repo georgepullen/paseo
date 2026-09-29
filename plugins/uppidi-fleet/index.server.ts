@@ -28,6 +28,8 @@ import {
   uppidiFleetToolListContract,
   uppidiFleetToolExecuteContract,
   uppidiFleetResetStateContract,
+  uppidiFrontDeskActivityContract,
+  uppidiFrontDeskPromptContract,
 } from "./shared/contracts.js";
 import { handleUppidiIssues } from "./server/issues.js";
 import {
@@ -53,6 +55,8 @@ import {
   handleUppidiToggleRepoMute,
   handleFleetTeardown,
   handleFleetResetState,
+  handleUppidiFrontDeskActivity,
+  handleUppidiFrontDeskPrompt,
 } from "./server/agents.js";
 
 import { handleUppidiRoleModels, handleUppidiSetRoleModel } from "./server/role-models.js";
@@ -112,6 +116,8 @@ export default function contribute(server: PluginServerContext) {
   server.handle(uppidiFleetResetStateContract, handleFleetResetState);
   server.handle(uppidiFleetToolListContract, handleFleetToolList);
   server.handle(uppidiFleetToolExecuteContract, handleFleetToolExecute);
+  server.handle(uppidiFrontDeskActivityContract, handleUppidiFrontDeskActivity);
+  server.handle(uppidiFrontDeskPromptContract, handleUppidiFrontDeskPrompt);
 
   const settingsStorage = getUppidiFleetSettingsStorage();
   registerSettingsRpc(server, uppidiFleetSettingsContract, settingsStorage, {

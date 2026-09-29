@@ -1489,3 +1489,284 @@ export const uppidiFleetToolExecuteContract = defineContract({
   output: UppidiFleetToolExecuteOutputSchema,
 });
 
+// --- Front Desk Watch Surface & Console Drawer (Issue #710) ---
+
+export const UppidiFrontDeskActivityTypeSchema = z.enum([
+  "user",
+  "assistant",
+  "thought",
+  "tool",
+  "dispatch",
+  "decision",
+  "error",
+  "heartbeat",
+  "system",
+]);
+export type UppidiFrontDeskActivityType = z.infer<typeof UppidiFrontDeskActivityTypeSchema>;
+
+export const UppidiFrontDeskActivityItemSchema = z.object({
+  id: z.string(),
+  timestamp: z.string().default(() => new Date().toISOString()),
+  type: UppidiFrontDeskActivityTypeSchema,
+  role: z.string(),
+  title: z.string().optional(),
+  text: z.string(),
+  detail: z.string().optional(),
+  isSignal: z.boolean().default(true),
+  toolName: z.string().optional(),
+  status: z.string().optional(),
+});
+export type UppidiFrontDeskActivityItem = z.infer<typeof UppidiFrontDeskActivityItemSchema>;
+
+export const UppidiFrontDeskActivityInputSchema = z.object({
+  agentId: z.string().optional(),
+  limit: z.number().int().positive().optional(),
+});
+export type UppidiFrontDeskActivityInput = z.infer<typeof UppidiFrontDeskActivityInputSchema>;
+
+export const UppidiFrontDeskActivityOutputSchema = z.object({
+  ok: z.boolean(),
+  agentId: z.string().nullable().default(null),
+  agentTitle: z.string().optional(),
+  status: z.string().optional(),
+  mode: z.string().optional(),
+  items: z.array(UppidiFrontDeskActivityItemSchema).default([]),
+  totalCount: z.number().default(0),
+  signalCount: z.number().default(0),
+  rawTranscript: z.string().optional(),
+  error: z.string().optional(),
+});
+export type UppidiFrontDeskActivityOutput = z.infer<typeof UppidiFrontDeskActivityOutputSchema>;
+
+export const uppidiFrontDeskActivityContract = defineContract({
+  name: "uppidi-fleet.front-desk.activity",
+  description: "Fetch recent messages and timeline activity for the active Front Desk agent",
+  input: UppidiFrontDeskActivityInputSchema,
+  output: UppidiFrontDeskActivityOutputSchema,
+});
+
+export const UppidiFrontDeskPromptInputSchema = z.object({
+  agentId: z.string().optional(),
+  prompt: z.string().min(1),
+});
+export type UppidiFrontDeskPromptInput = z.infer<typeof UppidiFrontDeskPromptInputSchema>;
+
+export const UppidiFrontDeskPromptOutputSchema = z.object({
+  ok: z.boolean(),
+  agentId: z.string().optional(),
+  message: z.string().optional(),
+  error: z.string().optional(),
+});
+export type UppidiFrontDeskPromptOutput = z.infer<typeof UppidiFrontDeskPromptOutputSchema>;
+
+export const uppidiFrontDeskPromptContract = defineContract({
+  name: "uppidi-fleet.front-desk.prompt",
+  description: "Send a direct operator message/prompt to the Front Desk agent",
+  input: UppidiFrontDeskPromptInputSchema,
+  output: UppidiFrontDeskPromptOutputSchema,
+});
+
+export const DISPATCH_COMMAND_PATTERNS = [
+  /\bpaseo\s+(send|permit|create|spawn|kill|archive)\b/i,
+  /\bteax\s+(pr|issue)\s+(merge|close|create|assign)\b/i,
+  /\bx_comms_send\b/i,
+  /\bgit\s+push\b/i,
+];
+
+export const NOISE_TOOL_NAMES = new Set([
+  "read_file",
+  "cat",
+  "grep_search",
+  "find_by_name",
+  "list_dir",
+  "ls",
+  "ps",
+  "inspect_schedule",
+  "schedule_logs",
+  "inspect_provider",
+  "list_models",
+  "list_profiles",
+  "list_workspaces",
+  "view_file",
+]);
+
+/**
+ * Determines whether an activity item qualifies as "Signal" (operator messages,
+ * agent responses, decisions, dispatches) vs "Noise" (heartbeats, repetitive read/cat/ls payloads, internal thoughts).
+ */
+export function isSignalActivityItem(item: UppidiFrontDeskActivityItem): boolean {
+  if (typeof item.isSignal === "boolean") {
+    return item.isSignal;
+  }
+  if (item.type === "user" || item.type === "assistant" || item.type === "dispatch" || item.type === "decision" || item.type === "error") {
+    return true;
+  }
+  if (item.type === "heartbeat" || item.type === "thought") {
+    return false;
+  }
+  if (item.type === "tool") {
+    const lowerName = (item.toolName || "").toLowerCase();
+    if (
+      lowerName.includes("dispatch") ||
+      lowerName.includes("send") ||
+      lowerName.includes("permit") ||
+      lowerName.includes("spawn") ||
+      lowerName.includes("create_agent") ||
+      lowerName.includes("kill_agent") ||
+      lowerName.includes("archive")
+    ) {
+      return true;
+    }
+    return false;
+  }
+  return true;
+}
+
+/**
+ * Parses raw logs or transcripts into structured activity items with signal classification.
+ */
+export function parseTranscriptToActivityItems(
+  transcript: string,
+  fallbackTimestamp?: string
+): UppidiFrontDeskActivityItem[] {
+  if (!transcript || !transcript.trim()) return [];
+  const lines = transcript.split(/\r?\n/);
+  const items: UppidiFrontDeskActivityItem[] = [];
+  const baseTs = fallbackTimestamp || new Date().toISOString();
+
+  let currentItem: Partial<UppidiFrontDeskActivityItem> | null = null;
+  let counter = 0;
+
+  function commitCurrent() {
+    if (!currentItem || !currentItem.text?.trim()) return;
+    const type = currentItem.type || "system";
+    let isSignal = currentItem.isSignal;
+    if (isSignal === undefined) {
+      if (type === "user" || type === "assistant" || type === "dispatch" || type === "decision" || type === "error") {
+        isSignal = true;
+      } else if (type === "heartbeat" || type === "thought") {
+        isSignal = false;
+      } else if (type === "tool") {
+        const text = currentItem.text || "";
+        const toolName = currentItem.toolName || "";
+        if (DISPATCH_COMMAND_PATTERNS.some((p) => p.test(text))) {
+          currentItem.type = "dispatch";
+          currentItem.role = "dispatch";
+          isSignal = true;
+        } else if (NOISE_TOOL_NAMES.has(toolName.toLowerCase())) {
+          isSignal = false;
+        } else {
+          isSignal = false;
+        }
+      } else {
+        isSignal = true;
+      }
+    }
+
+    items.push({
+      id: currentItem.id || `act-${counter++}`,
+      timestamp: currentItem.timestamp || baseTs,
+      type: currentItem.type || "system",
+      role: currentItem.role || (type === "user" ? "operator" : type === "assistant" ? "front-desk" : type),
+      title: currentItem.title,
+      text: currentItem.text.trim(),
+      detail: currentItem.detail,
+      isSignal,
+      toolName: currentItem.toolName,
+      status: currentItem.status,
+    });
+    currentItem = null;
+  }
+
+  for (const rawLine of lines) {
+    const line = rawLine.trimEnd();
+    const headerMatch = line.match(/^\[([A-Za-z0-9_-]+)\](?:\s+(.*))?$/);
+    if (headerMatch) {
+      commitCurrent();
+      const tag = headerMatch[1];
+      const remainder = headerMatch[2] || "";
+      const lowerTag = tag.toLowerCase();
+
+      if (lowerTag === "user") {
+        const isWatchdog = remainder.startsWith("[Fleet ");
+        currentItem = {
+          id: `act-${counter++}`,
+          timestamp: baseTs,
+          type: "user",
+          role: isWatchdog ? "watchdog" : "operator",
+          title: isWatchdog ? "Fleet Watchdog / Sweep" : "Operator",
+          text: remainder,
+          isSignal: true,
+        };
+      } else if (lowerTag === "assistant") {
+        currentItem = {
+          id: `act-${counter++}`,
+          timestamp: baseTs,
+          type: "assistant",
+          role: "front-desk",
+          title: "Front Desk",
+          text: remainder,
+          isSignal: true,
+        };
+      } else if (lowerTag === "thought" || lowerTag === "thinking" || lowerTag === "reasoning") {
+        currentItem = {
+          id: `act-${counter++}`,
+          timestamp: baseTs,
+          type: "thought",
+          role: "front-desk",
+          title: "Reasoning",
+          text: remainder,
+          isSignal: false,
+        };
+      } else if (lowerTag === "heartbeat") {
+        currentItem = {
+          id: `act-${counter++}`,
+          timestamp: baseTs,
+          type: "heartbeat",
+          role: "heartbeat",
+          title: "Heartbeat",
+          text: remainder,
+          isSignal: false,
+        };
+      } else if (lowerTag === "error") {
+        currentItem = {
+          id: `act-${counter++}`,
+          timestamp: baseTs,
+          type: "error",
+          role: "error",
+          title: "Error",
+          text: remainder,
+          isSignal: true,
+        };
+      } else {
+        const isDispatch = DISPATCH_COMMAND_PATTERNS.some((p) => p.test(remainder));
+        currentItem = {
+          id: `act-${counter++}`,
+          timestamp: baseTs,
+          type: isDispatch ? "dispatch" : "tool",
+          role: isDispatch ? "dispatch" : "tool",
+          title: isDispatch ? `Dispatch (${tag})` : tag,
+          text: remainder,
+          toolName: tag,
+          isSignal: isDispatch,
+        };
+      }
+    } else if (currentItem) {
+      currentItem.text = (currentItem.text ? `${currentItem.text}\n` : "") + line;
+    } else if (line.trim()) {
+      currentItem = {
+        id: `act-${counter++}`,
+        timestamp: baseTs,
+        type: "assistant",
+        role: "front-desk",
+        title: "Front Desk",
+        text: line,
+        isSignal: true,
+      };
+    }
+  }
+
+  commitCurrent();
+  return items;
+}
+

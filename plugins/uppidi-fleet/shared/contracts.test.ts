@@ -56,6 +56,14 @@ import {
   FleetResetStateInputSchema,
   FleetResetStateOutputSchema,
   uppidiFleetResetStateContract,
+  uppidiFrontDeskActivityContract,
+  UppidiFrontDeskActivityInputSchema,
+  UppidiFrontDeskActivityOutputSchema,
+  uppidiFrontDeskPromptContract,
+  UppidiFrontDeskPromptInputSchema,
+  UppidiFrontDeskPromptOutputSchema,
+  isSignalActivityItem,
+  parseTranscriptToActivityItems,
 } from "./contracts.js";
 
 
@@ -867,6 +875,224 @@ describe("subagent lifecycle contract & structured block detail (#537)", () => {
     assert.equal(output.cleared.queueFiles, 2);
     assert.equal(output.cleared.cacheFiles, 5);
     assert.equal(output.notifiedOrchestrators, 1);
+  });
+
+  describe("Front Desk Watch & Console Drawer (#710)", () => {
+    it("validates uppidiFrontDeskActivityContract and schemas", () => {
+      assert.equal(uppidiFrontDeskActivityContract.name, "uppidi-fleet.front-desk.activity");
+
+      const input = UppidiFrontDeskActivityInputSchema.parse({});
+      assert.equal(input.limit, undefined);
+
+      const customInput = UppidiFrontDeskActivityInputSchema.parse({
+        agentId: "agent-fd-42",
+        limit: 100,
+      });
+      assert.equal(customInput.agentId, "agent-fd-42");
+      assert.equal(customInput.limit, 100);
+
+      const output = UppidiFrontDeskActivityOutputSchema.parse({
+        ok: true,
+        agentId: "agent-fd-42",
+        agentTitle: "Front Desk Liaison",
+        status: "running",
+        items: [
+          {
+            id: "act-1",
+            timestamp: "2026-09-29T10:00:00.000Z",
+            type: "user",
+            role: "operator",
+            text: "Please verify PR #710",
+            isSignal: true,
+          },
+          {
+            id: "act-2",
+            timestamp: "2026-09-29T10:00:05.000Z",
+            type: "assistant",
+            role: "front-desk",
+            text: "Understood, checking orchestrators now.",
+            isSignal: true,
+          },
+        ],
+        totalCount: 2,
+        signalCount: 2,
+      });
+
+      assert.equal(output.ok, true);
+      assert.equal(output.items.length, 2);
+      assert.equal(output.signalCount, 2);
+    });
+
+    it("validates uppidiFrontDeskPromptContract and schemas", () => {
+      assert.equal(uppidiFrontDeskPromptContract.name, "uppidi-fleet.front-desk.prompt");
+
+      const input = UppidiFrontDeskPromptInputSchema.parse({
+        agentId: "agent-fd-42",
+        prompt: "Check fleet board",
+      });
+      assert.equal(input.agentId, "agent-fd-42");
+      assert.equal(input.prompt, "Check fleet board");
+
+      assert.throws(() => {
+        UppidiFrontDeskPromptInputSchema.parse({ prompt: "" });
+      });
+
+      const output = UppidiFrontDeskPromptOutputSchema.parse({
+        ok: true,
+        agentId: "agent-fd-42",
+        message: "Prompt sent to Front Desk",
+      });
+      assert.equal(output.ok, true);
+      assert.equal(output.message, "Prompt sent to Front Desk");
+    });
+
+    it("accurately classifies activity items as signal vs noise (#710)", () => {
+      // 1. Operator and assistant messages are signal
+      assert.equal(
+        isSignalActivityItem({
+          id: "1",
+          timestamp: "ts",
+          type: "user",
+          role: "operator",
+          text: "hello",
+          isSignal: true,
+        }),
+        true
+      );
+      assert.equal(
+        isSignalActivityItem({
+          id: "2",
+          timestamp: "ts",
+          type: "assistant",
+          role: "front-desk",
+          text: "ready",
+          isSignal: true,
+        }),
+        true
+      );
+
+      // 2. Dispatches and decisions are signal
+      assert.equal(
+        isSignalActivityItem({
+          id: "3",
+          timestamp: "ts",
+          type: "dispatch",
+          role: "dispatch",
+          text: "paseo send agent-1 do work",
+          isSignal: true,
+        }),
+        true
+      );
+      assert.equal(
+        isSignalActivityItem({
+          id: "4",
+          timestamp: "ts",
+          type: "decision",
+          role: "decision",
+          text: "Adjudicated permit request",
+          isSignal: true,
+        }),
+        true
+      );
+
+      // 3. Heartbeats and internal thoughts are noise (hidden in Signal Only)
+      assert.equal(
+        isSignalActivityItem({
+          id: "5",
+          timestamp: "ts",
+          type: "heartbeat",
+          role: "heartbeat",
+          text: "heartbeat ping",
+          isSignal: false,
+        }),
+        false
+      );
+      assert.equal(
+        isSignalActivityItem({
+          id: "6",
+          timestamp: "ts",
+          type: "thought",
+          role: "front-desk",
+          text: "I should inspect the directory first",
+          isSignal: false,
+        }),
+        false
+      );
+
+      // 4. Repetitive inspection tools are noise
+      assert.equal(
+        isSignalActivityItem({
+          id: "7",
+          timestamp: "ts",
+          type: "tool",
+          role: "tool",
+          toolName: "cat",
+          text: "cat /tmp/file",
+          isSignal: false,
+        }),
+        false
+      );
+      assert.equal(
+        isSignalActivityItem({
+          id: "8",
+          timestamp: "ts",
+          type: "tool",
+          role: "tool",
+          toolName: "read_file",
+          text: "read /src/index.ts",
+          isSignal: false,
+        }),
+        false
+      );
+    });
+
+    it("parses raw transcript logs into structured activity items (#710)", () => {
+      const rawLog = `
+[User] please sweep the fleet and check #710
+[Shell] cat /tmp/test.txt
+[Thought] Analyzing the situation...
+[Shell] paseo send --steer --no-wait agent-orch-1 "run tests"
+[Heartbeat] Scheduled tick
+[Assistant] Dispatched the test command to orchestrator.
+[Error] Temporary connection drop
+`;
+      const items = parseTranscriptToActivityItems(rawLog);
+      assert.equal(items.length, 7);
+
+      // 1. [User]
+      assert.equal(items[0].type, "user");
+      assert.equal(items[0].role, "operator");
+      assert.equal(items[0].isSignal, true);
+
+      // 2. [Shell] cat -> tool noise
+      assert.equal(items[1].type, "tool");
+      assert.equal(items[1].isSignal, false);
+
+      // 3. [Thought] -> thought noise
+      assert.equal(items[2].type, "thought");
+      assert.equal(items[2].isSignal, false);
+
+      // 4. [Shell] paseo send -> dispatch signal
+      assert.equal(items[3].type, "dispatch");
+      assert.equal(items[3].isSignal, true);
+
+      // 5. [Heartbeat] -> heartbeat noise
+      assert.equal(items[4].type, "heartbeat");
+      assert.equal(items[4].isSignal, false);
+
+      // 6. [Assistant] -> assistant signal
+      assert.equal(items[5].type, "assistant");
+      assert.equal(items[5].role, "front-desk");
+      assert.equal(items[5].isSignal, true);
+
+      // 7. [Error] -> error signal
+      assert.equal(items[6].type, "error");
+      assert.equal(items[6].isSignal, true);
+
+      // Total signals: User, paseo send dispatch, Assistant, Error = 4
+      const signals = items.filter(isSignalActivityItem);
+      assert.equal(signals.length, 4);
+    });
   });
 });
 
