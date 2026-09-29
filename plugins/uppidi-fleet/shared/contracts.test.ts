@@ -53,6 +53,9 @@ import {
   UppidiToggleRepoMuteOutputSchema,
   uppidiFleetSettingsSchema,
   uppidiFleetSettingsContract,
+  FleetResetStateInputSchema,
+  FleetResetStateOutputSchema,
+  uppidiFleetResetStateContract,
 } from "./contracts.js";
 
 
@@ -829,6 +832,41 @@ describe("subagent lifecycle contract & structured block detail (#537)", () => {
     });
     assert.equal(legacy.metrics, undefined);
     assert.equal(legacy.lastError, undefined);
+  });
+
+  it("validates uppidiFleetResetStateContract and schemas (#764)", () => {
+    assert.equal(uppidiFleetResetStateContract.name, "uppidi-fleet.reset-state");
+
+    const input = FleetResetStateInputSchema.parse({ confirm: true });
+    assert.equal(input.confirm, true);
+    assert.equal(input.notifyOrchestrators, true);
+
+    const inputWithoutNotify = FleetResetStateInputSchema.parse({
+      confirm: true,
+      notifyOrchestrators: false,
+    });
+    assert.equal(inputWithoutNotify.notifyOrchestrators, false);
+
+    assert.throws(() => {
+      FleetResetStateInputSchema.parse({ confirm: false });
+    });
+
+    const output = FleetResetStateOutputSchema.parse({
+      ok: true,
+      cleared: {
+        boardStateFiles: 3,
+        queueFiles: 2,
+        cacheFiles: 5,
+      },
+      notifiedOrchestrators: 1,
+      errors: [],
+      message: "Purged 10 files",
+    });
+    assert.equal(output.ok, true);
+    assert.equal(output.cleared.boardStateFiles, 3);
+    assert.equal(output.cleared.queueFiles, 2);
+    assert.equal(output.cleared.cacheFiles, 5);
+    assert.equal(output.notifiedOrchestrators, 1);
   });
 });
 

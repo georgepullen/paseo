@@ -3003,6 +3003,35 @@ export class HookRouter {
     return this.pausedQueues.has(key);
   }
 
+  public clearAllQueues(): number {
+    let count = 0;
+    for (const key of this.queues.keys()) {
+      const target = this.queueFilePath(key);
+      try {
+        if (existsSync(target)) {
+          unlinkSync(target);
+          count++;
+        }
+      } catch {}
+    }
+    try {
+      if (existsSync(this.queueDir)) {
+        for (const file of readdirSync(this.queueDir)) {
+          if (file.endsWith(".json")) {
+            try {
+              unlinkSync(join(this.queueDir, file));
+              count++;
+            } catch {}
+          }
+        }
+      }
+    } catch {}
+    this.queues.clear();
+    this.busyAttempts.clear();
+    this.log(`[info] Purged all queues (${count} file(s) removed)`);
+    return count;
+  }
+
   private bindLifecycleEvents(): void {
     if (this.unsubscribeLifecycle) return;
     if (this.server && typeof this.server.on === "function") {

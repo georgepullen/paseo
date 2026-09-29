@@ -589,6 +589,46 @@ describe("uppidi-fleet client entry contract", () => {
       );
     });
 
+    it("verifies reset state button and confirmation modal (#764)", () => {
+      // 1. Reset State button rendered in header bar with RotateCcw icon and loading state
+      assert.match(
+        surfaceSource,
+        /label=\{isResetting\s*\?\s*["']Resetting\.\.\.["']\s*:\s*["']Reset State["']\}[\s\S]*?icon=["']RotateCcw["'][\s\S]*?onPress=\{onResetState\}/,
+        "UppidiTopHeaderBar must render the Reset State button with RotateCcw icon and loading feedback",
+      );
+
+      // 2. ResetStateModal component exported
+      assert.match(
+        surfaceSource,
+        /export\s+function\s+ResetStateModal\s*\(/,
+        "surface.tsx must export ResetStateModal",
+      );
+
+      // 3. ResetStateModal provides confirmation text and Cancel / Confirm buttons
+      assert.match(
+        surfaceSource,
+        /Purge Stale Fleet State & Queues/,
+        "ResetStateModal must explain the purge operation",
+      );
+      assert.match(
+        surfaceSource,
+        /label=\{isProcessing\s*\?\s*["']Resetting\.\.\.["']\s*:\s*["']Confirm Reset["']\}[\s\S]*?onPress=\{onConfirm\}/,
+        "ResetStateModal must render Confirm Reset button with loading feedback",
+      );
+
+      // 4. UppidiFleetSurface wires resetStateMutation and mounts ResetStateModal
+      assert.match(
+        surfaceSource,
+        /useRpcMutation\(\s*uppidiFleetResetStateContract\s*\)/,
+        "UppidiFleetSurface must wire uppidiFleetResetStateContract mutation",
+      );
+      assert.match(
+        surfaceSource,
+        /<ResetStateModal[\s\S]*visible=\{isResetStateModalOpen\}[\s\S]*onConfirm=\{handleResetState\}/,
+        "UppidiFleetSurface must mount ResetStateModal",
+      );
+    });
+
     it("elevates the header bar stacking context above the Tabs bar (#484)", () => {
       const start = surfaceSource.indexOf("export function UppidiTopHeaderBar");
       const end = surfaceSource.indexOf("export function UppidiFleetSurface");

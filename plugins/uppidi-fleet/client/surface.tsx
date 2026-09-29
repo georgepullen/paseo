@@ -55,6 +55,7 @@ import {
   uppidiArchiveAgentContract,
   uppidiArchiveInactiveAgentsContract,
   uppidiFleetTeardownContract,
+  uppidiFleetResetStateContract,
   type UppidiAgent,
   type UppidiIssue,
   type AttentionLabel,
@@ -316,6 +317,8 @@ export interface UppidiTopHeaderBarProps {
   onRepoChange: (repo: string) => void;
   onRefresh: () => void;
   onTeardown?: () => void;
+  onResetState?: () => void;
+  isResetting?: boolean;
   /** Number of agents blocked on a pending permission prompt (#534). */
   permissionAttentionCount?: number;
   /** Number of agents awaiting operator input (#534). */
@@ -336,6 +339,8 @@ export function UppidiTopHeaderBar({
   onRepoChange,
   onRefresh,
   onTeardown,
+  onResetState,
+  isResetting = false,
   permissionAttentionCount = 0,
   inputAttentionCount = 0,
 }: UppidiTopHeaderBarProps) {
@@ -386,7 +391,7 @@ export function UppidiTopHeaderBar({
         )}
       </Row>
 
-      {/* Right: Repo Selector & authoritative Refresh button (#449, #466) */}
+      {/* Right: Repo Selector, Refresh, Reset State, & Teardown buttons (#449, #466, #764) */}
       <Row align="center" gap="xs" wrap>
         {/* Global Repo Selector */}
         <View style={{ minWidth: 150, maxWidth: 220 }}>
@@ -410,6 +415,22 @@ export function UppidiTopHeaderBar({
           }}
           onPress={onRefresh}
         />
+        {onResetState && (
+          <Button
+            label={isResetting ? "Resetting..." : "Reset State"}
+            icon="RotateCcw"
+            size="sm"
+            variant="secondary"
+            loading={isResetting}
+            disabled={isResetting}
+            style={{
+              paddingHorizontal: 8,
+              paddingVertical: 2,
+              minHeight: 22,
+            }}
+            onPress={onResetState}
+          />
+        )}
         {onTeardown && (
           <Button
             label="Teardown Fleet"
@@ -658,6 +679,69 @@ export function TeardownModal({ visible, onClose, onConfirm, isProcessing }: Tea
   );
 }
 
+export interface ResetStateModalProps {
+  visible: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+  isProcessing?: boolean;
+}
+
+/**
+ * Confirmation modal for resetting fleet state (#764).
+ * Purges stale board state, issue cache, and queue files, and notifies orchestrators.
+ */
+export function ResetStateModal({ visible, onClose, onConfirm, isProcessing = false }: ResetStateModalProps) {
+  const { colors, typography } = usePluginTheme();
+  const warningColor = colors.statusWarning ?? "#f59e0b";
+
+  return (
+    <Modal
+      open={visible}
+      onOpenChange={(open) => {
+        if (!open && !isProcessing) onClose();
+      }}
+      title="Reset Fleet State"
+    >
+      <ModalContent>
+        <Stack gap="sm">
+          <Card variant="flat" style={{ borderColor: warningColor, borderWidth: 1 }}>
+            <Stack gap="xs">
+              <Row align="center" gap="xs">
+                <Icon name="RotateCcw" size={16} color={warningColor} />
+                <Text style={{ color: warningColor, ...typography.heading }}>
+                  Purge Stale Fleet State & Queues
+                </Text>
+              </Row>
+              <Text style={{ color: colors.foregroundMuted, ...typography.caption }}>
+                This will clear local board state caches, stale issue tracking in ~/.cache, and pending hook event queues in plugin storage. Registered orchestrators will be notified via steer message so they do not rely on stale context. Running agents will remain active.
+              </Text>
+            </Stack>
+          </Card>
+
+          <Row justify="flex-end" gap="xs">
+            <Button
+              label="Cancel"
+              size="sm"
+              variant="secondary"
+              onPress={onClose}
+              disabled={isProcessing}
+            />
+            <Button
+              label={isProcessing ? "Resetting..." : "Confirm Reset"}
+              icon="RotateCcw"
+              size="sm"
+              variant="secondary"
+              disabled={isProcessing}
+              loading={isProcessing}
+              onPress={onConfirm}
+            />
+          </Row>
+        </Stack>
+      </ModalContent>
+    </Modal>
+  );
+}
+
 export function UppidiFleetSurface(props: PluginSurfaceProps) {
   const { colors, typography } = usePluginTheme();
   const toast = useToast();
@@ -769,6 +853,11 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
   const teardownMutation = useRpcMutation(uppidiFleetTeardownContract);
   const [isTeardownModalOpen, setIsTeardownModalOpen] = useState(false);
   const [isTearingDown, setIsTearingDown] = useState(false);
+
+  // Fleet Reset State (#764)
+  const resetStateMutation = useRpcMutation(uppidiFleetResetStateContract);
+  const [isResetStateModalOpen, setIsResetStateModalOpen] = useState(false);
+  const [isResettingState, setIsResettingState] = useState(false);
 
   // Hook service listen address configuration (#427)
   const [hostSelection, setHostSelection] = useState<string>("127.0.0.1");
@@ -1096,6 +1185,24 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
     }
   };
 
+  const handleResetState = async () => {
+    try {
+      setIsResettingState(true);
+      const res = await resetStateMutation.mutateAsync({ confirm: true, notifyOrchestrators: true });
+      if (res.ok) {
+        toast.show(res.message || "Fleet state reset successfully");
+        setIsResetStateModalOpen(false);
+      } else {
+        toast.error(res.error || "Failed to reset fleet state");
+      }
+      refetchAll();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setIsResettingState(false);
+    }
+  };
+
 
   const rawRunners = toList(runnersData?.runners);
   const visibleRunners = useMemo(() => {
@@ -1121,6 +1228,8 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
             repoOptions={repoOptions}
             onRepoChange={setSelectedRepo}
             onRefresh={refetchAll}
+            onResetState={() => setIsResetStateModalOpen(true)}
+            isResetting={isResettingState}
             onTeardown={() => setIsTeardownModalOpen(true)}
             permissionAttentionCount={permissionAgentCount}
             inputAttentionCount={attentionAgents.length - permissionAgentCount}
@@ -2196,6 +2305,12 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
         onClose={() => setIsTeardownModalOpen(false)}
         onConfirm={handleTeardown}
         isProcessing={isTearingDown}
+      />
+      <ResetStateModal
+        visible={isResetStateModalOpen}
+        onClose={() => setIsResetStateModalOpen(false)}
+        onConfirm={handleResetState}
+        isProcessing={isResettingState}
       />
     </ModalBody>
   );
