@@ -56,8 +56,10 @@ import {
   uppidiArchiveInactiveAgentsContract,
   uppidiFleetTeardownContract,
   uppidiFleetResetStateContract,
+  uppidiTransitionIssueContract,
   type UppidiAgent,
   type UppidiIssue,
+  type KanbanColumnId,
   type AttentionLabel,
   type RoleModelConfig,
   type UppidiRunner,
@@ -99,8 +101,9 @@ import {
   UppidiForgeTreeView,
 } from "./tree-view.js";
 import { UppidiFleetToolingView } from "./tooling.js";
+import { UppidiFleetKanbanBoard } from "./kanban-board.js";
 
-export type SurfaceTab = "tree" | "dashboard" | "tooling" | "settings";
+export type SurfaceTab = "tree" | "dashboard" | "tooling" | "settings" | "board";
 
 /**
  * Narrows a possibly-partial RPC collection to an array. A truncated or legacy
@@ -146,6 +149,7 @@ const tabs = [
   { id: "dashboard", label: "Work Queue", shortLabel: "Queue", icon: "LayoutDashboard" },
   { id: "tooling", label: "Tooling", shortLabel: "Tools", icon: "Terminal" },
   { id: "settings", label: "Settings", shortLabel: "Settings", icon: "Sliders" },
+  { id: "board", label: "Board", shortLabel: "Board", icon: "Kanban" },
 ];
 
 const attentionMap: Record<AttentionLabel, string> = {
@@ -779,19 +783,21 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
   const [metricQuery, setMetricQuery] = useState("");
   const [metricSortField, setMetricSortField] = useState<MetricSortField>("passRate");
   const [metricSortDir, setMetricSortDir] = useState<SortDirection>("desc");
+  const [queueViewMode, setQueueViewMode] = useState<"table" | "board">("table");
 
   // Live RPC queries with polling
   // The selected repo goes with the request (#724). Before the fix this input
   // never carried `repo`, so the server kept answering the default repository
   // and any other selection filtered a list the server never served — blank by
   // construction.
+  const issuesState = activeTab === "board" || queueViewMode === "board" ? "all" : "open";
   const {
     data: issuesData,
     isLoading: issuesLoading,
     refetch: refetchIssues,
   } = useRpcQuery(
     uppidiIssuesContract,
-    { state: "open", repo: selectedRepo === "all" ? undefined : selectedRepo },
+    { state: issuesState, repo: selectedRepo === "all" ? undefined : selectedRepo },
     { refetchInterval: 10000 },
   );
 
@@ -858,6 +864,36 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
   const resetStateMutation = useRpcMutation(uppidiFleetResetStateContract);
   const [isResetStateModalOpen, setIsResetStateModalOpen] = useState(false);
   const [isResettingState, setIsResettingState] = useState(false);
+
+  // Issue Kanban state transition (#755)
+  const transitionIssueMutation = useRpcMutation(uppidiTransitionIssueContract);
+
+  const handleTransitionIssue = async (
+    issue: UppidiIssue,
+    targetState: KanbanColumnId,
+  ) => {
+    try {
+      const targetRepo =
+        selectedRepo === "all"
+          ? issue.repo
+            ? `xpufx-org/${issue.repo}`
+            : "xpufx-org/paseo"
+          : selectedRepo;
+      const res = await transitionIssueMutation.mutateAsync({
+        repo: targetRepo,
+        number: issue.number,
+        targetState,
+      });
+      if (res.ok) {
+        toast.show(res.message || `Moved #${issue.number} to ${targetState}`);
+        void refetchIssues();
+      } else {
+        toast.error(res.error || `Failed to move #${issue.number}`);
+      }
+    } catch (err: any) {
+      toast.error(err?.message || `Failed to move #${issue.number}`);
+    }
+  };
 
   // Hook service listen address configuration (#427)
   const [hostSelection, setHostSelection] = useState<string>("127.0.0.1");
@@ -1896,6 +1932,32 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
           selectedRepo={selectedRepo}
           registeredFrontDeskAgentId={hookStatus?.frontDesk?.agentId ?? null}
         />
+      ) : activeTab === "board" ? (
+        <Card variant="elevated" style={{ width: "100%" }}>
+          <CardHeader
+            title="Kanban Board"
+            subtitle={`${rawIssues.length} issues across states`}
+            icon="Kanban"
+            action={
+              <Button
+                label="Refresh"
+                size="sm"
+                icon="RefreshCw"
+                variant="ghost"
+                onPress={() => {
+                  void refetchIssues();
+                }}
+              />
+            }
+          />
+          <UppidiFleetKanbanBoard
+            issues={rawIssues}
+            selectedRepo={selectedRepo}
+            onSelectIssue={(num) => setSelectedNumber(num)}
+            onTransitionIssue={handleTransitionIssue}
+            isLoading={issuesLoading}
+          />
+        </Card>
       ) : (
         <Stack gap={6}>
           {/* Fleet Attention Board (#534): blocked agents need immediate clearance */}
@@ -2090,20 +2152,60 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
               subtitle={`${visible.length} issues in view`}
               icon="ListTodo"
               action={
-                <Button
-                  label="Dispatch work"
-                  size="sm"
-                  icon="ArrowRight"
-                  iconPosition="right"
-                  variant="ghost"
-                  onPress={() => {
-                    if (visible[0]) {
-                      toast.show(`Worktree dispatch requested for #${visible[0].number}`);
-                    }
-                  }}
-                />
+                <Row gap="xs" align="center">
+                  <Row
+                    gap="xxs"
+                    align="center"
+                    style={{
+                      backgroundColor: colors.surface1 ?? "#18181b",
+                      borderColor: colors.border ?? "#27272a",
+                      borderWidth: 1,
+                      borderRadius: 6,
+                      padding: 2,
+                    }}
+                  >
+                    <Button
+                      label="Table"
+                      size="sm"
+                      icon="List"
+                      variant={queueViewMode === "table" ? "secondary" : "ghost"}
+                      onPress={() => setQueueViewMode("table")}
+                    />
+                    <Button
+                      label="Board"
+                      size="sm"
+                      icon="Kanban"
+                      variant={queueViewMode === "board" ? "secondary" : "ghost"}
+                      onPress={() => setQueueViewMode("board")}
+                    />
+                  </Row>
+                  <Button
+                    label="Dispatch work"
+                    size="sm"
+                    icon="ArrowRight"
+                    iconPosition="right"
+                    variant="ghost"
+                    onPress={() => {
+                      if (visible[0]) {
+                        toast.show(`Worktree dispatch requested for #${visible[0].number}`);
+                      }
+                    }}
+                  />
+                </Row>
               }
             />
+            {queueViewMode === "board" ? (
+              <UppidiFleetKanbanBoard
+                issues={visible}
+                selectedRepo={selectedRepo}
+                onSelectIssue={(num) => setSelectedNumber(num)}
+                onTransitionIssue={handleTransitionIssue}
+                filterQuery={query}
+                onFilterQueryChange={setQuery}
+                isLoading={issuesLoading}
+              />
+            ) : (
+              <>
             <Row justify="space-between" align="center" wrap gap="xs">
               <View style={{ flex: 1, minWidth: 200 }}>
                 <SearchInput
@@ -2206,6 +2308,8 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
                 },
               ]}
             />
+            </>
+            )}
           </Card>
 
           {/* Center Modal for Selected Work (#425) */}

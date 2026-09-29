@@ -64,6 +64,10 @@ import {
   UppidiFrontDeskPromptOutputSchema,
   isSignalActivityItem,
   parseTranscriptToActivityItems,
+  KanbanColumnIdSchema,
+  UppidiTransitionIssueInputSchema,
+  UppidiTransitionIssueOutputSchema,
+  uppidiTransitionIssueContract,
 } from "./contracts.js";
 
 
@@ -1092,6 +1096,61 @@ describe("subagent lifecycle contract & structured block detail (#537)", () => {
       // Total signals: User, paseo send dispatch, Assistant, Error = 4
       const signals = items.filter(isSignalActivityItem);
       assert.equal(signals.length, 4);
+    });
+  });
+
+  describe("Kanban board and issue transition contracts (#755)", () => {
+    it("validates KanbanColumnIdSchema canonical columns", () => {
+      assert.equal(KanbanColumnIdSchema.parse("backlog"), "backlog");
+      assert.equal(KanbanColumnIdSchema.parse("in_progress"), "in_progress");
+      assert.equal(KanbanColumnIdSchema.parse("review"), "review");
+      assert.equal(KanbanColumnIdSchema.parse("done"), "done");
+      assert.throws(() => KanbanColumnIdSchema.parse("invalid_column"));
+    });
+
+    it("validates UppidiTransitionIssueInputSchema and defaults", () => {
+      const parsed = UppidiTransitionIssueInputSchema.parse({
+        number: 755,
+        targetState: "in_progress",
+      });
+      assert.equal(parsed.number, 755);
+      assert.equal(parsed.targetState, "in_progress");
+      assert.equal(parsed.repo, "xpufx-org/paseo");
+
+      const parsedWithRepo = UppidiTransitionIssueInputSchema.parse({
+        number: 755,
+        targetState: "done",
+        repo: "xpufx-org/paseo",
+      });
+      assert.equal(parsedWithRepo.repo, "xpufx-org/paseo");
+      assert.equal(parsedWithRepo.targetState, "done");
+    });
+
+    it("validates UppidiTransitionIssueOutputSchema", () => {
+      const output = UppidiTransitionIssueOutputSchema.parse({
+        ok: true,
+        number: 755,
+        targetState: "in_progress",
+        appliedLabel: "state/1-wip",
+        message: "Issue #755 moved to in_progress",
+      });
+      assert.equal(output.ok, true);
+      assert.equal(output.appliedLabel, "state/1-wip");
+
+      const failure = UppidiTransitionIssueOutputSchema.parse({
+        ok: false,
+        error: "CLI failure",
+      });
+      assert.equal(failure.ok, false);
+      assert.equal(failure.error, "CLI failure");
+    });
+
+    it("registers uppidiTransitionIssueContract metadata", () => {
+      assert.equal(uppidiTransitionIssueContract.name, "uppidi-fleet.transition-issue");
+      assert.equal(
+        uppidiTransitionIssueContract.description,
+        "Transition a Forgejo issue between Kanban states",
+      );
     });
   });
 });

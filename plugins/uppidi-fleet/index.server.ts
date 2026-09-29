@@ -30,8 +30,9 @@ import {
   uppidiFleetResetStateContract,
   uppidiFrontDeskActivityContract,
   uppidiFrontDeskPromptContract,
+  uppidiTransitionIssueContract,
 } from "./shared/contracts.js";
-import { handleUppidiIssues } from "./server/issues.js";
+import { handleUppidiIssues, handleUppidiTransitionIssue } from "./server/issues.js";
 import {
   handleHookStatus,
   handleHookInfo,
@@ -90,6 +91,7 @@ const log = createPluginLogger("uppidi-fleet", {
 
 export default function contribute(server: PluginServerContext) {
   server.handle(uppidiIssuesContract, handleUppidiIssues);
+  server.handle(uppidiTransitionIssueContract, handleUppidiTransitionIssue);
   server.handle(uppidiHookStatusContract, handleHookStatus);
   server.handle(uppidiHookInfoContract, handleHookInfo);
   server.handle(uppidiHookQueuesContract, handleHookQueues);

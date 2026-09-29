@@ -58,6 +58,34 @@ export const uppidiIssuesContract = defineContract({
   output: UppidiIssuesOutputSchema,
 });
 
+export const KanbanColumnIdSchema = z.enum(["backlog", "in_progress", "review", "done"]);
+export type KanbanColumnId = z.infer<typeof KanbanColumnIdSchema>;
+
+export const UppidiTransitionIssueInputSchema = z.object({
+  repo: z.string().default("xpufx-org/paseo"),
+  number: z.number(),
+  targetState: KanbanColumnIdSchema,
+  targetLabel: z.string().optional(),
+});
+export type UppidiTransitionIssueInput = z.infer<typeof UppidiTransitionIssueInputSchema>;
+
+export const UppidiTransitionIssueOutputSchema = z.object({
+  ok: z.boolean(),
+  number: z.number().optional(),
+  targetState: KanbanColumnIdSchema.optional(),
+  appliedLabel: z.string().optional(),
+  message: z.string().optional(),
+  error: z.string().optional(),
+});
+export type UppidiTransitionIssueOutput = z.infer<typeof UppidiTransitionIssueOutputSchema>;
+
+export const uppidiTransitionIssueContract = defineContract({
+  name: "uppidi-fleet.transition-issue",
+  description: "Transition a Forgejo issue between Kanban states",
+  input: UppidiTransitionIssueInputSchema,
+  output: UppidiTransitionIssueOutputSchema,
+});
+
 export const HookQueueMessageSchema = z.object({
   id: z.string(),
   ts: z.number().nullable().optional(),

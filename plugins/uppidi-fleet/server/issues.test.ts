@@ -1,6 +1,10 @@
 import { describe, it, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { handleUppidiIssues } from "./issues.js";
+import {
+  handleUppidiIssues,
+  handleUppidiTransitionIssue,
+  setIssueCommandRunnerForTest,
+} from "./issues.js";
 import { setFetchForTest, setTokenResolverForTest } from "./forgejo-api.js";
 
 interface JsonLike {
@@ -84,5 +88,82 @@ describe("issues read resolves the requested repository (#724)", () => {
     assert.equal(res.issues.length, 0);
     assert.match(String(res.error ?? ""), /403/);
     assert.match(String(res.error ?? ""), /scope/);
+  });
+});
+
+describe("issue state transition (#755)", () => {
+  afterEach(() => {
+    setIssueCommandRunnerForTest(null);
+  });
+
+  it("transitions an issue to in_progress by adding state/1-wip and removing other state labels", async () => {
+    const executedCommands: string[][] = [];
+    setIssueCommandRunnerForTest(async (args) => {
+      executedCommands.push(args);
+      return { code: 0, stdout: "ok", stderr: "" };
+    });
+
+    const res = await handleUppidiTransitionIssue({
+      number: 755,
+      targetState: "in_progress",
+      repo: "xpufx-org/paseo",
+    });
+
+    assert.equal(res.ok, true);
+    assert.equal(res.appliedLabel, "state/1-wip");
+    assert.equal(res.targetState, "in_progress");
+
+    // Must have reopened and edited labels
+    assert.ok(executedCommands.length >= 2, "must execute reopen and edit commands");
+    const reopenCmd = executedCommands[0];
+    assert.deepEqual(reopenCmd.slice(0, 3), ["issue", "reopen", "755"]);
+
+    const editCmd = executedCommands[1];
+    assert.deepEqual(editCmd.slice(0, 3), ["issue", "edit", "755"]);
+    assert.ok(editCmd.includes("--add-label") && editCmd.includes("state/1-wip"));
+    assert.ok(editCmd.includes("--remove-label") && editCmd.includes("state/0-triage"));
+    assert.ok(editCmd.includes("--remove-label") && editCmd.includes("state/4-done"));
+  });
+
+  it("transitions an issue to done by adding state/4-done and closing the issue", async () => {
+    const executedCommands: string[][] = [];
+    setIssueCommandRunnerForTest(async (args) => {
+      executedCommands.push(args);
+      return { code: 0, stdout: "ok", stderr: "" };
+    });
+
+    const res = await handleUppidiTransitionIssue({
+      number: 755,
+      targetState: "done",
+      repo: "xpufx-org/paseo",
+    });
+
+    assert.equal(res.ok, true);
+    assert.equal(res.appliedLabel, "state/4-done");
+    assert.equal(res.targetState, "done");
+
+    // Must have edited labels and closed
+    assert.ok(executedCommands.length >= 2, "must execute edit and close commands");
+    const editCmd = executedCommands[0];
+    assert.deepEqual(editCmd.slice(0, 3), ["issue", "edit", "755"]);
+    assert.ok(editCmd.includes("--add-label") && editCmd.includes("state/4-done"));
+
+    const closeCmd = executedCommands[1];
+    assert.deepEqual(closeCmd.slice(0, 3), ["issue", "close", "755"]);
+  });
+
+  it("handles CLI error gracefully and returns ok: false with error details", async () => {
+    setIssueCommandRunnerForTest(async () => {
+      throw new Error("teax command failed: connection refused");
+    });
+
+    const res = await handleUppidiTransitionIssue({
+      number: 755,
+      targetState: "review",
+      repo: "xpufx-org/paseo",
+    });
+
+    assert.equal(res.ok, false);
+    assert.match(String(res.error ?? ""), /connection refused/);
   });
 });

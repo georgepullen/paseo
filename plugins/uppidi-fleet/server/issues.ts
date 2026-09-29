@@ -1,9 +1,13 @@
+import { spawn } from "node:child_process";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import {
   type UppidiIssuesInput,
   type UppidiIssuesOutput,
   type UppidiIssue,
   type AttentionLabel,
+  type UppidiTransitionIssueInput,
+  type UppidiTransitionIssueOutput,
+  type KanbanColumnId,
 } from "../shared/contracts.js";
 import { forgejoApiGet, forgejoToken, resolveForgejoHost } from "./forgejo-api.js";
 
@@ -64,7 +68,7 @@ export async function handleUppidiIssues(
     else if (hasOrchestratorAttention) attention = "attention/0-orchestrator";
 
     let status: "Backlog" | "In progress" | "Review" | "Done" = "Backlog";
-    if (raw.state === "closed") {
+    if (raw.state === "closed" || labelNames.some((l) => l === "state/4-done")) {
       status = "Done";
     } else if (labelNames.some((l) => l === "state/2-review" || l === "state/3-verify" || l.startsWith("review/"))) {
       status = "Review";
@@ -100,4 +104,108 @@ export async function handleUppidiIssues(
     reviewCount: openIssues.filter((i) => i.status === "Review").length,
     needsYouCount: openIssues.filter((i) => i.attention === "attention/2-user").length,
   };
+}
+
+export const STATE_LABELS_FOR_COLUMN: Record<KanbanColumnId, string> = {
+  backlog: "state/0-triage",
+  in_progress: "state/1-wip",
+  review: "state/2-review",
+  done: "state/4-done",
+};
+
+export const ALL_STATE_LABELS = [
+  "state/0-triage",
+  "state/1-wip",
+  "state/2-review",
+  "state/3-verify",
+  "state/4-done",
+];
+
+export type CommandRunnerFn = (args: string[]) => Promise<{ code: number; stdout: string; stderr: string }>;
+
+function defaultTeaxRun(args: string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+  return new Promise((resolve) => {
+    const child = spawn("teax", args, { stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout?.on("data", (chunk) => {
+      stdout += String(chunk);
+    });
+    child.stderr?.on("data", (chunk) => {
+      stderr += String(chunk);
+    });
+    child.on("close", (code) => {
+      resolve({ code: code ?? 0, stdout, stderr });
+    });
+    child.on("error", (err) => {
+      resolve({ code: -1, stdout, stderr: err.message });
+    });
+  });
+}
+
+let commandRunner: CommandRunnerFn = defaultTeaxRun;
+
+export function setIssueCommandRunnerForTest(fn: CommandRunnerFn | null): void {
+  commandRunner = fn ?? defaultTeaxRun;
+}
+
+export async function handleUppidiTransitionIssue(
+  input: UppidiTransitionIssueInput,
+  _context?: PluginHandlerContext,
+): Promise<UppidiTransitionIssueOutput> {
+  const repo = input.repo || DEFAULT_REPO;
+  const host = resolveForgejoHost();
+  const targetLabel = input.targetLabel || STATE_LABELS_FOR_COLUMN[input.targetState];
+  const removeLabels = ALL_STATE_LABELS.filter((l) => l !== targetLabel);
+
+  try {
+    if (input.targetState !== "done") {
+      // Reopen issue if it was closed
+      await commandRunner(["issue", "reopen", String(input.number), "--hostname", host, "-R", repo]);
+    }
+
+    const editArgs = [
+      "issue",
+      "edit",
+      String(input.number),
+      "--hostname",
+      host,
+      "-R",
+      repo,
+      "--add-label",
+      targetLabel,
+    ];
+    for (const rem of removeLabels) {
+      editArgs.push("--remove-label", rem);
+    }
+
+    const editRes = await commandRunner(editArgs);
+    if (editRes.code !== 0 && !editRes.stdout.includes("OK") && !editRes.stdout.includes("updated") && editRes.stderr) {
+      return {
+        ok: false,
+        number: input.number,
+        targetState: input.targetState,
+        error: editRes.stderr || `Command failed with code ${editRes.code}`,
+      };
+    }
+
+    if (input.targetState === "done") {
+      await commandRunner(["issue", "close", String(input.number), "--hostname", host, "-R", repo]);
+    }
+
+    return {
+      ok: true,
+      number: input.number,
+      targetState: input.targetState,
+      appliedLabel: targetLabel,
+      message: `Issue #${input.number} moved to ${input.targetState} (${targetLabel})`,
+    };
+  } catch (err: any) {
+    return {
+      ok: false,
+      number: input.number,
+      targetState: input.targetState,
+      error: err?.message || String(err),
+    };
+  }
 }
