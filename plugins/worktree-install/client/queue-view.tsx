@@ -95,7 +95,7 @@ export function QueueView({
           <Stat label="repos" value={status?.repoCount ?? list.length} testID="queue-repo-count" />
           <Stat label="queued" value={status?.totalQueued ?? 0} tone="accent" testID="queue-total" />
           <Stat label="paused" value={status?.paused.length ?? 0} tone="warn" testID="queue-paused-count" />
-          <View style={{ flex: 1 }} />
+          {!narrow ? <View style={{ flex: 1, minWidth: 0, height: 0 }} /> : null}
           <Press testID="queue-pause-all" tone="warn" disabled={actions.busy} onPress={() => actions.onPause()} accessibilityLabel="Pause all queues">
             <Type size={10} weight="600" color={palette.warn}>
               pause all
@@ -269,8 +269,8 @@ function QueueRow({ queue, busy, actions }: { queue: RepoQueue; busy?: boolean; 
       }}
     >
       <Cluster gap={6} justify="between" align="start">
-        <Cluster gap={5} style={{ flex: 1, minWidth: 0 }}>
-          <Type size={11} weight="700" mono numberOfLines={1} testID={`queue-key-${queue.key}`}>
+        <Cluster gap={5} style={narrow ? { width: "100%" } : { flex: 1, minWidth: 0 }}>
+          <Type size={11} weight="700" mono numberOfLines={1} testID={`queue-key-${queue.key}`} style={{ flexShrink: 1 }}>
             {queue.key}
           </Type>
           <Chip testID={`queue-state-${queue.key}`} label={state} tone={tone} dot strong />
@@ -288,7 +288,7 @@ function QueueRow({ queue, busy, actions }: { queue: RepoQueue; busy?: boolean; 
             />
           ) : null}
         </Cluster>
-        <Cluster gap={4} wrap={false}>
+        <Cluster gap={4} wrap={false} style={narrow ? { alignSelf: "flex-end" } : undefined}>
           <Press
             testID={`queue-toggle-${queue.key}`}
             tone={state === "paused" ? "ok" : "warn"}

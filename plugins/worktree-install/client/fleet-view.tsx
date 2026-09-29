@@ -169,7 +169,7 @@ export function FleetView({
           {summary.total > 0 ? (
             <Stat label="blocked" value={summary.total} tone="warn" testID="stat-blocked" />
           ) : null}
-          <View style={{ flex: 1 }} />
+          {!narrow ? <View style={{ flex: 1, minWidth: 0, height: 0 }} /> : null}
           <Press
             testID="bulk-archive"
             onPress={() => actions.onArchiveBulk(bulkCandidates.map((a) => a.id))}
@@ -311,11 +311,11 @@ export function FleetView({
             ))}
             {detached.length > 0 ? (
               <Stack gap={4} testID="fleet-detached">
-                <Cluster gap={5}>
+                <Cluster gap={5} wrap={false} align="center" style={{ minWidth: 0 }}>
                   <Type size={9} weight="700" color={palette.textFaint} upper>
                     detached / local · {detached.length}
                   </Type>
-                  <View style={{ flex: 1 }}>
+                  <View style={{ flex: 1, minWidth: 0, minHeight: 1 }}>
                     <Hairline />
                   </View>
                 </Cluster>
@@ -342,11 +342,11 @@ export function FleetView({
 
         {groups.staleFrontDesk.length > 0 ? (
           <Stack gap={4} testID="fleet-stale">
-            <Cluster gap={5}>
+            <Cluster gap={5} wrap={false} align="center" style={{ minWidth: 0 }}>
               <Type size={9} weight="700" color={palette.textFaint} upper>
                 orphaned liaison sessions · {groups.staleFrontDesk.length}
               </Type>
-              <View style={{ flex: 1 }}>
+              <View style={{ flex: 1, minWidth: 0, minHeight: 1 }}>
                 <Hairline />
               </View>
             </Cluster>
@@ -391,7 +391,7 @@ function FrontDeskCard({
   actions: FleetActions;
   navigation?: PluginSurfaceProps["navigation"];
 }) {
-  const { palette } = useSkin();
+  const { palette, narrow } = useSkin();
 
   return (
     <View
@@ -408,14 +408,14 @@ function FrontDeskCard({
       }}
     >
       <Cluster gap={6} justify="between" align="start">
-        <Cluster gap={6} align="center">
+        <Cluster gap={6} align="center" style={narrow ? { width: "100%" } : { flex: 1, minWidth: 0 }}>
           <LiveDot
             testID="front-desk-dot"
             tone={node ? stateTone(node.agent.deterministicState) : "muted"}
             pulse={node ? statePresentation(node.agent.deterministicState).active : false}
             size={8}
           />
-          <Stack gap={2}>
+          <Stack gap={2} style={{ flex: 1, minWidth: 0 }}>
             <Cluster gap={5}>
               <Type size={9} weight="700" color={palette.textFaint} upper>
                 liaison
@@ -432,7 +432,7 @@ function FrontDeskCard({
           </Stack>
         </Cluster>
 
-        <Cluster gap={4}>
+        <Cluster gap={4} style={narrow ? { width: "100%", justifyContent: "flex-end" } : undefined}>
           {node ? (
             <>
               <Press
@@ -514,11 +514,11 @@ function FrontDeskCard({
       ) : null}
 
       {orchestrators.length > 0 ? (
-        <Cluster gap={5} testID="front-desk-orchestrators">
+        <Cluster gap={5} wrap={false} align="center" style={{ minWidth: 0 }} testID="front-desk-orchestrators">
           <Type size={9} weight="700" color={palette.textFaint} upper>
             orchestrators · {orchestrators.length}
           </Type>
-          <View style={{ flex: 1 }}>
+          <View style={{ flex: 1, minWidth: 0, minHeight: 1 }}>
             <Hairline />
           </View>
           <Cluster gap={4}>
@@ -568,7 +568,7 @@ function ProjectBlock({
   actions: FleetActions;
   navigation?: PluginSurfaceProps["navigation"];
 }) {
-  const { palette } = useSkin();
+  const { palette, narrow } = useSkin();
   const workers = group.totalCount - group.orchestrators.length;
   const childNodes = group.orchestrators.flatMap((o) => o.children);
 
@@ -589,16 +589,16 @@ function ProjectBlock({
         onPress={onToggle}
         tone="accent"
         hover
-        align="center"
+        align={narrow ? "stretch" : "center"}
         justify="between"
         accessibilityLabel={`${collapsed ? "Expand" : "Collapse"} ${group.projectName}`}
-        style={{ paddingHorizontal: 8, paddingVertical: 6, gap: 8 }}
+        style={{ paddingHorizontal: 8, paddingVertical: 6, gap: narrow ? 4 : 8, width: "100%" }}
       >
-        <Cluster gap={6} style={{ flex: 1, minWidth: 0 }}>
+        <Cluster gap={6} style={narrow ? { width: "100%" } : { flex: 1, minWidth: 0 }}>
           <Type size={10} mono color={palette.textFaint}>
             {collapsed ? "▸" : "▾"}
           </Type>
-          <Type size={12} weight="700" numberOfLines={1} testID={`project-name-${group.projectName}`}>
+          <Type size={12} weight="700" numberOfLines={1} testID={`project-name-${group.projectName}`} style={{ flexShrink: 1 }}>
             {group.projectName}
           </Type>
           <Chip label={`${group.orchestrators.length} orch`} tone="muted" />
@@ -610,7 +610,7 @@ function ProjectBlock({
           {group.isDetached ? <Chip label="detached" tone="muted" /> : null}
           {collapsed ? <Chip label={`${group.totalCount} total`} tone="muted" /> : null}
         </Cluster>
-        <Cluster gap={4} wrap={false}>
+        <Cluster gap={4} wrap={false} style={narrow ? { alignSelf: "flex-end" } : undefined}>
           {group.isEnrolled ? (
             <>
               <Press
@@ -729,16 +729,17 @@ function AgentIdentity({
   const { palette, narrow } = useSkin();
   const parent = parentPillLabel(agent);
   return (
-    <Cluster gap={5} style={{ minWidth: 0 }}>
+    <Cluster gap={5} wrap={false} style={{ minWidth: 0, flexShrink: 1 }}>
       <Press
         testID={`agent-link-${agent.id}`}
         accessibilityRole="link"
         accessibilityLabel={`Open ${agent.name}`}
         onPress={() => openAgent(agent, navigation?.openAgent)}
         tone="accent"
-        style={{ padding: 0, margin: 0 }}
+        wrap={false}
+        style={{ padding: 0, margin: 0, flexShrink: 1, minWidth: 0 }}
       >
-        <Type size={size === "sm" ? 11 : 12} weight="700" numberOfLines={1} testID={`agent-name-${agent.id}`}>
+        <Type size={size === "sm" ? 11 : 12} weight="700" numberOfLines={1} testID={`agent-name-${agent.id}`} style={{ flexShrink: 1 }}>
           {agent.name}
         </Type>
       </Press>
@@ -751,8 +752,9 @@ function AgentIdentity({
           disabled={!agent.parentId}
           onPress={() => agent.parentId && navigation?.openAgent?.({ agentId: agent.parentId })}
           accessibilityLabel={`Open parent ${parent}`}
+          wrap={false}
         >
-          <Type size={9} color={palette.textFaint} mono>
+          <Type size={9} color={palette.textFaint} mono numberOfLines={1}>
             {parent}
           </Type>
         </Press>
@@ -803,7 +805,7 @@ function AttentionStrip({
   navigation?: PluginSurfaceProps["navigation"];
   compact?: boolean;
 }) {
-  const { palette, onCopy } = useSkin();
+  const { palette, narrow, onCopy } = useSkin();
   const permissions = agent.pendingPermissions ?? [];
   const first = permissions[0];
   const reason = attentionReasonLabel(agent.attentionReason);
@@ -841,7 +843,7 @@ function AttentionStrip({
         />
         {permissions.length > 1 ? <Chip label={`+${permissions.length - 1}`} tone={tone} size={9} /> : null}
         {scope ? <Chip label={scope} tone="muted" mono size={9} testID={`attention-scope-${agent.id}`} /> : null}
-        <View style={{ flex: 1 }} />
+        {!narrow ? <View style={{ flex: 1, minWidth: 0, height: 0 }} /> : null}
         <Press
           testID={`attention-open-${agent.id}`}
           tone={tone}
@@ -909,17 +911,17 @@ function AgentRow({
   const indent = Math.min(depth * 14, 56);
 
   return (
-    <View testID={`agent-row-${agent.id}`} style={{ paddingLeft: indent }}>
+    <View testID={`agent-row-${agent.id}`} style={{ paddingLeft: indent, width: "100%" }}>
       <Press
         testID={`agent-row-press-${agent.id}`}
         tone={stateTone(agent.deterministicState)}
-        align="center"
+        align={narrow ? "stretch" : "center"}
         justify="between"
         onPress={() => openAgent(agent, navigation?.openAgent)}
         accessibilityLabel={`${agent.name}, ${statePresentation(agent.deterministicState).label}`}
-        style={{ paddingHorizontal: 8, paddingVertical: 3, gap: 8 }}
+        style={{ paddingHorizontal: 8, paddingVertical: 3, gap: narrow ? 4 : 8, width: "100%" }}
       >
-        <Cluster gap={5} style={{ flex: 1, minWidth: 0 }}>
+        <Cluster gap={5} style={narrow ? { width: "100%" } : { flex: 1, minWidth: 0 }}>
           {depth > 0 ? <Guide last={last} compact={compact} /> : null}
           {orchestrator && collapsible ? (
             <Press
@@ -954,7 +956,7 @@ function AgentRow({
           ) : null}
         </Cluster>
 
-        <Cluster gap={4} wrap={false} align="center">
+        <Cluster gap={4} wrap={false} align="center" style={narrow ? { width: "100%", justifyContent: "space-between" } : undefined}>
           <StateChip agent={agent} />
           {agent.attributedWork?.issue !== undefined ? (
             <Chip

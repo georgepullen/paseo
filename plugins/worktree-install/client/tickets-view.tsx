@@ -131,7 +131,7 @@ export function TicketsView({
             onPress={() => setFilter("triage-review")}
           />
           <Stat testID="ticket-stat-inflight" label="in flight" value={data?.inFlightCount ?? 0} tone="accent" />
-          <View style={{ flex: 1 }} />
+          {!narrow ? <View style={{ flex: 1, minWidth: 0, height: 0 }} /> : null}
           <Chip label={`${visible.length} in view`} tone="muted" testID="ticket-visible-count" />
           <Chip label={repoScope === "all" ? "all repositories" : repoScope} tone="muted" testID="ticket-scope-label" />
         </Cluster>
@@ -296,12 +296,12 @@ function TicketRow({
         accessibilityLabel={`#${ticket.number} ${ticket.title}`}
         style={{ paddingHorizontal: 8, paddingVertical: 5, gap: 8 }}
       >
-        <Stack gap={2} style={{ flex: 1, minWidth: 0 }}>
-          <Cluster gap={5}>
+        <Stack gap={2} style={compact ? { width: "100%" } : { flex: 1, minWidth: 0 }}>
+          <Cluster gap={5} style={{ flexShrink: 1, minWidth: 0 }}>
             <Type size={11} weight="700" mono color={palette.textFaint} testID={`ticket-number-${ticket.number}`}>
               #{ticket.number}
             </Type>
-            <Type size={11} weight="600" numberOfLines={1} testID={`ticket-title-${ticket.number}`}>
+            <Type size={11} weight="600" numberOfLines={1} testID={`ticket-title-${ticket.number}`} style={{ flexShrink: 1 }}>
               {ticket.title}
             </Type>
           </Cluster>

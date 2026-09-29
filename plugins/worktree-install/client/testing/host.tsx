@@ -46,6 +46,7 @@ export const Appearance = { getColorScheme: () => "dark", addChangeListener: () 
 export const useColorScheme = () => "dark";
 export const Dimensions = { get: () => ({ width: 1400, height: 900, scale: 1, fontScale: 1 }) };
 export const useWindowDimensions = () => ({ width: 1400, height: 900, scale: 1, fontScale: 1 });
+export const PixelRatio = { get: () => 1, getFontScale: () => 1, roundToNearestPixel: (n) => n };
 export const Linking = { openURL: async () => {}, canOpenURL: async () => true };
 export const Animated = {
   Value: AnimatedValue,

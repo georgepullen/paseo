@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState, type ReactNode } from "react";
-import { Animated, Linking, Pressable, Text, View, type ViewStyle } from "react-native";
+import { Animated, Linking, PixelRatio, Pressable, Text, View, type ViewStyle } from "react-native";
 import { Icon, ScrollView, TextInput, copyText } from "@getpaseo/plugin/client/react-native";
 import type { PluginTheme } from "@getpaseo/plugin";
 import { agentHref, statePresentation, type SignalTone } from "../shared/derive.js";
@@ -14,6 +14,9 @@ export interface SurfaceLayout {
   platform: "ios" | "android" | "web";
   width?: number;
   height?: number;
+  scale?: number;
+  density?: number;
+  pixelRatio?: number;
 }
 
 /**
@@ -62,6 +65,7 @@ export function Type({
           fontWeight: weight,
           ...(mono ? { fontFamily: palette.mono } : null),
           ...(upper ? { letterSpacing: 0.7, textTransform: "uppercase" } : null),
+          ...(numberOfLines !== undefined ? { flexShrink: 1 } : null),
         },
         style as never,
       ]}
@@ -90,7 +94,7 @@ const JUSTIFY = { start: "flex-start", center: "center", end: "flex-end", betwee
 export function Stack({
   children,
   gap = 0,
-  align = "start",
+  align = "stretch",
   justify = "start",
   wrap,
   grow,
@@ -789,8 +793,28 @@ const DESKTOP_TOUCH_TARGET = 28;
  * ios/android is mobile whatever width it reports. `touchTarget` falls out of
  * the same answer so the two cannot drift apart again.
  */
-function mobileSignals(width: number, platform: SurfaceLayout["platform"]) {
-  const isMobile = width <= NARROW_BREAKPOINT || platform === "ios" || platform === "android";
+export function mobileSignals(
+  width: number,
+  platform: SurfaceLayout["platform"],
+  density?: number,
+) {
+  let scale = density;
+  if (!scale || scale <= 0) {
+    try {
+      if (typeof PixelRatio !== "undefined" && typeof PixelRatio.get === "function") {
+        scale = PixelRatio.get();
+      }
+    } catch {
+      // ignore
+    }
+  }
+  const effectiveDensity = typeof scale === "number" && scale > 0 ? scale : 1;
+  const dpWidth = effectiveDensity > 1 ? width / effectiveDensity : width;
+  const isMobile =
+    platform === "ios" ||
+    platform === "android" ||
+    width <= NARROW_BREAKPOINT ||
+    dpWidth <= NARROW_BREAKPOINT;
   return { isMobile, touchTarget: isMobile ? MOBILE_TOUCH_TARGET : DESKTOP_TOUCH_TARGET };
 }
 
@@ -807,12 +831,14 @@ export function SkinProvider({
 }) {
   const palette = paletteFor(theme?.colors?.surface0);
   const width = typeof layout.width === "number" && layout.width > 0 ? layout.width : 1024;
+  const density = layout.density ?? layout.scale ?? layout.pixelRatio;
+  const signals = mobileSignals(width, layout.platform, density);
   const value: Skin = {
     palette,
     layout,
-    wide: width >= WIDE_BREAKPOINT && !layout.compact,
-    narrow: width <= NARROW_BREAKPOINT,
-    ...mobileSignals(width, layout.platform),
+    wide: !signals.isMobile && width >= WIDE_BREAKPOINT && !layout.compact,
+    narrow: signals.isMobile || width <= NARROW_BREAKPOINT,
+    ...signals,
     Icon,
     onCopy,
   };

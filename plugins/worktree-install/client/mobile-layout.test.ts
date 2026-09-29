@@ -153,17 +153,39 @@ describe("worktree-install mobile layout (#684)", () => {
     }
   });
 
-  it("keeps native platforms mobile at any width, not only narrow ones", async () => {
+  it("keeps native platforms mobile at any width, forcing narrow and not wide (#629)", async () => {
     // Platform stays an additional way in: a device the host names ios/android
-    // is mobile whatever width it reports, which is what the pre-#684 code did
-    // correctly and must keep doing.
+    // is mobile whatever width it reports. On Android at 1080px or unmeasured (defaults to 1024),
+    // wide must be false and narrow must be true.
     for (const platform of ["ios", "android"] as const) {
-      for (const width of [...PHONE_WIDTHS, 1400]) {
+      for (const width of [...PHONE_WIDTHS, 1080, 1400, undefined]) {
         const skin = await readSkin({ platform, width });
         assert.equal(skin.isMobile, true, `${platform} at ${width}px must be mobile`);
         assert.equal(skin.touchTarget, 44, `${platform} at ${width}px must get 44pt targets`);
+        assert.equal(skin.narrow, true, `${platform} at ${width}px must be narrow`);
+        assert.equal(skin.wide, false, `${platform} at ${width}px must not be wide`);
       }
     }
+  });
+
+  it("respects density/DPI so high-density viewports resolve to mobile (#629)", async () => {
+    // 1080px physical width with density 3 is 360dp, which is mobile.
+    const skin = await readSkin({ platform: "web", width: 1080, density: 3 });
+    assert.equal(skin.isMobile, true, "1080px at 3x density is 360dp mobile");
+    assert.equal(skin.narrow, true, "1080px at 3x density is narrow");
+    assert.equal(skin.wide, false, "1080px at 3x density is not wide");
+  });
+
+  it("renders mobile surfaces on Android 1080px without collapsing identity or expanding void (#629)", async () => {
+    const fleetCase = (await surfaceCases()).find((s) => s.id === "fleet-view")!;
+    const rendered = await renderInSkin(fleetCase.element, {
+      theme: DARK_THEME,
+      layout: { compact: false, platform: "android", width: 1080 },
+    });
+    assert.ok(rendered.ids.has("fleet-stats"), "fleet-stats should be present");
+    assert.ok(rendered.ids.has("front-desk"), "front-desk should be present");
+    assert.ok(rendered.texts.some((t) => t.includes("liaison") || t.includes("atlas")), "agent names should be present");
+    rendered.unmount();
   });
 
   it("leaves the desktop signal exactly as it was", async () => {
