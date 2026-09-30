@@ -10,7 +10,7 @@ export { C as ClientHostDeps, H as HostAgentRef, a as HostAgentUpdate, b as Host
 export { C as CommandCenterCapabilities, a as CommandCenterContext, b as CommandCenterItemContribution, c as CommandCenterItemRegistrar, r as registerCommandCenterItem } from '../command-center-D0KI5dgd.js';
 export { R as REFRESH_INTERVALS, a as RefreshRate, b as RpcMutationOptions, c as RpcQueryOptions, U as UseAutoRefreshQueryOptions, d as UsePluginSettingsOptions, e as UsePluginSettingsResult, f as UseSharedPluginSettingsOptions, n as normalizeSnapshotScope, s as shallowEqualRecord, g as sharedSnapshotKey, h as shouldEmitSnapshotUpdate, u as useAutoRefreshQuery, i as usePluginSettings, j as useRpcMutation, k as useRpcQuery, l as useSharedPluginSettings, m as useSuiteSettings } from '../shared-settings-C1yRsiKp.js';
 export { H as HelperSettingsCardProps, a as HelperSettingsField, b as HelperSettingsFieldKind, c as HelperSettingsFieldOverrides, d as HelperSettingsInputProps, e as HelperSettingsRowBaseProps, f as HelperSettingsScreenContribution, g as HelperSettingsScreenRegistrar, h as HelperSettingsSectionProps, i as HelperSettingsSelectComponent, j as HelperSettingsSelectProps, k as HelperSettingsSwitchProps, l as HelperSettingsUiBundle, R as RegisterHelperSettingsScreenOptions, m as contractSchemaToFields, r as registerHelperSettingsScreen } from '../settings-screen-NWzViyZn.js';
-import { e as AgentEnvelope, I as IssueComment, n as ForgeAccessState, r as ForgeLabel } from '../tickets-BM9x4pec.js';
+import { e as AgentEnvelope, M as IssueComment, n as ForgeAccessState, v as ForgeLabel } from '../tickets-DaCIB2Cg.js';
 import 'zod';
 import '../settings-CP1gv9q3.js';
 import '../rpc-D27pph91.js';

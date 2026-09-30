@@ -65,7 +65,7 @@ import { handleUppidiRunners } from "./server/runners.js";
 import { handleUppidiFleetMetrics } from "./server/metrics.js";
 import { handleFleetToolList, handleFleetToolExecute } from "./server/mcp-tools.js";
 import { startHookRouter, getActiveHookRouter } from "./server/hook-router.js";
-import { createPluginLogger, registerSettingsRpc } from "paseo-plugin-helper/server";
+import { createPluginLogger, registerSettingsRpc, registerTicketHandlers } from "paseo-plugin-helper/server";
 import { getUppidiFleetSettingsStorage } from "./server/settings.js";
 import { PLUGIN_VERSION } from "./shared/version.js";
 import { HELPER_VERSION, HELPER_SERVED_FROM } from "./shared/helper-version.js";
@@ -90,6 +90,7 @@ const log = createPluginLogger("uppidi-fleet", {
 });
 
 export default function contribute(server: PluginServerContext) {
+  registerTicketHandlers(server);
   server.handle(uppidiIssuesContract, handleUppidiIssues);
   server.handle(uppidiTransitionIssueContract, handleUppidiTransitionIssue);
   server.handle(uppidiHookStatusContract, handleHookStatus);

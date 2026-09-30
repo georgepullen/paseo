@@ -102,7 +102,7 @@ export const ForgeIssueSchema = z.object({
   labels: z.array(z.string()),
   labelDetails: z.array(ForgeLabelSchema).default([]),
   comments: z.number().int().nonnegative().default(0),
-  updatedAt: z.string(),
+  updatedAt: z.string().optional(),
   createdAt: z.string().optional(),
   author: z.string().optional(),
   url: z.string().optional(),
@@ -572,3 +572,439 @@ export function parseLabelList(text: string | undefined | null): string[] {
   }
   return names;
 }
+
+// ---------------------------------------------------------------------------
+// Open & Search issues RPC contracts
+// ---------------------------------------------------------------------------
+
+export const OpenIssuesInputSchema = z.object({
+  workspaceId: z.string().optional(),
+  directory: z.string().optional(),
+  remoteUrl: z.string().optional(),
+  page: z.number().int().positive().default(1),
+});
+export type OpenIssuesInput = z.infer<typeof OpenIssuesInputSchema>;
+
+export const OpenIssuesOutputSchema = z.object({
+  repo: z.string().nullable(),
+  host: z.string().nullable().default(null),
+  issues: z.array(ForgeIssueSchema),
+  openIssueCount: z.number().int().nonnegative().nullable().default(null),
+  page: z.number().int().positive().default(1),
+  hasMore: z.boolean().default(false),
+  derivedRemote: z.string().nullable().default(null),
+  remoteSource: z.enum(["explicit", "derived"]).nullable().default(null),
+  repoPublic: z.boolean().nullable().default(null),
+  tokenPresent: z.boolean().default(false),
+  tokenValid: z.boolean().nullable().default(null),
+  repoWritePermission: z.boolean().nullable().default(null),
+  error: z.string().optional(),
+});
+export type OpenIssuesOutput = z.infer<typeof OpenIssuesOutputSchema>;
+
+export const openIssuesContract = defineContract({
+  name: "forge.open-issues",
+  description: "List open forge issues for the repo backing a workspace directory",
+  input: OpenIssuesInputSchema,
+  output: OpenIssuesOutputSchema,
+});
+
+export const SearchIssuesInputSchema = z.object({
+  workspaceId: z.string().optional(),
+  directory: z.string().optional(),
+  remoteUrl: z.string().optional(),
+  query: z.string(),
+  page: z.number().int().positive().default(1),
+});
+export type SearchIssuesInput = z.infer<typeof SearchIssuesInputSchema>;
+
+export const SearchIssuesOutputSchema = z.object({
+  repo: z.string().nullable(),
+  host: z.string().nullable().default(null),
+  issues: z.array(ForgeIssueSchema),
+  page: z.number().int().positive().default(1),
+  hasMore: z.boolean().default(false),
+  error: z.string().optional(),
+});
+export type SearchIssuesOutput = z.infer<typeof SearchIssuesOutputSchema>;
+
+export const searchIssuesContract = defineContract({
+  name: "forge.search-issues",
+  description: "Keyword-search forge issues (open and closed) for the repo backing a workspace directory",
+  input: SearchIssuesInputSchema,
+  output: SearchIssuesOutputSchema,
+});
+
+// ---------------------------------------------------------------------------
+// Forge context RPC contracts
+// ---------------------------------------------------------------------------
+
+export const ForgeContextInputSchema = z.object({
+  workspaceId: z.string().optional(),
+  directory: z.string().optional(),
+});
+export type ForgeContextInput = z.infer<typeof ForgeContextInputSchema>;
+
+export const ForgeContextOutputSchema = z.object({
+  directory: z.string().nullable().default(null),
+  derivedRemote: z.string().nullable().default(null),
+  derivedHost: z.string().nullable().default(null),
+  derivedRepo: z.string().nullable().default(null),
+});
+export type ForgeContextOutput = z.infer<typeof ForgeContextOutputSchema>;
+
+export const forgeContextContract = defineContract({
+  name: "forge.context",
+  description: "Workspace git-origin forge coordinates",
+  input: ForgeContextInputSchema,
+  output: ForgeContextOutputSchema,
+});
+
+export const forgeForgeContextContract = defineContract({
+  name: "forge.forge-context",
+  description: "Git-origin forge coordinates for a workspace, independent of issue queries",
+  input: ForgeContextInputSchema,
+  output: ForgeContextOutputSchema,
+});
+
+// ---------------------------------------------------------------------------
+// Agent envelope parsing
+// ---------------------------------------------------------------------------
+
+export const SHA_PATTERN = /\b[0-9a-f]{7,40}\b/g;
+export const PASEO_LINK_PATTERN = /paseo:\/\/[^\s)>\]]+/g;
+export const PASEO_SERVER_PATTERN = /paseo:\/\/h\/([^/\s]+)\/agent\//;
+
+export function parseAgentEnvelope(
+  commentId: number,
+  body: string | undefined | null,
+): AgentEnvelope | null {
+  if (!body || typeof body !== "string") return null;
+  const match = ENVELOPE_FOOTER_PATTERN.exec(body);
+  if (!match) return null;
+  const sessionTitle = match[1].trim();
+  const agentShortId = match[2].trim();
+  if (!sessionTitle || !agentShortId) return null;
+  const model = match[3].trim() || null;
+  const repoBranch = match[4].trim();
+  const postedAt = match[5].trim() || null;
+  let repo: string | null = null;
+  let branch: string | null = null;
+  if (repoBranch) {
+    const sep = repoBranch.lastIndexOf(":");
+    if (sep > 0) {
+      repo = repoBranch.slice(0, sep) || null;
+      branch = repoBranch.slice(sep + 1) || null;
+    } else {
+      branch = repoBranch;
+    }
+  }
+  const commitShas = Array.from(
+    new Set(
+      (body.match(SHA_PATTERN) ?? []).filter(
+        (sha) => sha !== agentShortId && /[0-9]/.test(sha) && /[a-f]/.test(sha),
+      ),
+    ),
+  );
+  const paseoLinks = Array.from(new Set(body.match(PASEO_LINK_PATTERN) ?? []));
+  const serverMatch = PASEO_SERVER_PATTERN.exec(paseoLinks[0] ?? "");
+  return {
+    commentId,
+    sessionTitle,
+    agentShortId,
+    model,
+    repo,
+    branch,
+    postedAt,
+    commitShas,
+    paseoLinks,
+    serverId: serverMatch ? serverMatch[1] : null,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Remote coordinates & resolution
+// ---------------------------------------------------------------------------
+
+export interface ForgeRemote {
+  host: string;
+  owner: string;
+  repo: string;
+}
+
+export function parseForgeRemote(url: string | undefined | null): ForgeRemote | null {
+  if (!url || typeof url !== "string") return null;
+  const trimmed = url.trim().replace(/\/+$/, "");
+  const scp = trimmed.match(/^(?:[^@/]+@)?([^:/]+):(.+)$/);
+  let host: string | undefined;
+  let pathPart: string | undefined;
+  if (scp && !trimmed.includes("://")) {
+    host = scp[1];
+    pathPart = scp[2];
+  } else {
+    const withScheme = /^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(trimmed)
+      ? trimmed
+      : `ssh://${trimmed}`;
+    try {
+      const parsed = new URL(withScheme);
+      host = parsed.hostname || undefined;
+      pathPart = parsed.pathname.replace(/^\/+/, "") || undefined;
+    } catch {
+      return null;
+    }
+  }
+  if (!host || !pathPart) return null;
+  const segments = pathPart.replace(/\.git$/, "").split("/").filter(Boolean);
+  if (segments.length < 2) return null;
+  const repo = segments.pop() as string;
+  const owner = segments.pop() as string;
+  return { host, owner, repo };
+}
+
+export const BARE_REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/;
+
+export type ForgeTargetResolution =
+  | { ok: true; host: string; repo: string; source: "explicit" | "derived" }
+  | { ok: false; error: string };
+
+export function resolveForgeTarget(
+  explicitTarget: string | undefined | null,
+  gitRemoteUrl: string | undefined | null,
+): ForgeTargetResolution {
+  const explicit = typeof explicitTarget === "string" ? explicitTarget.trim() : "";
+  const git = parseForgeRemote(gitRemoteUrl);
+  if (explicit) {
+    const parsed = parseForgeRemote(explicit);
+    if (parsed) {
+      return { ok: true, host: parsed.host, repo: `${parsed.owner}/${parsed.repo}`, source: "explicit" };
+    }
+    if (BARE_REPO_PATTERN.test(explicit)) {
+      if (git) return { ok: true, host: git.host, repo: explicit, source: "explicit" };
+      return { ok: false, error: `Selected forge "${explicit}" needs a git origin remote to supply its host` };
+    }
+    return { ok: false, error: `Selected forge "${explicit}" is not a valid forge remote or owner/repo` };
+  }
+  if (!git) return { ok: false, error: "No forge repo found for this workspace" };
+  return { ok: true, host: git.host, repo: `${git.owner}/${git.repo}`, source: "derived" };
+}
+
+export function isValidForgeTarget(target: string | undefined | null): boolean {
+  const value = typeof target === "string" ? target.trim() : "";
+  if (!value) return false;
+  return Boolean(parseForgeRemote(value)) || BARE_REPO_PATTERN.test(value);
+}
+
+export function forgeCapabilityFromRepo(payload: unknown): boolean | null {
+  if (!payload || typeof payload !== "object") return null;
+  const record = payload as Record<string, unknown>;
+  const permissions = record.permissions;
+  if (permissions && typeof permissions === "object") {
+    const perms = permissions as Record<string, unknown>;
+    if (typeof perms.push === "boolean" || typeof perms.admin === "boolean") {
+      return perms.push === true || perms.admin === true;
+    }
+  }
+  const accessLevel = record.access_level ?? record.accessLevel;
+  if (typeof accessLevel === "number") return accessLevel >= 30;
+  return null;
+}
+
+export function activeForgeForDirectory(
+  settings:
+    | {
+        activeForgeByDirectory?: Record<string, string>;
+        remotesByDirectory?: Record<string, string>;
+        forgesByDirectory?: Record<string, string[]>;
+      }
+    | undefined
+    | null,
+  directory: string | undefined | null,
+): string | null {
+  const dir = typeof directory === "string" ? directory.trim() : "";
+  if (!dir) return null;
+  const activeMap = settings?.activeForgeByDirectory;
+  if (activeMap && Object.prototype.hasOwnProperty.call(activeMap, dir)) {
+    const active = activeMap[dir];
+    return typeof active === "string" && active.trim() ? active.trim() : null;
+  }
+  const remotesMap = settings?.remotesByDirectory;
+  if (remotesMap && Object.prototype.hasOwnProperty.call(remotesMap, dir)) {
+    const legacy = remotesMap[dir];
+    return typeof legacy === "string" && legacy.trim() ? legacy.trim() : null;
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Issue & label utilities
+// ---------------------------------------------------------------------------
+
+export function normalizeIssueNumber(input: {
+  issueNumber?: number;
+  number?: number;
+}): number | null {
+  const candidate = input.issueNumber ?? input.number;
+  return typeof candidate === "number" && Number.isInteger(candidate) && candidate > 0
+    ? candidate
+    : null;
+}
+
+export function scopeOfLabel(label: string): string | null {
+  const slash = label.indexOf("/");
+  if (slash <= 0 || slash + 1 >= label.length) return null;
+  const scope = label.slice(0, slash);
+  if (!/^[A-Za-z0-9_.-]+$/.test(scope)) return null;
+  return scope;
+}
+
+export function liveScopesFromLabels(allLabels: string[]): string[] {
+  const scopes: string[] = [];
+  for (const label of allLabels) {
+    const scope = scopeOfLabel(label);
+    if (scope && !scopes.includes(scope)) scopes.push(scope);
+  }
+  return scopes;
+}
+
+export function liveScopesFromIssues(issues: Pick<ForgeIssue, "labels">[]): string[] {
+  return liveScopesFromLabels(issues.flatMap((issue) => issue.labels));
+}
+
+function rankOf(label: string | null, order: readonly string[]): number {
+  if (!label) return order.length;
+  const idx = (order as readonly string[]).indexOf(label);
+  return idx < 0 ? order.length : idx;
+}
+
+export function rankIssues<T extends Pick<ForgeIssue, "labels" | "updatedAt">>(issues: T[]): T[] {
+  return [...issues].sort((a, b) => {
+    const pri =
+      rankOf(currentPriorityLabel(a.labels), PRIORITY_ORDER) -
+      rankOf(currentPriorityLabel(b.labels), PRIORITY_ORDER);
+    if (pri !== 0) return pri;
+    const state =
+      rankOf(currentStateLabel(a.labels), STATE_ORDER) -
+      rankOf(currentStateLabel(b.labels), STATE_ORDER);
+    if (state !== 0) return state;
+    return (b.updatedAt ?? "").localeCompare(a.updatedAt ?? "");
+  });
+}
+
+export const PASEO_LABEL_SCOPES = [
+  "state",
+  "priority",
+  "attention",
+  "spec",
+  "kind",
+  "target",
+  "format",
+  "size",
+  "dep",
+  "flag",
+] as const;
+
+export const INSTALL_LABEL_MODES = ["merge", "replace"] as const;
+export type InstallLabelMode = (typeof INSTALL_LABEL_MODES)[number];
+
+export interface ForgeLabelRef {
+  id?: number;
+  name: string;
+}
+
+export interface LabelDefinition {
+  name: string;
+  color: string;
+  exclusive: boolean;
+  description: string;
+}
+
+export interface LabelSetPlan {
+  mode: InstallLabelMode;
+  create: LabelDefinition[];
+  remove: ForgeLabelRef[];
+  skip: string[];
+}
+
+export const InstallLabelsInputSchema = z.object({
+  directory: z.string().optional(),
+  remoteUrl: z.string().optional(),
+  mode: z.enum(INSTALL_LABEL_MODES),
+});
+export type InstallLabelsInput = z.infer<typeof InstallLabelsInputSchema>;
+
+export const InstallLabelsOutputSchema = z.object({
+  host: z.string().nullable().default(null),
+  repo: z.string().nullable().default(null),
+  mode: z.enum(INSTALL_LABEL_MODES).nullable().default(null),
+  created: z.array(z.string()).default([]),
+  skipped: z.array(z.string()).default([]),
+  removed: z.array(z.string()).default([]),
+  error: z.string().optional(),
+});
+export type InstallLabelsOutput = z.infer<typeof InstallLabelsOutputSchema>;
+
+const STATE_COLORS = ["#1d76db", "#0e7c6b", "#a6700b", "#6e40c9", "#1a7f37"];
+const PRIORITY_COLORS = ["#d1242f", "#e85d04", "#1d76db", "#59636e", "#8c959f"];
+
+const LABEL_DEFS: LabelDefinition[] = [
+  ...STATE_ORDER.map((name, i): LabelDefinition => ({
+    name,
+    color: STATE_COLORS[i] ?? "#59636e",
+    exclusive: true,
+    description: `Workflow state ${i}`,
+  })),
+  ...PRIORITY_ORDER.map((name, i): LabelDefinition => ({
+    name,
+    color: PRIORITY_COLORS[i] ?? "#59636e",
+    exclusive: true,
+    description: `Priority ${i}`,
+  })),
+  ...ATTENTION_LABELS.map((name): LabelDefinition => ({
+    name,
+    color: "#8250df",
+    exclusive: true,
+    description: "Who acts next",
+  })),
+  ...SPEC_LABELS.map((name): LabelDefinition => ({
+    name,
+    color: "#0e7c6b",
+    exclusive: true,
+    description: "Spec readiness",
+  })),
+];
+
+export function paseoLabelSet(): LabelDefinition[] {
+  return LABEL_DEFS.map((def) => ({ ...def }));
+}
+
+export function paseoLabelScopes(): string[] {
+  const scopes: string[] = [];
+  for (const def of LABEL_DEFS) {
+    const scope = scopeOfLabel(def.name);
+    if (scope && !scopes.includes(scope)) scopes.push(scope);
+  }
+  return scopes;
+}
+
+export function planLabelSetInstall(
+  existing: ForgeLabelRef[],
+  mode: InstallLabelMode,
+): LabelSetPlan {
+  const desired = paseoLabelSet();
+  const desiredNames = new Set(desired.map((def) => def.name));
+  const existingNames = new Set(
+    existing.map((label) => label.name).filter((name): name is string => typeof name === "string"),
+  );
+  const ownScopes = new Set(paseoLabelScopes());
+  const remove =
+    mode === "replace"
+      ? existing.filter((label) => {
+          const scope = scopeOfLabel(label.name);
+          return scope !== null && ownScopes.has(scope) && !desiredNames.has(label.name);
+        })
+      : [];
+  const create = desired.filter((def) => !existingNames.has(def.name));
+  const skip = desired.filter((def) => existingNames.has(def.name)).map((def) => def.name);
+  return { mode, create, remove, skip };
+}
+

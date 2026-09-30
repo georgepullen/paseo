@@ -16,3 +16,5 @@ export * from "./custom-pills.js";
 export * from "./rpc-guard.js";
 export * from "./agent.js";
 export * from "./workspace-beacon.js";
+export * from "./tickets.js";
+

@@ -2,6 +2,7 @@ import { ZodType } from 'zod';
 import { S as SettingsContract } from '../settings-CP1gv9q3.js';
 import { SpawnOptions } from 'node:child_process';
 import { C as CustomPillDefinition, d as CustomPillState } from '../custom-pills-C98QP7Cg.js';
+import { t as ForgeIssue, v as ForgeLabel, Z as OpenIssuesInput, $ as OpenIssuesOutput, a9 as SearchIssuesInput, ab as SearchIssuesOutput, p as ForgeContextInput, r as ForgeContextOutput, P as IssueDetailInput, R as IssueDetailOutput, ad as SetLabelInput, af as SetLabelOutput, a as AddCommentInput, c as AddCommentOutput, j as CreateIssueInput, l as CreateIssueOutput, H as InstallLabelsInput, K as InstallLabelsOutput } from '../tickets-DaCIB2Cg.js';
 import '../rpc-D27pph91.js';
 
 interface PluginStorageOptions<T> {
@@ -887,4 +888,286 @@ declare class WorkspaceBeacon {
 }
 declare function createWorkspaceBeacon(options?: WorkspaceBeaconOptions): WorkspaceBeacon;
 
-export { type AgentCreateInjectionConfig, type AgentCreateInjectionRequest, type AgentIdentity, type AgentIdentityOptions, BEACON_COLORS, type BeaconBlinkHandle, type BeaconBlinkOptions, type BeaconClearOptions, type BeaconClearResult, type BeaconColor, type BeaconDaemonClient, type BeaconLabelState, type BeaconSetOptions, type BeaconSetResult, type CpuCoreMetrics, CpuSampler, CustomPillPoller, type CustomPillPollerOptions, DEFAULT_BEACON_LABEL_PREFIX, DEFAULT_NAMESPACE_README, type GuardedRpcHandler, type HandleableServerContext, type ListPluginsOptions, type LogLevel, type LoopWatchdogOptions, McpConfigPaths, type McpConfigTarget, type McpHttpInjectionConfig, type McpInjectionConfig, type McpInjectionFilter, type McpInjectionHookHandler, type McpInjectionServer, type McpMutationResult, type McpServerConfig, type McpSseInjectionConfig, type McpStdioInjectionConfig, type PaseoPluginInfo, type PaseoPluginsSurface, type PeriodicTaskHandle, type PeriodicTaskOptions, type PingHostOptions, type PluginLogger, type PluginLoggerOptions, type PluginPresence, type PluginQueryOptions, type PluginRegistryContext, type PluginStatusFilter, PluginStorage, type PluginStorageOptions, type RedactOptions, type RegisterMcpInjectionOptions, type RegisterSettingsRpcOptions, type RemoveMcpServerOptions, type ResolveVersionOptions, type RpcGuardOptions, type SafeSpawnOptions, type SafeSpawnResult, type SharedPluginSettings, type SharedPluginSettingsOptions, type SharedSettingsListener, type StampVersionOptions, type StorageStats, type SystemMetrics, type UpsertMcpServerOptions, WorkspaceBeacon, type WorkspaceBeaconOptions, type WorkspaceTitleHandle, clearPluginCache, createLoopWatchdog, createPeriodicTask, createPluginLogger, createSettingsHandlers, createSharedPluginSettings, createWorkspaceBeacon, discoverCustomPillConfigs, expandPath, findAvailablePort, getAgentIdentity, getMcpServer, getPluginInfo, getSystemMetrics, guardRpcHandler, isDevelopmentEnv, isPluginEnabled, isPluginInstalled, isPluginRunning, isPortOpen, isProductionEnv, listPlugins, normalizeBeaconColor, parseJsonc, pingHost, redactSecrets, registerMcpInjection, registerSettingsRpc, removeMcpServer, resolveBeaconLabelName, resolveDefaultMinLevel, resolveMinLevelFromEnv, resolvePluginVersion, safeExec, safeSpawn, stampVersion, stripJsonComments, tryParseJsonc, upsertMcpServer };
+/** `[remote "origin"]` URL from git config text, or null when absent. */
+declare function parseOriginUrl(config: string | null | undefined): string | null;
+/** `gitdir:` target from a linked-worktree `.git` file, or null. */
+declare function parseGitDirPointer(contents: string | null | undefined): string | null;
+/**
+ * Read the workspace's git origin URL without shelling out. Handles both a
+ * normal `.git` directory and a linked-worktree `.git` file. Never throws:
+ * an unreadable or non-git directory yields null.
+ */
+declare function gitOriginForDirectory(directory: string): Promise<string | null>;
+declare const NEGATIVE_PROBE_TTL_MS = 300000;
+type GuardLogLevel = "info" | "debug" | "warn";
+declare class ForgeGuard {
+    private readonly probes;
+    private readonly quietLogged;
+    private readonly failures;
+    private readonly now;
+    private readonly negativeProbeTtlMs;
+    constructor(options?: {
+        now?: () => number;
+        negativeProbeTtlMs?: number;
+    });
+    /**
+     * Cached verdict: a host that speaks the forge API stays cached, a negative
+     * verdict expires. Null means the caller must probe.
+     */
+    cachedProbe(host: string): boolean | null;
+    recordProbe(host: string, speaksForgeApi: boolean): void;
+    /** Skip-log level for a non-forge host: info the first time, debug after. */
+    skipLogLevel(host: string): GuardLogLevel;
+    /** List-failure level: warn the first time per repo, debug on repeats. */
+    failureLogLevel(host: string, repo: string): GuardLogLevel;
+    /** A successful list clears the backoff so the next failure warns again. */
+    noteSuccess(host: string, repo: string): void;
+}
+interface ForgeClientOptions {
+    host: string;
+    token?: string;
+    timeoutMs?: number;
+}
+interface ForgejoLabel {
+    id: number;
+    name: string;
+    color?: string;
+    exclusive?: boolean;
+    description?: string;
+}
+interface ForgejoComment {
+    id: number;
+    author: string;
+    createdAt: string;
+    updatedAt: string;
+    body: string;
+    url: string;
+}
+interface ForgejoIssueDetail {
+    number: number;
+    title: string;
+    state: string;
+    labels: string[];
+    labelDetails: ForgeLabel[];
+    body: string;
+    author: string;
+    createdAt: string;
+    updatedAt: string;
+    webUrl: string;
+    comments: ForgejoComment[];
+}
+declare class ForgeClient {
+    readonly host: string;
+    private readonly baseUrl;
+    private readonly token?;
+    private readonly timeoutMs;
+    constructor(options: ForgeClientOptions);
+    private requestWithStatus;
+    private request;
+    repoIsPublic(repo: string): Promise<boolean | null>;
+    isForgeHost(): Promise<boolean>;
+    hasToken(): boolean;
+    tokenIsValid(): Promise<boolean | null>;
+    repoWritePermission(repo: string): Promise<boolean | null>;
+    openIssueCount(repo: string): Promise<number | null>;
+    private anonymousRepo;
+    listIssues(repo: string, page?: number, limit?: number): Promise<{
+        issues: ForgeIssue[];
+        hasMore: boolean;
+    } | null>;
+    searchIssues(repo: string, query: string, page?: number, limit?: number): Promise<{
+        issues: ForgeIssue[];
+        hasMore: boolean;
+    } | null>;
+    listComments(repo: string, issueNumber: number): Promise<ForgejoComment[] | null>;
+    getIssue(repo: string, host: string, issueNumber: number): Promise<ForgejoIssueDetail | null>;
+    listLabels(repo: string): Promise<ForgejoLabel[] | null>;
+    createLabel(repo: string, label: {
+        name: string;
+        color: string;
+        exclusive: boolean;
+        description: string;
+    }): Promise<boolean>;
+    deleteLabel(repo: string, id: number): Promise<boolean>;
+    setLabels(repo: string, issueNumber: number, add: string[], remove: string[]): Promise<string[] | null>;
+    addComment(repo: string, issueNumber: number, body: string): Promise<number | null>;
+    createIssue(repo: string, issue: {
+        title: string;
+        body?: string;
+        labels?: string[];
+    }): Promise<number | null>;
+}
+declare function resolveForgeToken(host: string, options?: TicketHandlerOptions): Promise<string | undefined>;
+declare function storedForgeSelection(directory: string | undefined, storagePluginId?: string): Promise<string | undefined>;
+interface TicketHandlerOptions {
+    storagePluginId?: string;
+    resolveToken?: (host: string) => Promise<string | undefined | null>;
+    guard?: ForgeGuard;
+}
+interface TicketHandlers {
+    handleOpenIssues(input: OpenIssuesInput): Promise<OpenIssuesOutput>;
+    handleSearchIssues(input: SearchIssuesInput): Promise<SearchIssuesOutput>;
+    handleForgeContext(input: ForgeContextInput): Promise<ForgeContextOutput>;
+    handleIssueDetail(input: IssueDetailInput): Promise<IssueDetailOutput>;
+    handleSetLabel(input: SetLabelInput): Promise<SetLabelOutput>;
+    handleAddComment(input: AddCommentInput): Promise<AddCommentOutput>;
+    handleCreateIssue(input: CreateIssueInput): Promise<CreateIssueOutput>;
+    handleInstallLabels(input: InstallLabelsInput): Promise<InstallLabelsOutput>;
+}
+declare function createTicketHandlers(options?: TicketHandlerOptions): TicketHandlers;
+declare const handleOpenIssues: (input: OpenIssuesInput) => Promise<{
+    repo: string | null;
+    host: string | null;
+    issues: {
+        number: number;
+        title: string;
+        state: string;
+        labels: string[];
+        labelDetails: {
+            name: string;
+            color?: string | undefined;
+            description?: string | undefined;
+        }[];
+        comments: number;
+        updatedAt?: string | undefined;
+        createdAt?: string | undefined;
+        author?: string | undefined;
+        url?: string | undefined;
+        body?: string | undefined;
+        remoteUrl?: string | undefined;
+        repo?: string | undefined;
+        branch?: string | undefined;
+    }[];
+    openIssueCount: number | null;
+    page: number;
+    hasMore: boolean;
+    derivedRemote: string | null;
+    remoteSource: "explicit" | "derived" | null;
+    repoPublic: boolean | null;
+    tokenPresent: boolean;
+    tokenValid: boolean | null;
+    repoWritePermission: boolean | null;
+    error?: string | undefined;
+}>;
+declare const handleSearchIssues: (input: SearchIssuesInput) => Promise<{
+    repo: string | null;
+    host: string | null;
+    issues: {
+        number: number;
+        title: string;
+        state: string;
+        labels: string[];
+        labelDetails: {
+            name: string;
+            color?: string | undefined;
+            description?: string | undefined;
+        }[];
+        comments: number;
+        updatedAt?: string | undefined;
+        createdAt?: string | undefined;
+        author?: string | undefined;
+        url?: string | undefined;
+        body?: string | undefined;
+        remoteUrl?: string | undefined;
+        repo?: string | undefined;
+        branch?: string | undefined;
+    }[];
+    page: number;
+    hasMore: boolean;
+    error?: string | undefined;
+}>;
+declare const handleForgeContext: (input: ForgeContextInput) => Promise<{
+    directory: string | null;
+    derivedRemote: string | null;
+    derivedHost: string | null;
+    derivedRepo: string | null;
+}>;
+declare const handleIssueDetail: (input: IssueDetailInput) => Promise<{
+    repo: string | null;
+    issue: {
+        number: number;
+        title: string;
+        state: string;
+        labels: string[];
+        labelDetails: {
+            name: string;
+            color?: string | undefined;
+            description?: string | undefined;
+        }[];
+        body: string;
+        author: string;
+        createdAt: string;
+        updatedAt: string;
+        webUrl: string;
+        comments: {
+            id: number;
+            author: string;
+            createdAt: string;
+            updatedAt: string;
+            body: string;
+            url: string;
+            envelope: {
+                commentId: number;
+                sessionTitle: string;
+                agentShortId: string;
+                model: string | null;
+                repo: string | null;
+                branch: string | null;
+                postedAt: string | null;
+                commitShas: string[];
+                paseoLinks: string[];
+                serverId: string | null;
+            } | null;
+        }[];
+        envelopes: {
+            commentId: number;
+            sessionTitle: string;
+            agentShortId: string;
+            model: string | null;
+            repo: string | null;
+            branch: string | null;
+            postedAt: string | null;
+            commitShas: string[];
+            paseoLinks: string[];
+            serverId: string | null;
+        }[];
+    } | null;
+    fetchedAt: string;
+    repoPublic: boolean | null;
+    tokenPresent: boolean;
+    tokenValid: boolean | null;
+    repoWritePermission: boolean | null;
+    error?: string | undefined;
+}>;
+declare const handleSetLabel: (input: SetLabelInput) => Promise<{
+    number: number;
+    labels: string[];
+    error?: string | undefined;
+}>;
+declare const handleAddComment: (input: AddCommentInput) => Promise<{
+    number: number;
+    commentId: number | null;
+    error?: string | undefined;
+}>;
+declare const handleCreateIssue: (input: CreateIssueInput) => Promise<{
+    repo: string | null;
+    host: string | null;
+    number: number | null;
+    error?: string | undefined;
+}>;
+declare const handleInstallLabels: (input: InstallLabelsInput) => Promise<{
+    host: string | null;
+    repo: string | null;
+    mode: "replace" | "merge" | null;
+    created: string[];
+    skipped: string[];
+    removed: string[];
+    error?: string | undefined;
+}>;
+/**
+ * Registers all forge ticket RPC contracts on any plugin server context.
+ * Handles open-issues, search-issues, context, issue-detail, set-label, add-comment, create-issue.
+ */
+declare function registerTicketHandlers(server: HandleableServerContext, options?: TicketHandlerOptions): TicketHandlers;
+
+export { type AgentCreateInjectionConfig, type AgentCreateInjectionRequest, type AgentIdentity, type AgentIdentityOptions, BEACON_COLORS, type BeaconBlinkHandle, type BeaconBlinkOptions, type BeaconClearOptions, type BeaconClearResult, type BeaconColor, type BeaconDaemonClient, type BeaconLabelState, type BeaconSetOptions, type BeaconSetResult, type CpuCoreMetrics, CpuSampler, CustomPillPoller, type CustomPillPollerOptions, DEFAULT_BEACON_LABEL_PREFIX, DEFAULT_NAMESPACE_README, ForgeClient, type ForgeClientOptions, ForgeGuard, type ForgejoComment, type ForgejoIssueDetail, type ForgejoLabel, type GuardLogLevel, type GuardedRpcHandler, type HandleableServerContext, type ListPluginsOptions, type LogLevel, type LoopWatchdogOptions, McpConfigPaths, type McpConfigTarget, type McpHttpInjectionConfig, type McpInjectionConfig, type McpInjectionFilter, type McpInjectionHookHandler, type McpInjectionServer, type McpMutationResult, type McpServerConfig, type McpSseInjectionConfig, type McpStdioInjectionConfig, NEGATIVE_PROBE_TTL_MS, type PaseoPluginInfo, type PaseoPluginsSurface, type PeriodicTaskHandle, type PeriodicTaskOptions, type PingHostOptions, type PluginLogger, type PluginLoggerOptions, type PluginPresence, type PluginQueryOptions, type PluginRegistryContext, type PluginStatusFilter, PluginStorage, type PluginStorageOptions, type RedactOptions, type RegisterMcpInjectionOptions, type RegisterSettingsRpcOptions, type RemoveMcpServerOptions, type ResolveVersionOptions, type RpcGuardOptions, type SafeSpawnOptions, type SafeSpawnResult, type SharedPluginSettings, type SharedPluginSettingsOptions, type SharedSettingsListener, type StampVersionOptions, type StorageStats, type SystemMetrics, type TicketHandlerOptions, type TicketHandlers, type UpsertMcpServerOptions, WorkspaceBeacon, type WorkspaceBeaconOptions, type WorkspaceTitleHandle, clearPluginCache, createLoopWatchdog, createPeriodicTask, createPluginLogger, createSettingsHandlers, createSharedPluginSettings, createTicketHandlers, createWorkspaceBeacon, discoverCustomPillConfigs, expandPath, findAvailablePort, getAgentIdentity, getMcpServer, getPluginInfo, getSystemMetrics, gitOriginForDirectory, guardRpcHandler, handleAddComment, handleCreateIssue, handleForgeContext, handleInstallLabels, handleIssueDetail, handleOpenIssues, handleSearchIssues, handleSetLabel, isDevelopmentEnv, isPluginEnabled, isPluginInstalled, isPluginRunning, isPortOpen, isProductionEnv, listPlugins, normalizeBeaconColor, parseGitDirPointer, parseJsonc, parseOriginUrl, pingHost, redactSecrets, registerMcpInjection, registerSettingsRpc, registerTicketHandlers, removeMcpServer, resolveBeaconLabelName, resolveDefaultMinLevel, resolveForgeToken, resolveMinLevelFromEnv, resolvePluginVersion, safeExec, safeSpawn, stampVersion, storedForgeSelection, stripJsonComments, tryParseJsonc, upsertMcpServer };

@@ -29,13 +29,13 @@ the easy mistake.
 
 | Label | Parts |
 | --- | ---: |
-| `deterministic` | 63 |
+| `deterministic` | 64 |
 | `hybrid` | 3 |
 | `ai-llm` | 0 |
 | `contested` | 1 |
-| **total** | **67** |
+| **total** | **68** |
 
-Inventory: 59 tracked source files in scope — 42 described above as source (34 files, some carrying several parts) and 25 test suites, which are described by the inventory itself rather than by hand.
+Inventory: 60 tracked source files in scope — 42 described above as source (34 files, some carrying several parts) and 26 test suites, which are described by the inventory itself rather than by hand.
 
 **The `ai-llm` column is empty, and that is the finding rather than a gap.** Nothing in this
 plugin performs model inference: there is no completions call, no provider SDK, no temperature
@@ -49,7 +49,7 @@ See *What this table does not cover* below for the sessions themselves.
 
 | Moving part | File | File exports | File loc | Classification | Anchors | Evidence |
 | --- | --- | ---: | ---: | --- | --- | --- |
-| RPC registration and plugin lifecycle | `index.server.ts` | 1 | 165 | `deterministic` | `server.handle`, `startHookRouter`, `registerSettingsRpc` | index.server.ts:81-103 — 23 `server.handle(contract, handler)` bindings, one per RPC contract<br>index.server.ts:133 — `startHookRouter(server)` starts the HTTP listener<br>index.server.ts:142-145 — teardown returns a disposer, no model call |
+| RPC registration and plugin lifecycle | `index.server.ts` | 1 | 166 | `deterministic` | `server.handle`, `startHookRouter`, `registerSettingsRpc` | index.server.ts:81-103 — 23 `server.handle(contract, handler)` bindings, one per RPC contract<br>index.server.ts:133 — `startHookRouter(server)` starts the HTTP listener<br>index.server.ts:142-145 — teardown returns a disposer, no model call |
 | Sidebar surface, workspace panel, helper settings screen registration | `index.client.tsx` | 8 | 84 | `deterministic` | `registerSidebarSurface`, `addWorkspacePanel`, `registerHelperSettingsScreen` | index.client.tsx:26-62 — three registrations, each returning a disposer<br>index.client.tsx:64-83 — teardown calls each disposer, tolerating either shape |
 
 - **RPC registration and plugin lifecycle** (`index.server.ts`) — Binds contracts to handlers and owns load/unload. Every handler it registers is classified on its own row below.
@@ -188,6 +188,7 @@ that enforces the invariant; this table is the readable view of the same fact.
 | `server/issues.test.ts` | server/issues | `test:node` | 169 | `deterministic` |
 | `server/mcp-tools.test.ts` | MCP tool definitions, schema validation, and dispatch fixtures | `test:node` | 111 | `deterministic` |
 | `server/metrics.test.ts` | Rollup arithmetic, candidate derivation, receipt persistence | `test:node` | 279 | `deterministic` |
+| `server/registry.test.ts` | server/registry | `test:node` | 36 | `deterministic` |
 | `server/runners.test.ts` | Runner scope merge, normalisation, fleet-status decision table | `test:node` | 357 | `deterministic` |
 | `shared/contracts.test.ts` | Contract schema validation | `test:node` | 1158 | `deterministic` |
 | `shared/sort-filter.test.ts` | Filter, sort, gauge and grouping functions | `test:node` | 1326 | `deterministic` |
@@ -243,7 +244,7 @@ matrix above is the judgement half.
 | `client/tree-view.tsx` | client | 3248 | 40 | `AgentAttentionBanner`, `AgentAttentionBannerProps`, `AgentHealthGauge`, `AgentHealthGaugeProps`, `AgentLabelsRow`, `AgentMetricsCard`, `AgentMetricsCardProps`, `AgentStateDot`, `AgentStatusLight`, `AgentStatusLightProps`, `AgentStatusLightsRow`, `AgentStatusLightsRowProps` …+28 more |
 | `client/tree-zebra.test.tsx` | client | 47 | 0 | — |
 | `index.client.tsx` | entry | 84 | 8 | `UPPIDI_FLEET_FLAIR`, `UPPIDI_FORGE_FLAIR`, `UppidiFleetPanel`, `UppidiFleetSurface`, `UppidiForgePanel`, `UppidiForgeSurface`, `contribute`, `registerWorkspacePanel` |
-| `index.server.ts` | entry | 165 | 1 | `contribute` |
+| `index.server.ts` | entry | 166 | 1 | `contribute` |
 | `server/agents.test.ts` | server | 1084 | 0 | — |
 | `server/agents.ts` | server | 2747 | 53 | `DEFAULT_AUTO_ACCEPT_PROVIDERS`, `DEFAULT_SPAWN_MODE_PROVIDERS`, `ExecFileAsyncFn`, `RawAgentRecord`, `RawPendingPermissionLike`, `SPAWN_AUTHORITY_WORKER_ERROR`, `SPAWN_AUTHORITY_WORKSPACE_ERROR`, `SpawnAuthorityDecision`, `SpawnCapabilities`, `SpawnCapabilityResult`, `allowPermission`, `applyParentProjectInheritance` …+41 more |
 | `server/fleet-reset.test.ts` | server | 168 | 0 | — |
@@ -261,6 +262,7 @@ matrix above is the judgement half.
 | `server/mcp-tools.ts` | server | 325 | 8 | `FLEET_MCP_TOOLS`, `FleetToolCallResult`, `executeFleetCheckBoard`, `executeFleetTool`, `executeFleetWatchdogAudit`, `handleFleetToolExecute`, `handleFleetToolList`, `renderWatchdogAuditMarkdown` |
 | `server/metrics.test.ts` | server | 279 | 0 | — |
 | `server/metrics.ts` | server | 700 | 19 | `AppendRollupResult`, `BASELINE_CANDIDATES`, `DEFAULT_TASK_PROFILES`, `FleetMetrics`, `MAX_ROLLUP_RECEIPTS`, `METRICS_PRIVACY_NOTICE`, `ModelRollup`, `RollupAgentInput`, `RollupAgentMetrics`, `appendRollupReceipt`, `computeModelRollups`, `defaultMetricsFilePath` …+7 more |
+| `server/registry.test.ts` | server | 36 | 0 | — |
 | `server/role-models.ts` | server | 167 | 6 | `DEFAULT_ROLE_MODELS`, `discoverAvailableModels`, `handleUppidiRoleModels`, `handleUppidiSetRoleModel`, `loadSavedRoleModels`, `saveRoleModels` |
 | `server/runners.test.ts` | server | 357 | 0 | — |
 | `server/runners.ts` | server | 273 | 6 | `ExecFileAsyncFn`, `fetchLocalContainers`, `handleUppidiRunners`, `normalizeForgejoRunners`, `runnerScopeEndpoints`, `setExecFileAsyncForTest` |
