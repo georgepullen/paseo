@@ -3116,4 +3116,308 @@ describe("hook-router Front Desk non-interrupting delivery and watchdog alerts (
   });
 });
 
+describe("hook-router stale latestAgentMap cache invalidation and live verification (#795)", () => {
+  let tempDir: string;
+  let queueDir: string;
+  let stateDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "hook-router-795-test-"));
+    queueDir = join(tempDir, "queues");
+    stateDir = join(tempDir, "state");
+  });
+
+  afterEach(() => {
+    try {
+      rmSync(tempDir, { recursive: true, force: true });
+    } catch {}
+  });
+
+  it("idle agent whose cached state was running is refreshed via agentRef.refresh() during drain() rather than marked busy", async () => {
+    const key = "forge.mrs.uppidi.com/xpufx-org/paseo";
+    const targetAgentId = "agent-orchestrator-795-1";
+    const sentMessages: Array<{ text: string; options: any }> = [];
+
+    // Live agent is idle, but periodic latestAgentMap cache still says running
+    let liveStatus: "running" | "idle" = "idle";
+    const mockPaseo = {
+      agents: {
+        ref: (id: string) => {
+          assert.equal(id, targetAgentId);
+          return {
+            current: () => ({ id, status: liveStatus, activeTurn: null }),
+            refresh: async () => ({ agent: { id, status: liveStatus, activeTurn: null } }),
+            send: async (text: string, options: any) => {
+              sentMessages.push({ text, options });
+            },
+          };
+        },
+      },
+    } as any;
+
+    const mockServer = {
+      paseo: mockPaseo,
+      events: { on: () => () => {} },
+      on: () => () => {},
+      before: () => () => {},
+      handle: () => {},
+      registerSettings: () => ({} as any),
+      registerProvider: () => {},
+    } as unknown as PluginServerContext;
+
+    const router = new HookRouter(mockServer, { queueDir, stateDir, port: 0 });
+    router.writeOrchestrator(key, targetAgentId);
+
+    // Seed stale cache with status: running and activeTurn
+    router.setLatestAgentMap(
+      new Map([
+        [
+          targetAgentId,
+          {
+            id: targetAgentId,
+            status: "running",
+            activeTurn: { id: "stale-turn-123", startedAt: Date.now() - 30000 } as any,
+          },
+        ],
+      ])
+    );
+    // Simulate accumulated busy attempts from earlier polling against stale cache
+    router.busyAttempts.set(key, 8);
+
+    // Enqueue message
+    router.enqueue(key, "Prompt to idle agent with stale cache");
+
+    await new Promise((r) => setTimeout(r, 30));
+
+    // Message must have been delivered immediately rather than marked busy
+    assert.equal(sentMessages.length, 1);
+    assert.equal(sentMessages[0].text, "Prompt to idle agent with stale cache");
+    assert.equal(router.getQueue(key).length, 0);
+
+    // busyAttempts must be reset
+    assert.equal(router.busyAttempts.has(key), false);
+
+    // latestAgentMap entry should have been refreshed to idle
+    const cached = router.getLatestAgentMap()?.get(targetAgentId);
+    assert.equal(cached?.status, "idle");
+    assert.equal(cached?.activeTurn, null);
+  });
+
+  it("idle agent whose cached state was running is refreshed via fetchAgentMap() when agentRef is unavailable", async () => {
+    const key = "forge.mrs.uppidi.com/xpufx-org/repo-cli";
+    const targetAgentId = "agent-cli-795";
+    const sentMessages: Array<{ id: string; msg: string; options: any }> = [];
+
+    const mockServer = {
+      events: { on: () => () => {} },
+      on: () => () => {},
+      before: () => () => {},
+      handle: () => {},
+      registerSettings: () => ({} as any),
+      registerProvider: () => {},
+    } as unknown as PluginServerContext;
+
+    const router = new HookRouter(mockServer, { queueDir, stateDir, port: 0 });
+    router.writeOrchestrator(key, targetAgentId);
+
+    // Intercept deliverMessage to track deliveries without spawning paseo CLI
+    (router as any).deliverMessage = async (id: string, msg: string, options: any) => {
+      sentMessages.push({ id, msg, options });
+      return true;
+    };
+
+    // Seed stale cache indicating running
+    router.setLatestAgentMap(
+      new Map([
+        [
+          targetAgentId,
+          {
+            id: targetAgentId,
+            status: "running",
+            activeTurn: { id: "stale-turn-456" } as any,
+          },
+        ],
+      ])
+    );
+    router.busyAttempts.set(key, 6);
+
+    // Stub fetchAgentMap to simulate live query returning idle agent
+    let fetchCalled = false;
+    router.fetchAgentMap = async () => {
+      fetchCalled = true;
+      return new Map([
+        [
+          targetAgentId,
+          {
+            id: targetAgentId,
+            status: "idle",
+            activeTurn: null,
+          },
+        ],
+      ]);
+    };
+
+    // Enqueue message
+    router.enqueue(key, "Prompt to CLI agent");
+
+    await new Promise((r) => setTimeout(r, 30));
+
+    assert.equal(fetchCalled, true, "fetchAgentMap must be called for live lookup");
+    assert.equal(sentMessages.length, 1);
+    assert.equal(sentMessages[0].id, targetAgentId);
+    assert.equal(sentMessages[0].msg, "Prompt to CLI agent");
+    assert.equal(router.getQueue(key).length, 0);
+
+    // busyAttempts cleared
+    assert.equal(router.busyAttempts.has(key), false);
+
+    // Cache updated to idle
+    const cached = router.getLatestAgentMap()?.get(targetAgentId);
+    assert.equal(cached?.status, "idle");
+  });
+
+  it("agent.turn_ended lifecycle event immediately updates latestAgentMap to idle and resets busyAttempts", async () => {
+    const key = "forge.mrs.uppidi.com/xpufx-org/lifecycle-test";
+    const targetAgentId = "agent-lifecycle-ended";
+
+    const mockServer = {
+      events: { on: () => () => {} },
+      on: () => () => {},
+      before: () => () => {},
+      handle: () => {},
+      registerSettings: () => ({} as any),
+      registerProvider: () => {},
+    } as unknown as PluginServerContext;
+
+    const router = new HookRouter(mockServer, { queueDir, stateDir, port: 0 });
+    router.writeOrchestrator(key, targetAgentId);
+
+    // Seed stale running cache and high busy attempts (which would trigger wedged-queue alert)
+    router.setLatestAgentMap(
+      new Map([
+        [
+          targetAgentId,
+          {
+            id: targetAgentId,
+            status: "running",
+            activeTurn: { id: "turn-running", startedAt: Date.now() - 50000 } as any,
+          },
+        ],
+      ])
+    );
+    router.busyAttempts.set(key, 11);
+
+    // Agent finishes turn: dispatch lifecycle event
+    router.handleLifecycleEvent("agent.turn_ended", { agent: { id: targetAgentId } });
+
+    // Cache immediately reflects idle state and cleared activeTurn
+    const cached = router.getLatestAgentMap()?.get(targetAgentId);
+    assert.equal(cached?.status, "idle");
+    assert.equal(cached?.activeTurn, null);
+
+    // busyAttempts is reset to prevent wedged-queue alert
+    assert.equal(router.busyAttempts.has(key), false);
+  });
+
+  it("agent.updated lifecycle event with idle status immediately updates cache and resets busyAttempts", async () => {
+    const key = "forge.mrs.uppidi.com/xpufx-org/update-test";
+    const targetAgentId = "agent-lifecycle-updated";
+
+    const mockServer = {
+      events: { on: () => () => {} },
+      on: () => () => {},
+      before: () => () => {},
+      handle: () => {},
+      registerSettings: () => ({} as any),
+      registerProvider: () => {},
+    } as unknown as PluginServerContext;
+
+    const router = new HookRouter(mockServer, { queueDir, stateDir, port: 0 });
+    router.writeOrchestrator(key, targetAgentId);
+
+    router.setLatestAgentMap(
+      new Map([
+        [
+          targetAgentId,
+          {
+            id: targetAgentId,
+            status: "running",
+            activeTurn: { id: "turn-before" } as any,
+          },
+        ],
+      ])
+    );
+    router.busyAttempts.set(key, 9);
+
+    // Agent status update arrives with idle status
+    router.handleLifecycleEvent("agent.updated", {
+      agent: { id: targetAgentId, status: "idle", activeTurn: null },
+    });
+
+    const cached = router.getLatestAgentMap()?.get(targetAgentId);
+    assert.equal(cached?.status, "idle");
+    assert.equal(cached?.activeTurn, null);
+    assert.equal(router.busyAttempts.has(key), false);
+  });
+
+  it("genuinely busy agent is verified by live check and remains held with incremented busyAttempts", async () => {
+    const key = "forge.mrs.uppidi.com/xpufx-org/genuinely-busy";
+    const targetAgentId = "agent-genuinely-busy";
+    const sentMessages: Array<any> = [];
+
+    const mockPaseo = {
+      agents: {
+        ref: (id: string) => {
+          assert.equal(id, targetAgentId);
+          return {
+            current: () => ({ id, status: "running", activeTurn: { id: "turn-live" } }),
+            refresh: async () => ({ agent: { id, status: "running", activeTurn: { id: "turn-live" } } }),
+            send: async (text: string, options: any) => {
+              sentMessages.push({ text, options });
+            },
+          };
+        },
+      },
+    } as any;
+
+    const mockServer = {
+      paseo: mockPaseo,
+      events: { on: () => () => {} },
+      on: () => () => {},
+      before: () => () => {},
+      handle: () => {},
+      registerSettings: () => ({} as any),
+      registerProvider: () => {},
+    } as unknown as PluginServerContext;
+
+    const router = new HookRouter(mockServer, { queueDir, stateDir, port: 0 });
+    router.writeOrchestrator(key, targetAgentId);
+
+    router.setLatestAgentMap(
+      new Map([
+        [
+          targetAgentId,
+          {
+            id: targetAgentId,
+            status: "running",
+            activeTurn: { id: "turn-cached" } as any,
+          },
+        ],
+      ])
+    );
+    router.busyAttempts.set(key, 2);
+
+    router.enqueue(key, "Prompt to genuinely busy agent");
+
+    await new Promise((r) => setTimeout(r, 30));
+
+    // Message must remain queued
+    assert.equal(sentMessages.length, 0);
+    assert.equal(router.getQueue(key).length, 1);
+
+    // busyAttempts incremented from 2 to 3
+    assert.equal(router.busyAttempts.get(key), 3);
+  });
+});
+
 
