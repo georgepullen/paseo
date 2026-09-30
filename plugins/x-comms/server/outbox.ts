@@ -12,7 +12,7 @@ import { PluginStorage } from "./vendor/paseo-plugin-helper/index";
  * duplicates on the native drain only: the daemon compares it at the request
  * level when `send()` carries `options.messageId` (local-send.ts). CLI-routed
  * entries get no duplicate suppression today — `paseo send` has no
- * `--message-id` option (pending #350).
+ * `--message-id` option (#350).
  */
 
 export const OUTBOX_FILE = "outbox.json";

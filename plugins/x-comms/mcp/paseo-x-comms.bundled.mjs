@@ -37102,7 +37102,7 @@ async function deferProbeBusy(target, host, signal) {
 }
 async function deferDeliver(entry, signal) {
   if (entry.daemon === LOCAL_DAEMON) {
-    await runPaseo(["send", entry.agentId, "--message-id", entry.messageId, "--json", "--no-wait", entry.prompt], {
+    await runPaseo(["send", entry.agentId, "--json", "--no-wait", entry.prompt], {
       timeoutMs: DEFAULT_TIMEOUT_MS,
       signal
     });
@@ -37110,7 +37110,7 @@ async function deferDeliver(entry, signal) {
   }
   const host = hostTargetFor(entry.daemon, loadDaemons());
   await runPaseo(
-    ["send", entry.agentId, "--host", host, "--message-id", entry.messageId, "--json", "--no-wait", entry.prompt],
+    ["send", entry.agentId, "--host", host, "--json", "--no-wait", entry.prompt],
     { timeoutMs: DEFAULT_TIMEOUT_MS, signal }
   );
 }
@@ -37234,7 +37234,7 @@ ${message.prompt}`;
   }
   const sent = await callPaseo(
     `${PREFIX}send`,
-    ["send", message.agentId, "--host", target, "--message-id", message.messageId, "--json", "--no-wait", stamped],
+    ["send", message.agentId, "--host", target, "--json", "--no-wait", stamped],
     { signal, daemon: message.daemon, agentId: message.agentId }
   );
   if (message.notifyOnFinish) {

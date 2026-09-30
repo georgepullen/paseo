@@ -368,7 +368,7 @@ async function sendPreStampedViaHost(input: {
   const r = await withTimeout(
     safeSpawn(
       "paseo",
-      ["send", input.agentId, "--host", entry.value, "--message-id", input.messageId, "--json", "--no-wait", input.prompt],
+      ["send", input.agentId, "--host", entry.value, "--json", "--no-wait", input.prompt],
       { timeoutMs: 20000 },
     ),
     20000,

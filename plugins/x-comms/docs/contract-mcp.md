@@ -320,7 +320,7 @@ server can both write with no lock and no cross-process read-modify-write.
 | Expiry | **30 min** |
 | Targets per drain pass | **3** |
 | Claim | `rename .json → .sending`; succeeds for exactly one drainer |
-| Delivery | `paseo send <id> --host <target> --message-id <id> --json --no-wait <bytes>`; `LOCAL_DAEMON` (`"local"`) omits `--host` |
+| Delivery | `paseo send <id> --host <target> --json --no-wait <bytes>`; `LOCAL_DAEMON` (`"local"`) omits `--host` |
 
 * The directory is derived from the registry path, so `PASEO_X_COMMS_REMOTES`
   moves the queue with it and a test never touches the operator's real one.
@@ -573,8 +573,9 @@ x_comms_send(daemon, agentId, prompt, fromAgentId?, fromAgentName?, messageId?, 
 * **`messageId`** defaults to a fresh `randomUUID()` and is retained across every
   retry. Dedupe engages only where that value reaches the daemon's request-level
   receipt — the native SDK send carrying `options.messageId` (local-send.ts).
-  The CLI leg is not wired: `paseo send` has no `--message-id` option (pending
-  #350), so CLI-routed sends get no duplicate suppression today.
+  The CLI leg is not wired: `paseo send` has no `--message-id` option (#350),
+  so CLI-routed sends omit this flag and delivery dedupe rides on the stamped
+  envelope's `messageId` rather than the CLI transport.
 * **`fromAgentId` is ignored in an agent session** (C2). It is honoured only for
   the plugin server's own subprocess, which runs without `PASEO_AGENT_ID`.
 

@@ -113,6 +113,17 @@ function textOf(callResult) {
   return callResult.content[0].text;
 }
 
+// Fixture fidelity (#351): the fake CLI must reject flags the real commander
+// CLI rejects, so the commander error shape is asserted directly.
+test("fake paseo rejects unknown flags with commander's error shape", async () => {
+  const proc = spawn(FAKE, ["send", "agent-9", "--host", "local", "--message-id", "m1", "--json", "--no-wait", "hi"]);
+  const chunks = [];
+  proc.stderr.on("data", (chunk) => chunks.push(chunk.toString()));
+  const [code] = await new Promise((resolve) => proc.once("exit", (c, s) => resolve([c, s])));
+  assert.equal(code, 1);
+  assert.equal(chunks.join("").trim(), "error: unknown option '--message-id'");
+});
+
 // Extract and parse the structured sender-meta envelope from a stamped prompt.
 function metaOf(stampedPrompt) {
   const v6 = stampedPrompt.match(/^<x-comms-message>([\s\S]*?)<\/x-comms-message>/);
@@ -308,8 +319,10 @@ test("send stamps a structured sender-meta envelope and reaches the remote agent
     const sent = JSON.parse(textOf(res));
     assert.equal(sent.to, "agent-9");
     assert.equal(sent.sawHost, RELAY_URL);
+    // #350, #351: the CLI call drops --message-id because that option does not
+    // exist on the real CLI. Delivery dedupe rides on the stamped envelope's
+    // messageId, not a CLI flag.
     assert.equal(sent.sawNoWait, true, "send must dispatch fire-and-forget (--no-wait)");
-    assert.equal(sent.sawMessageId, "msg-headless-1");
     assert.equal(sent.promptHead.split("\n\n")[1], "hello there", "prompt must stay prose");
     assert.ok(sent.promptHead.startsWith("<x-comms-message>"));
     assert.ok(sent.promptHead.includes("</x-comms-message>"));
