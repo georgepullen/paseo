@@ -123,6 +123,19 @@ export function getColumnTransitions(currentColumn: KanbanColumnId): KanbanTrans
   }
 }
 
+let activeDraggingIssue: UppidiIssue | null = null;
+
+export function getActiveDraggingIssue(): UppidiIssue | null {
+  return activeDraggingIssue;
+}
+
+export function setActiveDraggingIssue(issue: UppidiIssue | null): void {
+  activeDraggingIssue = issue;
+  if (typeof window !== "undefined") {
+    (window as any).__uppidi_dragging_issue = issue;
+  }
+}
+
 export interface KanbanCardProps {
   issue: UppidiIssue;
   columnId: KanbanColumnId;
@@ -153,11 +166,25 @@ export function KanbanCard({
 
   const handleDragStart = (e: any) => {
     setInternalDragging(true);
-    if (e?.dataTransfer) {
+    setActiveDraggingIssue(issue);
+    if (e && e.dataTransfer && e.nativeEvent && !e.nativeEvent.dataTransfer) {
       try {
-        e.dataTransfer.setData("text/plain", String(issue.number));
-        e.dataTransfer.setData("application/json", JSON.stringify(issue));
-        e.dataTransfer.effectAllowed = "move";
+        e.nativeEvent.dataTransfer = e.dataTransfer;
+      } catch {}
+    }
+    if (e && !e.dataTransfer && e.nativeEvent?.dataTransfer) {
+      try {
+        e.dataTransfer = e.nativeEvent.dataTransfer;
+      } catch {}
+    }
+    const dts = new Set<any>();
+    if (e?.dataTransfer) dts.add(e.dataTransfer);
+    if (e?.nativeEvent?.dataTransfer) dts.add(e.nativeEvent.dataTransfer);
+    for (const dt of dts) {
+      try {
+        dt.setData?.("text/plain", String(issue.number));
+        dt.setData?.("application/json", JSON.stringify(issue));
+        dt.effectAllowed = "move";
       } catch {
         // ignore in environments with restricted dataTransfer
       }
@@ -167,6 +194,7 @@ export function KanbanCard({
 
   const handleDragEnd = (e: any) => {
     setInternalDragging(false);
+    setActiveDraggingIssue(null);
     onDragEnd?.(e);
   };
 
@@ -358,8 +386,18 @@ export function UppidiFleetKanbanBoard({
 
   const handleColumnDragOver = (e: any, colId: KanbanColumnId) => {
     e.preventDefault?.();
-    if (e?.dataTransfer) {
-      e.dataTransfer.dropEffect = "move";
+    if (e?.nativeEvent?.preventDefault) {
+      try {
+        e.nativeEvent.preventDefault();
+      } catch {}
+    }
+    const dts = new Set<any>();
+    if (e?.dataTransfer) dts.add(e.dataTransfer);
+    if (e?.nativeEvent?.dataTransfer) dts.add(e.nativeEvent.dataTransfer);
+    for (const dt of dts) {
+      try {
+        dt.dropEffect = "move";
+      } catch {}
     }
     if (dragOverColumn !== colId) {
       setDragOverColumn(colId);
@@ -368,42 +406,83 @@ export function UppidiFleetKanbanBoard({
 
   const handleColumnDragEnter = (e: any, colId: KanbanColumnId) => {
     e.preventDefault?.();
+    if (e?.nativeEvent?.preventDefault) {
+      try {
+        e.nativeEvent.preventDefault();
+      } catch {}
+    }
+    const dts = new Set<any>();
+    if (e?.dataTransfer) dts.add(e.dataTransfer);
+    if (e?.nativeEvent?.dataTransfer) dts.add(e.nativeEvent.dataTransfer);
+    for (const dt of dts) {
+      try {
+        dt.dropEffect = "move";
+      } catch {}
+    }
     setDragOverColumn(colId);
   };
 
   const handleColumnDragLeave = (e: any, colId: KanbanColumnId) => {
     e.preventDefault?.();
+    const relatedTarget = e?.relatedTarget ?? e?.nativeEvent?.relatedTarget;
+    if (e?.currentTarget && relatedTarget && e.currentTarget.contains?.(relatedTarget)) {
+      return;
+    }
     setDragOverColumn((current) => (current === colId ? null : current));
   };
 
   const handleColumnDrop = async (e: any, targetColId: KanbanColumnId) => {
     e.preventDefault?.();
+    if (e?.nativeEvent?.preventDefault) {
+      try {
+        e.nativeEvent.preventDefault();
+      } catch {}
+    }
+    e.stopPropagation?.();
+    if (e?.nativeEvent?.stopPropagation) {
+      try {
+        e.nativeEvent.stopPropagation();
+      } catch {}
+    }
     setDragOverColumn(null);
 
     let issueToTransition: UppidiIssue | undefined;
-    if (e?.dataTransfer) {
+    const dts = [e?.dataTransfer, e?.nativeEvent?.dataTransfer].filter(Boolean);
+    for (const dt of dts) {
+      if (issueToTransition) break;
       try {
-        const jsonStr = e.dataTransfer.getData?.("application/json");
+        const jsonStr = dt.getData?.("application/json");
         if (jsonStr) {
           issueToTransition = JSON.parse(jsonStr);
+          break;
         }
       } catch {
         // Fallback to text/plain issue number
       }
 
-      if (!issueToTransition) {
-        const numStr = e.dataTransfer.getData?.("text/plain");
+      try {
+        const numStr = dt.getData?.("text/plain");
         if (numStr) {
           const issueNum = parseInt(numStr, 10);
-          issueToTransition = issues.find((i) => i.number === issueNum);
+          if (!Number.isNaN(issueNum)) {
+            issueToTransition = issues.find((i) => i.number === issueNum);
+            if (issueToTransition) break;
+          }
         }
-      }
+      } catch {}
+    }
+
+    if (!issueToTransition) {
+      issueToTransition =
+        activeDraggingIssue ??
+        (typeof window !== "undefined" ? (window as any).__uppidi_dragging_issue : undefined);
     }
 
     if (issueToTransition) {
       const fullIssue = issues.find((i) => i.number === issueToTransition?.number) ?? issueToTransition;
       const currentColumn = getIssueKanbanColumn(fullIssue);
       if (currentColumn !== targetColId) {
+        setActiveDraggingIssue(null);
         await handleTransition(fullIssue, targetColId);
       }
     }
@@ -532,6 +611,7 @@ export function UppidiFleetKanbanBoard({
                 style={{ flex: 1, maxHeight: 600 }}
                 contentContainerStyle={{ gap: 8, paddingBottom: 8 }}
                 testID={`kanban-column-body-${col.id}`}
+                {...webColumnProps}
               >
                 {colIssues.length === 0 ? (
                   <View

@@ -38,6 +38,8 @@ let getIssueKanbanColumn: typeof import("./kanban-board.js").getIssueKanbanColum
 let getColumnTransitions: typeof import("./kanban-board.js").getColumnTransitions;
 let UppidiFleetKanbanBoard: typeof import("./kanban-board.js").UppidiFleetKanbanBoard;
 let KanbanCard: typeof import("./kanban-board.js").KanbanCard;
+let getActiveDraggingIssue: typeof import("./kanban-board.js").getActiveDraggingIssue;
+let setActiveDraggingIssue: typeof import("./kanban-board.js").setActiveDraggingIssue;
 
 const sampleIssues: UppidiIssue[] = [
   {
@@ -94,6 +96,8 @@ describe("UppidiFleetKanbanBoard (#755)", () => {
     getColumnTransitions = mod.getColumnTransitions;
     UppidiFleetKanbanBoard = mod.UppidiFleetKanbanBoard;
     KanbanCard = mod.KanbanCard;
+    getActiveDraggingIssue = mod.getActiveDraggingIssue;
+    setActiveDraggingIssue = mod.setActiveDraggingIssue;
   });
 
   it("defines the 4 canonical Forgejo Kanban columns in order", () => {
@@ -290,6 +294,49 @@ describe("UppidiFleetKanbanBoard (#755)", () => {
       const endTree = renderer.toJSON() as RenderedNode;
       const normalCard = findByTestId(endTree, "kanban-card-755")[0];
       assert.equal(normalCard.props?.style?.opacity, 1);
+    });
+
+    it("supports HTML5 drag start with e.nativeEvent.dataTransfer and sets active dragging issue", () => {
+      let renderer: any;
+      TestRenderer.act(() => {
+        renderer = TestRenderer.create(
+          React.createElement(KanbanCard, {
+            issue: sampleIssues[0],
+            columnId: "in_progress",
+          }),
+        );
+      });
+
+      const tree = renderer.toJSON() as RenderedNode;
+      const cardNodes = findByTestId(tree, "kanban-card-755");
+      assert.equal(cardNodes.length, 1);
+
+      const nativeDataStore: Record<string, string> = {};
+      const mockEvent = {
+        nativeEvent: {
+          dataTransfer: {
+            setData: (format: string, data: string) => {
+              nativeDataStore[format] = data;
+            },
+            effectAllowed: "",
+          },
+        },
+      };
+
+      TestRenderer.act(() => {
+        cardNodes[0].props?.onDragStart?.(mockEvent);
+      });
+
+      assert.equal(nativeDataStore["text/plain"], "755");
+      assert.deepEqual(JSON.parse(nativeDataStore["application/json"]), sampleIssues[0]);
+      assert.equal(mockEvent.nativeEvent.dataTransfer.effectAllowed, "move");
+      assert.equal(getActiveDraggingIssue()?.number, 755);
+
+      // Verify drag end resets active dragging issue
+      TestRenderer.act(() => {
+        cardNodes[0].props?.onDragEnd?.({});
+      });
+      assert.equal(getActiveDraggingIssue(), null);
     });
   });
 
@@ -518,6 +565,177 @@ describe("UppidiFleetKanbanBoard (#755)", () => {
       });
 
       assert.equal(transitionCalled, false, "no transition should occur for same column");
+    });
+
+    it("supports dragOver with nativeEvent preventDefault and nativeEvent.dataTransfer", () => {
+      let renderer: any;
+      TestRenderer.act(() => {
+        renderer = TestRenderer.create(
+          React.createElement(UppidiFleetKanbanBoard, { issues: sampleIssues }),
+        );
+      });
+
+      const tree = renderer.toJSON() as RenderedNode;
+      const reviewCol = findByTestId(tree, "kanban-column-review")[0];
+      assert.ok(reviewCol, "review column should exist");
+
+      let nativeDefaultPrevented = false;
+      let syntheticDefaultPrevented = false;
+      const mockEvent = {
+        preventDefault: () => {
+          syntheticDefaultPrevented = true;
+        },
+        nativeEvent: {
+          preventDefault: () => {
+            nativeDefaultPrevented = true;
+          },
+          dataTransfer: { dropEffect: "" },
+        },
+      };
+
+      TestRenderer.act(() => {
+        reviewCol.props?.onDragOver?.(mockEvent);
+      });
+
+      assert.equal(syntheticDefaultPrevented, true);
+      assert.equal(nativeDefaultPrevented, true);
+      assert.equal(mockEvent.nativeEvent.dataTransfer.dropEffect, "move");
+    });
+
+    it("triggers state transition via onTransitionIssue on drop with e.nativeEvent.dataTransfer", async () => {
+      let transitionedIssue: UppidiIssue | null = null;
+      let targetColumn: string | null = null;
+
+      let renderer: any;
+      TestRenderer.act(() => {
+        renderer = TestRenderer.create(
+          React.createElement(UppidiFleetKanbanBoard, {
+            issues: sampleIssues,
+            onTransitionIssue: (issue: UppidiIssue, target: any) => {
+              transitionedIssue = issue;
+              targetColumn = target;
+            },
+          }),
+        );
+      });
+
+      const tree = renderer.toJSON() as RenderedNode;
+      const reviewCol = findByTestId(tree, "kanban-column-review")[0];
+
+      let nativeDefaultPrevented = false;
+      const dropEvent = {
+        preventDefault: () => {},
+        nativeEvent: {
+          preventDefault: () => {
+            nativeDefaultPrevented = true;
+          },
+          dataTransfer: {
+            getData: (type: string) => {
+              if (type === "application/json") {
+                return JSON.stringify(sampleIssues[0]);
+              }
+              return "";
+            },
+          },
+        },
+      };
+
+      await TestRenderer.act(async () => {
+        await reviewCol.props?.onDrop?.(dropEvent);
+      });
+
+      assert.equal(nativeDefaultPrevented, true);
+      assert.ok(transitionedIssue, "transition callback must be invoked");
+      assert.equal((transitionedIssue as UppidiIssue).number, 755);
+      assert.equal(targetColumn, "review");
+    });
+
+    it("triggers state transition on drop with fallback to active dragging issue", async () => {
+      let transitionedIssue: UppidiIssue | null = null;
+      let targetColumn: string | null = null;
+
+      let renderer: any;
+      TestRenderer.act(() => {
+        renderer = TestRenderer.create(
+          React.createElement(UppidiFleetKanbanBoard, {
+            issues: sampleIssues,
+            onTransitionIssue: (issue: UppidiIssue, target: any) => {
+              transitionedIssue = issue;
+              targetColumn = target;
+            },
+          }),
+        );
+      });
+
+      const tree = renderer.toJSON() as RenderedNode;
+      const reviewCol = findByTestId(tree, "kanban-column-review")[0];
+
+      // Set module fallback (simulate dragstart setting activeDraggingIssue)
+      setActiveDraggingIssue(sampleIssues[0]);
+
+      // Drop event with empty/broken dataTransfer
+      const dropEvent = {
+        preventDefault: () => {},
+        nativeEvent: {
+          preventDefault: () => {},
+          dataTransfer: {
+            getData: () => "",
+          },
+        },
+      };
+
+      await TestRenderer.act(async () => {
+        await reviewCol.props?.onDrop?.(dropEvent);
+      });
+
+      assert.ok(transitionedIssue, "transition callback must be invoked via active dragging issue fallback");
+      assert.equal((transitionedIssue as UppidiIssue).number, 755);
+      assert.equal(targetColumn, "review");
+      assert.equal(getActiveDraggingIssue(), null, "active dragging issue should be cleared after drop");
+    });
+
+    it("triggers state transition when dropping onto column body ScrollView", async () => {
+      let transitionedIssue: UppidiIssue | null = null;
+      let targetColumn: string | null = null;
+
+      let renderer: any;
+      TestRenderer.act(() => {
+        renderer = TestRenderer.create(
+          React.createElement(UppidiFleetKanbanBoard, {
+            issues: sampleIssues,
+            onTransitionIssue: (issue: UppidiIssue, target: any) => {
+              transitionedIssue = issue;
+              targetColumn = target;
+            },
+          }),
+        );
+      });
+
+      const tree = renderer.toJSON() as RenderedNode;
+      const reviewColBody = findByTestId(tree, "kanban-column-body-review")[0];
+      assert.ok(reviewColBody, "column body ScrollView must exist");
+      assert.equal(typeof reviewColBody.props?.onDrop, "function", "column body ScrollView must have onDrop handler");
+      assert.equal(typeof reviewColBody.props?.onDragOver, "function", "column body ScrollView must have onDragOver handler");
+
+      const dropEvent = {
+        preventDefault: () => {},
+        dataTransfer: {
+          getData: (type: string) => {
+            if (type === "application/json") {
+              return JSON.stringify(sampleIssues[0]);
+            }
+            return "";
+          },
+        },
+      };
+
+      await TestRenderer.act(async () => {
+        await reviewColBody.props?.onDrop?.(dropEvent);
+      });
+
+      assert.ok(transitionedIssue, "transition callback must be invoked via column body drop");
+      assert.equal((transitionedIssue as UppidiIssue).number, 755);
+      assert.equal(targetColumn, "review");
     });
   });
 });
