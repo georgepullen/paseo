@@ -153,6 +153,9 @@ export interface HookRouterOptions {
   projectsData?: any[];
   workspacesPath?: string;
   projectsPath?: string;
+  paseoDir?: string;
+  isTestMode?: boolean;
+  allowCliSpawn?: boolean;
   spawnAgent?: (opts: {
     title: string;
     prompt: string;
@@ -1547,6 +1550,7 @@ export class HookRouter {
   private watchdogTimer: NodeJS.Timeout | null = null;
   private boardSweepTimer: NodeJS.Timeout | null = null;
   public readonly options?: HookRouterOptions;
+  public readonly isTestMode: boolean;
   private inFlightEnsure = new Map<string, Promise<EnsureOrchestratorResult>>();
 
   constructor(server?: PluginServerContext | null, options?: HookRouterOptions) {
@@ -1563,7 +1567,11 @@ export class HookRouter {
     })();
 
     const envPort = process.env.FORGE_HOOK_PORT ?? process.env.HOOK_PORT;
-    const isTestMode = process.env.NODE_ENV === "test" && !process.env.FORGE_HOOK_CONFIG && !options?.configPath;
+    const isTestMode =
+      options?.isTestMode !== undefined
+        ? options.isTestMode
+        : (process.env.NODE_ENV === "test" && !process.env.FORGE_HOOK_CONFIG && !options?.configPath);
+    this.isTestMode = Boolean(options?.isTestMode ?? (process.env.NODE_ENV === "test" || isTestMode));
 
     this.configuredPort =
       options?.port !== undefined
@@ -1600,7 +1608,9 @@ export class HookRouter {
     }
 
     const home = process.env.HOME ?? os.homedir();
-    const scopedRoot = join(home, ".paseo", "plugin-data", "xpufx", "uppidi-fleet");
+    const scopedRoot = this.isTestMode
+      ? join(os.tmpdir(), `paseo-test-hook-router-${process.pid}`)
+      : join(home, ".paseo", "plugin-data", "xpufx", "uppidi-fleet");
     this.queueDir = options?.queueDir ?? process.env.HOOK_QUEUE_DIR ?? join(scopedRoot, "queues");
     this.stateDir =
       options?.stateDir ?? process.env.HOOK_STATE_DIR ?? join(scopedRoot, "orchestrators");
@@ -2199,6 +2209,10 @@ export class HookRouter {
       }
     }
 
+    if (!this.options?.allowCliSpawn && (this.isTestMode || process.env.NODE_ENV === "test")) {
+      return false;
+    }
+
     try {
       const args = ["agent", "update", agentId, "--name", name];
       for (const [k, v] of Object.entries(labels)) {
@@ -2231,6 +2245,10 @@ export class HookRouter {
       }
     }
 
+    if (!this.options?.allowCliSpawn && (this.isTestMode || process.env.NODE_ENV === "test")) {
+      return false;
+    }
+
     try {
       await execFileAsync("paseo", ["agent", "mode", agentId, mode], { timeout: 10000 });
       return true;
@@ -2259,6 +2277,10 @@ export class HookRouter {
           `[warn] SDK detachAgent failed for ${agentId}, falling back to CLI: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
+    }
+
+    if (!this.options?.allowCliSpawn && (this.isTestMode || process.env.NODE_ENV === "test")) {
+      return false;
     }
 
     try {
@@ -2353,6 +2375,9 @@ export class HookRouter {
       projectsData: this.options?.projectsData,
       workspacesPath: this.options?.workspacesPath,
       projectsPath: this.options?.projectsPath,
+      paseoDir:
+        this.options?.paseoDir ||
+        (this.isTestMode ? join(os.tmpdir(), `paseo-test-isolated-${process.pid}`) : undefined),
     });
   }
 
@@ -2493,6 +2518,14 @@ export class HookRouter {
 
       // CLI fallback
       if (!agentId) {
+        if (!this.options?.allowCliSpawn && (this.isTestMode || process.env.NODE_ENV === "test")) {
+          this.log(`[warn] CLI agent spawning is disabled in test mode for repository "${repo}"`);
+          return {
+            ok: false,
+            error: `CLI agent spawning is disabled in test mode for repository "${repo}"`,
+            repo,
+          };
+        }
         try {
           const args = ["run", "-d", "--title", title];
           if (targetProvider) args.push("--provider", targetProvider);
@@ -2688,6 +2721,9 @@ export class HookRouter {
   }
 
   public reloadAgent(id: string): Promise<{ ok: boolean; error?: string }> {
+    if (!this.options?.allowCliSpawn && (this.isTestMode || process.env.NODE_ENV === "test")) {
+      return Promise.resolve({ ok: false, error: "CLI agent reload is disabled in test mode" });
+    }
     return new Promise((resolve) => {
       execFile("paseo", ["agent", "reload", id], { timeout: 10000 }, (err) => {
         if (err) resolve({ ok: false, error: err.message });
@@ -2697,6 +2733,9 @@ export class HookRouter {
   }
 
   public stopAgent(id: string): Promise<{ ok: boolean; error?: string }> {
+    if (!this.options?.allowCliSpawn && (this.isTestMode || process.env.NODE_ENV === "test")) {
+      return Promise.resolve({ ok: false, error: "CLI agent stop is disabled in test mode" });
+    }
     return new Promise((resolve) => {
       execFile("paseo", ["agent", "stop", id], { timeout: 10000 }, (err) => {
         if (err) resolve({ ok: false, error: err.message });
@@ -2706,6 +2745,9 @@ export class HookRouter {
   }
 
   public clearDaemonAttention(agentId: string): Promise<boolean> {
+    if (!this.options?.allowCliSpawn && (this.isTestMode || process.env.NODE_ENV === "test")) {
+      return Promise.resolve(false);
+    }
     const script = `
       import('/usr/lib/node_modules/@getpaseo/cli/dist/utils/client.js').then(async ({ connectToDaemon }) => {
         const home = process.env.HOME ? process.env.HOME + '/.paseo' : undefined;

@@ -2006,7 +2006,13 @@ describe("hook-router HTTP handoff, prune, and board sweep routes (#458)", () =>
       registerProvider: () => {},
     } as unknown as PluginServerContext;
 
-    router = new HookRouter(server, { queueDir, stateDir, port: 0 });
+    router = new HookRouter(server, {
+      queueDir,
+      stateDir,
+      port: 0,
+      autoProvisionOrchestrators: false,
+      spawnAgent: async () => ({ id: "mock-http-extra-agent" }),
+    });
     await router.start();
   });
 
@@ -3804,3 +3810,88 @@ describe("board sweep auto-reconciliation (#794)", () => {
     assert.ok(router.provisionFailures.get("forge.mrs.uppidi.com/unknown/unresolvable-repo")! > pastTime);
   });
 });
+
+describe("test isolation & CLI agent execution safety (#814)", () => {
+  it("disallows host-level CLI agent spawn in test mode when spawnAgent is not provided", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "paseo-test-814-"));
+    try {
+      const router = new HookRouter(null, {
+        queueDir: join(tempDir, "queues"),
+        stateDir: join(tempDir, "state"),
+        port: 0,
+        workspacesData: [
+          {
+            workspaceId: "ws-mock",
+            cwd: tempDir,
+            displayName: "repo",
+            projectKey: "mock-org/repo",
+          },
+        ],
+      });
+      assert.equal(router.isTestMode, true);
+
+      // Attempt ensureOrchestrator without spawnAgent mock
+      const result = await router.ensureOrchestrator({ repo: "mock-org/repo" });
+      assert.equal(result.ok, false);
+      assert.ok(result.error?.includes("CLI agent spawning is disabled in test mode"));
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("isolates default queueDir and stateDir when omitted in test mode", () => {
+    const router = new HookRouter(null, { port: 0 });
+    assert.equal(router.isTestMode, true);
+    assert.ok(
+      !router.queueDir.includes(".paseo/plugin-data"),
+      `queueDir should not point to host paseo dir: ${router.queueDir}`,
+    );
+    assert.ok(
+      !router.stateDir.includes(".paseo/plugin-data"),
+      `stateDir should not point to host paseo dir: ${router.stateDir}`,
+    );
+    assert.ok(router.queueDir.includes("paseo-test-hook-router"));
+    assert.ok(router.stateDir.includes("paseo-test-hook-router"));
+  });
+
+  it("disallows CLI mutation operations (setAgentMode, detachAgent, updateAgentMetadata, reloadAgent, stopAgent) in test mode", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "paseo-test-814-ops-"));
+    try {
+      const router = new HookRouter(null, {
+        queueDir: join(tempDir, "queues"),
+        stateDir: join(tempDir, "state"),
+        port: 0,
+      });
+
+      const modeRes = await router.setAgentMode("agent-123", "yolo");
+      assert.equal(modeRes, false);
+
+      const detachRes = await router.detachAgent("agent-123");
+      assert.equal(detachRes, false);
+
+      const updateRes = await router.updateAgentMetadata("agent-123", "Name", { role: "test" });
+      assert.equal(updateRes, false);
+
+      const reloadRes = await router.reloadAgent("agent-123");
+      assert.equal(reloadRes.ok, false);
+      assert.ok(reloadRes.error?.includes("disabled in test mode"));
+
+      const stopRes = await router.stopAgent("agent-123");
+      assert.equal(stopRes.ok, false);
+      assert.ok(stopRes.error?.includes("disabled in test mode"));
+
+      const clearAttentionRes = await router.clearDaemonAttention("agent-123");
+      assert.equal(clearAttentionRes, false);
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("isolates workspace resolution from host ~/.paseo in test mode", () => {
+    const router = new HookRouter(null, { port: 0 });
+    // Without workspacesData, resolving an arbitrary repo must not find a host workspace
+    const resolved = router.resolveWorkspace("nonexistent-test-owner/test-repo-xyz");
+    assert.equal(resolved, null);
+  });
+});
+

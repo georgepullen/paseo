@@ -68,10 +68,13 @@ export function resolveWorkspaceForRepo(
   const norm = (normalizeRepoKey(repo) ?? repo).toLowerCase();
   const repoBasename = basename(repo).replace(/\.git$/, "").toLowerCase();
 
+  const isTestMode = process.env.NODE_ENV === "test";
   const paseoDir =
     options?.paseoDir ||
     process.env.PASEO_DIR ||
-    join(process.env.HOME || os.homedir(), ".paseo");
+    (isTestMode
+      ? join(os.tmpdir(), `paseo-test-isolated-workspace-${process.pid}`)
+      : join(process.env.HOME || os.homedir(), ".paseo"));
 
   let workspaces: WorkspaceRecord[] = [];
   if (Array.isArray(options?.workspacesData)) {
