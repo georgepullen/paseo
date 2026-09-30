@@ -60,6 +60,7 @@ import {
   loadRouterConfig,
   saveRouterConfig,
 } from "./hook-router.js";
+import { resolveWorkspaceForRepo } from "./workspace-lookup.js";
 import { loadSavedRoleModels, DEFAULT_ROLE_MODELS } from "./role-models.js";
 
 
@@ -69,10 +70,11 @@ export type ExecFileAsyncFn = (
   options?: any
 ) => Promise<{ stdout: string; stderr?: string }>;
 
-let execFileAsync: ExecFileAsyncFn = promisify(execFile);
+const defaultExecFileAsync: ExecFileAsyncFn = promisify(execFile);
+let execFileAsync: ExecFileAsyncFn = defaultExecFileAsync;
 
 export function setExecFileAsyncForTest(fn: ExecFileAsyncFn | null): void {
-  execFileAsync = fn || promisify(execFile);
+  execFileAsync = fn || defaultExecFileAsync;
 }
 
 export interface RawAgentRecord {
@@ -2242,6 +2244,18 @@ export async function resolveRepoWorkspace(
   repo: string,
   context?: PluginHandlerContext
 ): Promise<{ cwd?: string; workspaceId?: string }> {
+  // 0. Deterministically match repository against daemon workspaces.json (#793)
+  // When execFileAsync is mocked in tests, prefer the mock to preserve test isolation.
+  if (execFileAsync === defaultExecFileAsync) {
+    const deterministicMatch = resolveWorkspaceForRepo(repo);
+    if (deterministicMatch?.cwd || deterministicMatch?.workspaceId) {
+      return {
+        cwd: deterministicMatch.cwd,
+        workspaceId: deterministicMatch.workspaceId,
+      };
+    }
+  }
+
   const parts = repo.split("/");
   const repoBasename = parts[parts.length - 1] || repo;
 

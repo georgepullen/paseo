@@ -12,6 +12,7 @@ import {
   executeFleetQueueInspect,
   executeFleetQueuePurge,
   executeFleetHandoffGenerate,
+  executeFleetEnsureOrchestrator,
   executeFleetTool,
   handleFleetToolList,
   handleFleetToolExecute,
@@ -43,7 +44,7 @@ describe("fleet MCP tools and handlers", () => {
   });
 
   test("FLEET_MCP_TOOLS declares typed tools with valid schemas", () => {
-    assert.equal(FLEET_MCP_TOOLS.length, 7);
+    assert.equal(FLEET_MCP_TOOLS.length, 8);
 
     const toolNames = FLEET_MCP_TOOLS.map((t) => t.name);
     assert.deepEqual(toolNames, [
@@ -54,6 +55,7 @@ describe("fleet MCP tools and handlers", () => {
       "fleet_queue_inspect",
       "fleet_queue_purge",
       "fleet_handoff_generate",
+      "fleet_ensure_orchestrator",
     ]);
 
     const boardTool = FLEET_MCP_TOOLS.find((t) => t.name === "fleet_check_board");
@@ -100,6 +102,13 @@ describe("fleet MCP tools and handlers", () => {
     assert.ok(handoffTool, "fleet_handoff_generate tool must be registered");
     assert.equal(handoffTool.inputSchema.type, "object");
     assert.ok(handoffTool.inputSchema.properties.json);
+
+    const ensureTool = FLEET_MCP_TOOLS.find((t) => t.name === "fleet_ensure_orchestrator");
+    assert.ok(ensureTool, "fleet_ensure_orchestrator tool must be registered");
+    assert.equal(ensureTool.inputSchema.type, "object");
+    assert.ok(ensureTool.inputSchema.properties.repo);
+    assert.ok(ensureTool.inputSchema.properties.mode);
+    assert.deepEqual(ensureTool.inputSchema.required, ["repo"]);
   });
 
   test("executeFleetCheckBoard rejects invalid role", async () => {
@@ -262,10 +271,10 @@ describe("fleet MCP tools and handlers", () => {
     assert.match(res.content[0]!.text, /Unknown tool/);
   });
 
-  test("handleFleetToolList returns all 7 available tools", async () => {
+  test("handleFleetToolList returns all 8 available tools", async () => {
     const res = await handleFleetToolList({});
     assert.equal(res.ok, true);
-    assert.equal(res.tools.length, 7);
+    assert.equal(res.tools.length, 8);
     assert.deepEqual(
       res.tools.map((t) => t.name),
       [
@@ -276,6 +285,7 @@ describe("fleet MCP tools and handlers", () => {
         "fleet_queue_inspect",
         "fleet_queue_purge",
         "fleet_handoff_generate",
+        "fleet_ensure_orchestrator",
       ],
     );
   });
@@ -288,6 +298,12 @@ describe("fleet MCP tools and handlers", () => {
     assert.equal(res.ok, true);
     assert.equal(res.isError, false);
     assert.ok(res.output);
+  });
+
+  test("executeFleetEnsureOrchestrator requires repo argument", async () => {
+    const res = await executeFleetEnsureOrchestrator({});
+    assert.equal(res.isError, true);
+    assert.match(res.content[0]!.text, /repo is required/);
   });
 
   test("handleFleetToolExecute handles unknown tool cleanly", async () => {

@@ -217,6 +217,44 @@ export const FLEET_MCP_TOOLS: UppidiToolDefinition[] = [
       },
     },
   },
+  {
+    name: "fleet_ensure_orchestrator",
+    description:
+      "Deterministically ensure an active, autonomous orchestrator agent exists for a repository. If already running, returns existing agentId; otherwise resolves workspace from daemon workspaces.json, provisions agent defaulting to autonomous yolo mode, registers it, and drains pending queues.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        repo: {
+          type: "string",
+          description: "Target repository slug or key (e.g. 'owner/repo')",
+        },
+        mode: {
+          type: "string",
+          description: "Execution permission mode (default: 'yolo')",
+          default: "yolo",
+        },
+        provider: {
+          type: "string",
+          description: "Agent model provider (default: 'antigravity-acp')",
+        },
+        model: {
+          type: "string",
+          description: "Model name override",
+        },
+        force: {
+          type: "boolean",
+          description: "Force provisioning a new orchestrator even if one is currently active",
+          default: false,
+        },
+        json: {
+          type: "boolean",
+          description: "Output machine-readable JSON instead of markdown",
+          default: false,
+        },
+      },
+      required: ["repo"],
+    },
+  },
 ];
 
 export interface FleetToolCallResult {
@@ -643,6 +681,50 @@ export async function executeFleetHandoffGenerate(
 }
 
 /**
+ * Execute fleet_ensure_orchestrator with validated parameters.
+ */
+export async function executeFleetEnsureOrchestrator(
+  args: Record<string, unknown> = {},
+): Promise<FleetToolCallResult> {
+  const repo = typeof args.repo === "string" ? args.repo.trim() : "";
+  if (!repo) {
+    return {
+      content: [{ type: "text", text: "repo is required" }],
+      isError: true,
+    };
+  }
+  const mode = typeof args.mode === "string" && args.mode.trim() ? args.mode.trim() : "yolo";
+  const provider = typeof args.provider === "string" && args.provider.trim() ? args.provider.trim() : undefined;
+  const model = typeof args.model === "string" && args.model.trim() ? args.model.trim() : undefined;
+  const force = Boolean(args.force);
+  const json = Boolean(args.json);
+
+  try {
+    const router = getActiveHookRouter() ?? new HookRouter();
+    const result = await router.ensureOrchestrator({ repo, mode, provider, model, force });
+    if (!result.ok) {
+      return {
+        content: [{ type: "text", text: `fleet_ensure_orchestrator failed: ${result.error ?? "unknown error"}` }],
+        isError: true,
+      };
+    }
+    const text = json
+      ? JSON.stringify(result, null, 2)
+      : `### Orchestrator Ensured: ${repo}\n- **Agent ID**: \`${result.agentId}\`\n- **Status**: \`${result.status}\`\n- **Mode**: \`${mode}\`${result.workspaceId ? `\n- **Workspace**: \`${result.workspaceId}\`` : ""}${result.cwd ? `\n- **CWD**: \`${result.cwd}\`` : ""}`;
+    return {
+      content: [{ type: "text", text }],
+      isError: false,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      content: [{ type: "text", text: `fleet_ensure_orchestrator failed: ${message}` }],
+      isError: true,
+    };
+  }
+}
+
+/**
  * Dispatch an MCP tool call by name.
  */
 export async function executeFleetTool(
@@ -664,6 +746,8 @@ export async function executeFleetTool(
       return executeFleetQueuePurge(args);
     case "fleet_handoff_generate":
       return executeFleetHandoffGenerate(args);
+    case "fleet_ensure_orchestrator":
+      return executeFleetEnsureOrchestrator(args);
     default:
       return {
         content: [
