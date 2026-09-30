@@ -17,7 +17,7 @@ import {
   getActiveHookRouter,
 } from "./hook-router.js";
 
-describe("fleet reset state handler (#764)", () => {
+describe("fleet reset state handler (#764)", { concurrency: false }, () => {
   let tmpHome: string;
   let originalHome: string | undefined;
 
@@ -103,10 +103,11 @@ describe("fleet reset state handler (#764)", () => {
     assert.ok(!fs.existsSync(path.join(queueDir, "queue-repo1.json")));
 
     // Verify steer notification was dispatched to orchestrator
-    assert.equal(execCommands.length, 1);
-    assert.equal(execCommands[0].file, "paseo");
-    assert.deepEqual(execCommands[0].args.slice(0, 4), ["send", "--no-wait", "--steer", "agent-orch-42"]);
-    assert.ok(execCommands[0].args[4].includes("Fleet state reset"));
+    const steerCmd = execCommands.find((c) => c.args.includes("send"));
+    assert.ok(steerCmd, "steer command dispatched");
+    assert.equal(steerCmd.file, "paseo");
+    assert.deepEqual(steerCmd.args.slice(0, 4), ["send", "--no-wait", "--steer", "agent-orch-42"]);
+    assert.ok(steerCmd.args[4].includes("Fleet state reset"));
   });
 
   it("skips orchestrator notification when notifyOrchestrators is false", async () => {
@@ -143,6 +144,7 @@ describe("fleet reset state handler (#764)", () => {
   });
 
   it("handles missing directories gracefully without erroring", async () => {
+    setExecFileAsyncForTest(async () => ({ stdout: "[]" }));
     const mockContext: any = {
       paseo: {
         agents: {

@@ -132,6 +132,7 @@ export interface HookRouterOptions {
   watchdogBusyThreshold?: number;
   watchdogAlertCooldownMs?: number;
   boardSweepIntervalMs?: number;
+  frontDeskThrottleMs?: number;
 }
 
 export interface QueueEntry {
@@ -1478,6 +1479,9 @@ export class HookRouter {
   public readonly watchdogBusyThreshold: number;
   public readonly watchdogAlertCooldownMs: number;
   public readonly boardSweepIntervalMs: number;
+  public readonly frontDeskThrottleMs: number;
+  private lastDeliveryTimes = new Map<string, number>();
+  private latestAgentMap: Map<string, WatchdogAgent> | null = null;
   private watchdogTimer: NodeJS.Timeout | null = null;
   private boardSweepTimer: NodeJS.Timeout | null = null;
 
@@ -1550,6 +1554,12 @@ export class HookRouter {
       options?.watchdogAlertCooldownMs ?? Number(process.env.WATCHDOG_ALERT_COOLDOWN_MS ?? 15 * 60 * 1000);
     this.boardSweepIntervalMs =
       options?.boardSweepIntervalMs ?? (isTestMode ? 0 : Number(process.env.BOARD_SWEEP_INTERVAL_MS ?? 15 * 60 * 1000));
+    this.frontDeskThrottleMs =
+      options?.frontDeskThrottleMs !== undefined
+        ? options.frontDeskThrottleMs
+        : isTestMode
+          ? 0
+          : Number(process.env.HOOK_FRONTDESK_THROTTLE_MS ?? 2000);
 
     mkdirSync(this.queueDir, { recursive: true });
     mkdirSync(this.stateDir, { recursive: true });
@@ -1679,7 +1689,10 @@ export class HookRouter {
     }
 
     if (isFd) {
-      this.enqueue("frontdesk", msg, bypass);
+      const isSos =
+        sosState !== null ||
+        (typeof commentBody === "string" && /(?:^|\s)\/(?:sos|stop)\b/i.test(commentBody));
+      this.enqueue("frontdesk", msg, isSos);
       return { key: "frontdesk", result: bypass ? "bypass" : "direct", frontDesk: true, bypass };
     }
 
@@ -2006,6 +2019,78 @@ export class HookRouter {
     }
   }
 
+  public isAgentBusy(agentId: string, agentMap?: Map<string, WatchdogAgent> | null): boolean {
+    if (!agentId) return false;
+
+    const frontDesk = this.readFrontDesk();
+    const isFd = agentId === frontDesk?.agentId;
+    if (isFd && this.busyQueues.has("frontdesk")) {
+      return true;
+    }
+
+    const map = agentMap ?? this.latestAgentMap;
+    if (map?.has(agentId)) {
+      const agent = map.get(agentId);
+      if (
+        agent &&
+        (agent.status === "running" ||
+          agent.status === "working" ||
+          agent.status === "busy" ||
+          Boolean(agent.activeTurn))
+      ) {
+        return true;
+      }
+    }
+
+    const paseo = this.getPaseo();
+    if (paseo?.agents?.ref) {
+      try {
+        const ref = paseo.agents.ref(agentId);
+        const current = ref?.current ? ref.current() : null;
+        if (
+          current &&
+          (current.status === "running" ||
+            (current.status as string) === "working" ||
+            (current.status as string) === "busy" ||
+            Boolean(current.activeTurn))
+        ) {
+          return true;
+        }
+      } catch {
+        // Proceed if status check fails
+      }
+    }
+
+    if (isFd && this.frontDeskThrottleMs > 0) {
+      const last = this.lastDeliveryTimes.get(agentId) ?? 0;
+      if (Date.now() - last < this.frontDeskThrottleMs) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
+  private deliverWatchdogAlert(
+    frontDeskId: string,
+    alert: string,
+    opts: {
+      deliverFn: (id: string, msg: string, o?: any) => Promise<boolean> | void;
+      agentMap?: Map<string, WatchdogAgent> | null;
+      isSos?: boolean;
+    },
+  ): void {
+    const isSos = Boolean(opts.isSos);
+    const isBusy = !isSos && this.isAgentBusy(frontDeskId, opts.agentMap);
+    if (isBusy) {
+      this.log(`[info] Front Desk ${frontDeskId} is busy; queueing watchdog alert instead of interrupting active turn`);
+      this.enqueue("frontdesk", alert, false);
+      return;
+    }
+    this.lastDeliveryTimes.set(frontDeskId, Date.now());
+    void opts.deliverFn(frontDeskId, alert, { noWait: true, steer: isSos });
+  }
+
   public async updateAgentMetadata(
     agentId: string,
     name: string,
@@ -2275,6 +2360,9 @@ export class HookRouter {
     if (!agentMap) {
       agentMap = await this.fetchAgentMap();
     }
+    if (agentMap) {
+      this.latestAgentMap = agentMap;
+    }
 
     // Fuse persisted metadata and daemon logs. Injected test fixtures skip the
     // filesystem unless the caller points at an explicit directory, which keeps
@@ -2316,7 +2404,7 @@ export class HookRouter {
             this.watchdogAlerts.set(alertKey, now);
             const cmd = reqId ? `paseo permit allow ${agent.id} ${reqId}` : `paseo permit allow ${agent.id}`;
             const alert = `[Fleet Watchdog] Agent ${agent.title || agent.id.slice(0, 7)} (${agent.id.slice(0, 7)}) requires permission: ${action}. Front Desk adjudication command: ${cmd}`;
-            void deliverFn(frontDeskId, alert, { noWait: true, steer: true });
+            this.deliverWatchdogAlert(frontDeskId, alert, { deliverFn, agentMap, isSos: false });
           }
         } else if (
           agent.requiresAttention === true &&
@@ -2334,7 +2422,7 @@ export class HookRouter {
           if (frontDeskId && this.canWatchdogAlert(alertKey, now)) {
             this.watchdogAlerts.set(alertKey, now);
             const alert = `[Fleet Watchdog] Agent ${agent.title || agent.id.slice(0, 7)} (${agent.id.slice(0, 7)}) requires attention (${agent.attentionReason || "stalled"}). Operator or Front Desk triage required.`;
-            void deliverFn(frontDeskId, alert, { noWait: true, steer: true });
+            this.deliverWatchdogAlert(frontDeskId, alert, { deliverFn, agentMap, isSos: false });
           }
         }
       }
@@ -2385,13 +2473,13 @@ export class HookRouter {
         const label = assessment.name || assessment.agentId.slice(0, 7);
         if (assessment.taxonomy.includes("PROVIDER_QUOTA_EXHAUSTION")) {
           const alert = `[Fleet Watchdog] Agent ${label} (${assessment.agentId.slice(0, 7)}) hit provider/quota exhaustion: "${assessment.lastError}". Circuit-break: no auto-steer; operator required.`;
-          void deliverFn(frontDeskId, alert, { noWait: true, steer: false });
+          this.deliverWatchdogAlert(frontDeskId, alert, { deliverFn, agentMap, isSos: false });
         } else if (recovery.steered) {
           const alert = `[Fleet Watchdog] Auto-recovered agent ${label} (${assessment.agentId.slice(0, 7)}) [${assessment.taxonomy.join(", ")}] via ${recovery.actions.join(" -> ")}.`;
-          void deliverFn(frontDeskId, alert, { noWait: true, steer: false });
+          this.deliverWatchdogAlert(frontDeskId, alert, { deliverFn, agentMap, isSos: false });
         } else {
           const alert = `[Fleet Watchdog] Agent ${label} (${assessment.agentId.slice(0, 7)}) unhealthy [${assessment.taxonomy.join(", ")}]. Operator attention may be required.`;
-          void deliverFn(frontDeskId, alert, { noWait: true, steer: false });
+          this.deliverWatchdogAlert(frontDeskId, alert, { deliverFn, agentMap, isSos: false });
         }
       }
 
@@ -2467,7 +2555,7 @@ export class HookRouter {
           if (frontDeskId && this.canWatchdogAlert(alertKey, now)) {
             this.watchdogAlerts.set(alertKey, now);
             const alert = `[Fleet Watchdog] Registered orchestrator for ${key} (${agentId.slice(0, 7)}) was not found on daemon.`;
-            void deliverFn(frontDeskId, alert, { noWait: true });
+            this.deliverWatchdogAlert(frontDeskId, alert, { deliverFn, agentMap, isSos: false });
           }
           continue;
         }
@@ -2493,7 +2581,7 @@ export class HookRouter {
                 this.watchdogAlerts.set(alertKey, now);
                 const reasonDesc = isTurnLock ? "clearing foreground turn lock" : "reloading agent";
                 const alert = `[Fleet Watchdog] Auto-recovered orchestrator for ${key} (${agentId.slice(0, 7)}) by ${reasonDesc}.`;
-                void deliverFn(frontDeskId, alert, { noWait: true });
+                this.deliverWatchdogAlert(frontDeskId, alert, { deliverFn, agentMap, isSos: false });
               }
               continue;
             }
@@ -2503,7 +2591,7 @@ export class HookRouter {
           if (frontDeskId && this.canWatchdogAlert(alertKey, now)) {
             this.watchdogAlerts.set(alertKey, now);
             const alert = `[Fleet Watchdog] Orchestrator for ${key} (${agentId.slice(0, 7)}) is in status error: "${errMsg}". Operator attention may be required.`;
-            void deliverFn(frontDeskId, alert, { noWait: true });
+            this.deliverWatchdogAlert(frontDeskId, alert, { deliverFn, agentMap, isSos: false });
           }
         }
       }
@@ -2519,7 +2607,7 @@ export class HookRouter {
         if (frontDeskId && this.canWatchdogAlert(alertKey, now)) {
           this.watchdogAlerts.set(alertKey, now);
           const alert = `[Fleet Watchdog] Queue for ${key} has ${q.length} pending message(s) but no orchestrator is registered.`;
-          void deliverFn(frontDeskId, alert, { noWait: true });
+          this.deliverWatchdogAlert(frontDeskId, alert, { deliverFn, agentMap, isSos: false });
         }
       }
     }
@@ -2553,7 +2641,7 @@ export class HookRouter {
             const alert = reloaded
               ? `[Fleet Watchdog] Auto-recovered wedged queue for ${key} (${q.length} pending, ${attempts} failed attempts) by reloading orchestrator ${orchId?.slice(0, 7)}.`
               : `[Fleet Watchdog] Queue for ${key} has ${q.length} pending message(s) and has failed delivery ${attempts} times.`;
-            void deliverFn(frontDeskId, alert, { noWait: true });
+            this.deliverWatchdogAlert(frontDeskId, alert, { deliverFn, agentMap, isSos: false });
           }
         }
       }
@@ -2823,8 +2911,19 @@ export class HookRouter {
           `[Fleet Board Sweep] ${errors.length} repo(s) FAILED board check - actionable tickets may be missed:\n${failureLines.join("\n")}`,
         );
       }
-      const ok = await this.deliverMessage(frontDeskId, sections.join("\n\n"), { noWait: true, steer: true });
-      if (ok) notified = 1;
+      const alertMsg = sections.join("\n\n");
+      const isBusy = this.isAgentBusy(frontDeskId);
+      if (isBusy) {
+        this.log(`[info] Front Desk ${frontDeskId} is busy; queueing board sweep notification`);
+        this.enqueue("frontdesk", alertMsg, false);
+        notified = 1;
+      } else {
+        const ok = await this.deliverMessage(frontDeskId, alertMsg, { noWait: true, steer: false });
+        if (ok) {
+          this.lastDeliveryTimes.set(frontDeskId, Date.now());
+          notified = 1;
+        }
+      }
     }
     this.log(`[info] Board sweep complete: ${targets.length} repo(s) swept, ${actionable.length} actionable, ${errors.length} failed`);
     return { ok: true, swept: targets.length, actionable, notified, ...(errors.length > 0 ? { errors } : {}) };
@@ -3042,6 +3141,11 @@ export class HookRouter {
       }
     }
 
+    const frontDesk = this.readFrontDesk();
+    if (frontDesk?.agentId) {
+      this.lastDeliveryTimes.delete(frontDesk.agentId);
+    }
+    this.lastDeliveryTimes.delete("frontdesk");
     count += this.clearQueue("frontdesk");
     this.coalesceBuffers.delete("frontdesk");
     this.sosStates.delete("frontdesk");
@@ -3119,6 +3223,7 @@ export class HookRouter {
         if (frontDesk?.agentId === endedAgentId) {
           this.busyQueues.delete("frontdesk");
           this.busyAttempts.delete("frontdesk");
+          this.lastDeliveryTimes.delete(endedAgentId);
           const timer = this.backoffTimers.get("frontdesk");
           if (timer) {
             clearTimeout(timer);
@@ -3190,33 +3295,66 @@ export class HookRouter {
       const agentRef = paseo?.agents?.ref ? paseo.agents.ref(targetAgentId) : null;
       const hasSos = Boolean(list[0]?.isSos);
 
-      if (agentRef && !hasSos) {
-        // Check if agent is currently busy
-        try {
-          const currentSnapshot = agentRef.current ? agentRef.current() : null;
-          const refreshed = (!currentSnapshot && agentRef.refresh) ? await agentRef.refresh().catch(() => null) : null;
-          const agent = refreshed?.agent ?? currentSnapshot;
-
-          if (agent && (agent.status === "running" || Boolean(agent.activeTurn))) {
-            this.busyQueues.add(key);
-            const attempts = (this.busyAttempts.get(key) ?? 0) + 1;
-            this.busyAttempts.set(key, attempts);
-            this.log(`[info] Agent ${targetAgentId} busy for ${key}, retry scheduled (attempt ${attempts})`);
-
-            // Schedule a backoff retry in case turn_ended was missed
-            if (!this.backoffTimers.has(key)) {
-              const delay = Math.min(30000, 3000 * Math.pow(1.5, Math.min(attempts, 5)));
-              const timer = setTimeout(() => {
-                this.backoffTimers.delete(key);
-                void this.drain(key);
-              }, delay);
-              timer.unref?.();
-              this.backoffTimers.set(key, timer);
-            }
-            return;
+      if (!hasSos) {
+        // Check if agent is currently busy or throttled
+        let isBusy = false;
+        if (key === "frontdesk" && this.frontDeskThrottleMs > 0) {
+          const last = this.lastDeliveryTimes.get(targetAgentId) ?? 0;
+          if (Date.now() - last < this.frontDeskThrottleMs) {
+            isBusy = true;
           }
-        } catch {
-          // Proceed if status inspection fails
+        }
+
+        if (!isBusy && agentRef) {
+          try {
+            const currentSnapshot = agentRef.current ? agentRef.current() : null;
+            const refreshed = (!currentSnapshot && agentRef.refresh) ? await agentRef.refresh().catch(() => null) : null;
+            const agent = refreshed?.agent ?? currentSnapshot;
+
+            if (
+              agent &&
+              (agent.status === "running" ||
+                (agent.status as string) === "working" ||
+                (agent.status as string) === "busy" ||
+                Boolean(agent.activeTurn))
+            ) {
+              isBusy = true;
+            }
+          } catch {
+            // Proceed if status inspection fails
+          }
+        }
+
+        if (!isBusy && this.latestAgentMap?.has(targetAgentId)) {
+          const agent = this.latestAgentMap.get(targetAgentId);
+          if (
+            agent &&
+            (agent.status === "running" ||
+              agent.status === "working" ||
+              agent.status === "busy" ||
+              Boolean(agent.activeTurn))
+          ) {
+            isBusy = true;
+          }
+        }
+
+        if (isBusy) {
+          this.busyQueues.add(key);
+          const attempts = (this.busyAttempts.get(key) ?? 0) + 1;
+          this.busyAttempts.set(key, attempts);
+          this.log(`[info] Agent ${targetAgentId} busy for ${key}, retry scheduled (attempt ${attempts})`);
+
+          // Schedule a backoff retry in case turn_ended was missed
+          if (!this.backoffTimers.has(key)) {
+            const delay = Math.min(30000, 3000 * Math.pow(1.5, Math.min(attempts, 5)));
+            const timer = setTimeout(() => {
+              this.backoffTimers.delete(key);
+              void this.drain(key);
+            }, delay);
+            timer.unref?.();
+            this.backoffTimers.set(key, timer);
+          }
+          return;
         }
       }
 
@@ -3234,6 +3372,7 @@ export class HookRouter {
           noWait: false,
         });
         if (ok) {
+          this.lastDeliveryTimes.set(targetAgentId, Date.now());
           list.length = 0;
           this.persistQueue(key);
           this.log(`[info] Delivered batch of ${batchCount} message(s) to agent ${targetAgentId} for ${key}`);
@@ -3247,6 +3386,7 @@ export class HookRouter {
           noWait: false,
         });
         if (ok) {
+          this.lastDeliveryTimes.set(targetAgentId, Date.now());
           list.shift();
           this.persistQueue(key);
           this.log(`[info] Delivered message ${entry.id} to agent ${targetAgentId} for ${key}`);
