@@ -243,6 +243,54 @@ describe("UppidiFleetKanbanBoard (#755)", () => {
       buttons[1].props?.onPress?.();
       assert.equal(transitionedTarget, "review");
     });
+
+    it("supports HTML5 draggable and sets dataTransfer on drag start", () => {
+      let renderer: any;
+      TestRenderer.act(() => {
+        renderer = TestRenderer.create(
+          React.createElement(KanbanCard, {
+            issue: sampleIssues[0],
+            columnId: "in_progress",
+          }),
+        );
+      });
+
+      const tree = renderer.toJSON() as RenderedNode;
+      const cardNodes = findByTestId(tree, "kanban-card-755");
+      assert.equal(cardNodes.length, 1);
+      assert.equal(cardNodes[0].props?.draggable, true);
+
+      const dataStore: Record<string, string> = {};
+      const mockEvent = {
+        dataTransfer: {
+          setData: (format: string, data: string) => {
+            dataStore[format] = data;
+          },
+          effectAllowed: "",
+        },
+      };
+
+      TestRenderer.act(() => {
+        cardNodes[0].props?.onDragStart?.(mockEvent);
+      });
+
+      assert.equal(dataStore["text/plain"], "755");
+      assert.deepEqual(JSON.parse(dataStore["application/json"]), sampleIssues[0]);
+      assert.equal(mockEvent.dataTransfer.effectAllowed, "move");
+
+      // Verify dragging style update (opacity 0.6)
+      const draggingTree = renderer.toJSON() as RenderedNode;
+      const draggingCard = findByTestId(draggingTree, "kanban-card-755")[0];
+      assert.equal(draggingCard.props?.style?.opacity, 0.6);
+
+      // Verify drag end resets opacity
+      TestRenderer.act(() => {
+        cardNodes[0].props?.onDragEnd?.({});
+      });
+      const endTree = renderer.toJSON() as RenderedNode;
+      const normalCard = findByTestId(endTree, "kanban-card-755")[0];
+      assert.equal(normalCard.props?.style?.opacity, 1);
+    });
   });
 
   describe("UppidiFleetKanbanBoard rendering", () => {
@@ -284,6 +332,192 @@ describe("UppidiFleetKanbanBoard (#755)", () => {
       const card756 = findByTestId(tree, "kanban-card-756");
       assert.equal(card755.length, 1);
       assert.equal(card756.length, 0);
+    });
+  });
+
+  describe("Kanban column drag-and-drop and drop transitions", () => {
+    it("supports dragOver with preventDefault and sets dropEffect", () => {
+      let renderer: any;
+      TestRenderer.act(() => {
+        renderer = TestRenderer.create(
+          React.createElement(UppidiFleetKanbanBoard, { issues: sampleIssues }),
+        );
+      });
+
+      const tree = renderer.toJSON() as RenderedNode;
+      const reviewCol = findByTestId(tree, "kanban-column-review")[0];
+      assert.ok(reviewCol, "review column should exist");
+      assert.equal(typeof reviewCol.props?.onDragOver, "function");
+
+      let defaultPrevented = false;
+      const mockEvent = {
+        preventDefault: () => {
+          defaultPrevented = true;
+        },
+        dataTransfer: { dropEffect: "" },
+      };
+
+      TestRenderer.act(() => {
+        reviewCol.props?.onDragOver?.(mockEvent);
+      });
+
+      assert.equal(defaultPrevented, true);
+      assert.equal(mockEvent.dataTransfer.dropEffect, "move");
+    });
+
+    it("toggles active drop zone visual feedback on dragEnter and dragLeave", () => {
+      let renderer: any;
+      TestRenderer.act(() => {
+        renderer = TestRenderer.create(
+          React.createElement(UppidiFleetKanbanBoard, { issues: sampleIssues }),
+        );
+      });
+
+      let tree = renderer.toJSON() as RenderedNode;
+      let reviewCol = findByTestId(tree, "kanban-column-review")[0];
+      assert.equal(reviewCol.props?.style?.borderStyle, "solid");
+
+      // Enter column: visual highlight active (dashed border, active background)
+      TestRenderer.act(() => {
+        reviewCol.props?.onDragEnter?.({ preventDefault: () => {} });
+      });
+
+      tree = renderer.toJSON() as RenderedNode;
+      reviewCol = findByTestId(tree, "kanban-column-review")[0];
+      assert.equal(reviewCol.props?.style?.borderStyle, "dashed");
+      assert.equal(reviewCol.props?.style?.borderWidth, 2);
+
+      // Leave column: visual highlight cleared
+      TestRenderer.act(() => {
+        reviewCol.props?.onDragLeave?.({ preventDefault: () => {} });
+      });
+
+      tree = renderer.toJSON() as RenderedNode;
+      reviewCol = findByTestId(tree, "kanban-column-review")[0];
+      assert.equal(reviewCol.props?.style?.borderStyle, "solid");
+      assert.equal(reviewCol.props?.style?.borderWidth, 1);
+    });
+
+    it("triggers state transition via onTransitionIssue on drop with application/json data", async () => {
+      let transitionedIssue: UppidiIssue | null = null;
+      let targetColumn: string | null = null;
+
+      let renderer: any;
+      TestRenderer.act(() => {
+        renderer = TestRenderer.create(
+          React.createElement(UppidiFleetKanbanBoard, {
+            issues: sampleIssues,
+            onTransitionIssue: (issue: UppidiIssue, target: any) => {
+              transitionedIssue = issue;
+              targetColumn = target;
+            },
+          }),
+        );
+      });
+
+      const tree = renderer.toJSON() as RenderedNode;
+      const reviewCol = findByTestId(tree, "kanban-column-review")[0];
+
+      // Drop sampleIssues[0] (issue 755 currently in "in_progress") into "review"
+      const dropEvent = {
+        preventDefault: () => {},
+        dataTransfer: {
+          getData: (type: string) => {
+            if (type === "application/json") {
+              return JSON.stringify(sampleIssues[0]);
+            }
+            return "";
+          },
+        },
+      };
+
+      await TestRenderer.act(async () => {
+        await reviewCol.props?.onDrop?.(dropEvent);
+      });
+
+      assert.ok(transitionedIssue, "transition callback must be invoked");
+      assert.equal((transitionedIssue as UppidiIssue).number, 755);
+      assert.equal(targetColumn, "review");
+    });
+
+    it("triggers state transition on drop with text/plain issue number fallback", async () => {
+      let transitionedIssue: UppidiIssue | null = null;
+      let targetColumn: string | null = null;
+
+      let renderer: any;
+      TestRenderer.act(() => {
+        renderer = TestRenderer.create(
+          React.createElement(UppidiFleetKanbanBoard, {
+            issues: sampleIssues,
+            onTransitionIssue: (issue: UppidiIssue, target: any) => {
+              transitionedIssue = issue;
+              targetColumn = target;
+            },
+          }),
+        );
+      });
+
+      const tree = renderer.toJSON() as RenderedNode;
+      const doneCol = findByTestId(tree, "kanban-column-done")[0];
+
+      // Drop issue 755 with text/plain only
+      const dropEvent = {
+        preventDefault: () => {},
+        dataTransfer: {
+          getData: (type: string) => {
+            if (type === "text/plain") {
+              return "755";
+            }
+            return "";
+          },
+        },
+      };
+
+      await TestRenderer.act(async () => {
+        await doneCol.props?.onDrop?.(dropEvent);
+      });
+
+      assert.ok(transitionedIssue, "transition callback must be invoked via text/plain fallback");
+      assert.equal((transitionedIssue as UppidiIssue).number, 755);
+      assert.equal(targetColumn, "done");
+    });
+
+    it("does not trigger transition when card is dropped into its current column", async () => {
+      let transitionCalled = false;
+
+      let renderer: any;
+      TestRenderer.act(() => {
+        renderer = TestRenderer.create(
+          React.createElement(UppidiFleetKanbanBoard, {
+            issues: sampleIssues,
+            onTransitionIssue: () => {
+              transitionCalled = true;
+            },
+          }),
+        );
+      });
+
+      const tree = renderer.toJSON() as RenderedNode;
+      // sampleIssues[0] (755) is already in "in_progress"
+      const inProgressCol = findByTestId(tree, "kanban-column-in_progress")[0];
+
+      const dropEvent = {
+        preventDefault: () => {},
+        dataTransfer: {
+          getData: (type: string) => {
+            if (type === "application/json") {
+              return JSON.stringify(sampleIssues[0]);
+            }
+            return "";
+          },
+        },
+      };
+
+      await TestRenderer.act(async () => {
+        await inProgressCol.props?.onDrop?.(dropEvent);
+      });
+
+      assert.equal(transitionCalled, false, "no transition should occur for same column");
     });
   });
 });

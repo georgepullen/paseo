@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from "react";
-import { View, Text, ScrollView, Pressable } from "react-native";
+import { View, Text, ScrollView, Pressable, Platform } from "react-native";
 import {
   Badge,
   Button,
@@ -129,6 +129,9 @@ export interface KanbanCardProps {
   onSelect?: (issueNumber: number) => void;
   onTransition?: (issue: UppidiIssue, targetState: KanbanColumnId) => void | Promise<void>;
   isTransitioning?: boolean;
+  isDragging?: boolean;
+  onDragStart?: (e: any) => void;
+  onDragEnd?: (e: any) => void;
 }
 
 export function KanbanCard({
@@ -137,14 +140,48 @@ export function KanbanCard({
   onSelect,
   onTransition,
   isTransitioning = false,
+  isDragging = false,
+  onDragStart,
+  onDragEnd,
 }: KanbanCardProps) {
   const { colors, typography } = usePluginTheme();
   const transitions = getColumnTransitions(columnId);
   const attention = ATTENTION_CONFIG[issue.attention] ?? { label: "Agent", variant: "neutral" };
+  const isWeb = Platform.OS === "web";
+  const [internalDragging, setInternalDragging] = useState(false);
+  const draggingActive = isDragging || internalDragging;
+
+  const handleDragStart = (e: any) => {
+    setInternalDragging(true);
+    if (e?.dataTransfer) {
+      try {
+        e.dataTransfer.setData("text/plain", String(issue.number));
+        e.dataTransfer.setData("application/json", JSON.stringify(issue));
+        e.dataTransfer.effectAllowed = "move";
+      } catch {
+        // ignore in environments with restricted dataTransfer
+      }
+    }
+    onDragStart?.(e);
+  };
+
+  const handleDragEnd = (e: any) => {
+    setInternalDragging(false);
+    onDragEnd?.(e);
+  };
+
+  const webDragProps: Record<string, any> = isWeb
+    ? {
+        draggable: true,
+        onDragStart: handleDragStart,
+        onDragEnd: handleDragEnd,
+      }
+    : {};
 
   return (
     <View
       testID={`kanban-card-${issue.number}`}
+      {...webDragProps}
       style={{
         backgroundColor: colors.surface0 ?? "#18181b",
         borderColor: colors.border ?? "#3f3f46",
@@ -152,6 +189,8 @@ export function KanbanCard({
         borderRadius: 8,
         padding: 10,
         gap: 8,
+        opacity: draggingActive ? 0.6 : 1,
+        ...(isWeb ? ({ cursor: "grab" } as any) : {}),
       }}
     >
       {/* Top row: Issue number, repo, attention */}
@@ -268,6 +307,8 @@ export function UppidiFleetKanbanBoard({
   const { colors, typography } = usePluginTheme();
   const [internalQuery, setInternalQuery] = useState("");
   const [transitioningIssueId, setTransitioningIssueId] = useState<number | null>(null);
+  const [dragOverColumn, setDragOverColumn] = useState<KanbanColumnId | null>(null);
+  const isWeb = Platform.OS === "web";
 
   const query = externalFilterQuery !== undefined ? externalFilterQuery : internalQuery;
   const setQuery = onFilterQueryChange ?? setInternalQuery;
@@ -312,6 +353,59 @@ export function UppidiFleetKanbanBoard({
       await onTransitionIssue(issue, targetState);
     } finally {
       setTransitioningIssueId(null);
+    }
+  };
+
+  const handleColumnDragOver = (e: any, colId: KanbanColumnId) => {
+    e.preventDefault?.();
+    if (e?.dataTransfer) {
+      e.dataTransfer.dropEffect = "move";
+    }
+    if (dragOverColumn !== colId) {
+      setDragOverColumn(colId);
+    }
+  };
+
+  const handleColumnDragEnter = (e: any, colId: KanbanColumnId) => {
+    e.preventDefault?.();
+    setDragOverColumn(colId);
+  };
+
+  const handleColumnDragLeave = (e: any, colId: KanbanColumnId) => {
+    e.preventDefault?.();
+    setDragOverColumn((current) => (current === colId ? null : current));
+  };
+
+  const handleColumnDrop = async (e: any, targetColId: KanbanColumnId) => {
+    e.preventDefault?.();
+    setDragOverColumn(null);
+
+    let issueToTransition: UppidiIssue | undefined;
+    if (e?.dataTransfer) {
+      try {
+        const jsonStr = e.dataTransfer.getData?.("application/json");
+        if (jsonStr) {
+          issueToTransition = JSON.parse(jsonStr);
+        }
+      } catch {
+        // Fallback to text/plain issue number
+      }
+
+      if (!issueToTransition) {
+        const numStr = e.dataTransfer.getData?.("text/plain");
+        if (numStr) {
+          const issueNum = parseInt(numStr, 10);
+          issueToTransition = issues.find((i) => i.number === issueNum);
+        }
+      }
+    }
+
+    if (issueToTransition) {
+      const fullIssue = issues.find((i) => i.number === issueToTransition?.number) ?? issueToTransition;
+      const currentColumn = getIssueKanbanColumn(fullIssue);
+      if (currentColumn !== targetColId) {
+        await handleTransition(fullIssue, targetColId);
+      }
     }
   };
 
@@ -378,20 +472,37 @@ export function UppidiFleetKanbanBoard({
       >
         {KANBAN_COLUMNS.map((col) => {
           const colIssues = issuesByColumn[col.id];
+          const isOver = dragOverColumn === col.id;
+
+          const webColumnProps: Record<string, any> = isWeb
+            ? {
+                onDragOver: (e: any) => handleColumnDragOver(e, col.id),
+                onDragEnter: (e: any) => handleColumnDragEnter(e, col.id),
+                onDragLeave: (e: any) => handleColumnDragLeave(e, col.id),
+                onDrop: (e: any) => handleColumnDrop(e, col.id),
+              }
+            : {};
+
           return (
             <View
               key={col.id}
               testID={`kanban-column-${col.id}`}
+              {...webColumnProps}
               style={{
                 width: 290,
                 minWidth: 260,
-                backgroundColor: colors.surface1 ?? "#27272a",
-                borderColor: colors.border ?? "#3f3f46",
-                borderWidth: 1,
+                backgroundColor: isOver
+                  ? (colors.surface2 ?? "#333338")
+                  : (colors.surface1 ?? "#27272a"),
+                borderColor: isOver
+                  ? (colors.accent ?? "#38bdf8")
+                  : (colors.border ?? "#3f3f46"),
+                borderWidth: isOver ? 2 : 1,
+                borderStyle: isOver ? "dashed" : "solid",
                 borderRadius: 8,
                 flexDirection: "column",
                 flexShrink: 0,
-                padding: 10,
+                padding: isOver ? 9 : 10,
               }}
             >
               {/* Column Header */}
