@@ -2804,3 +2804,316 @@ describe("hook-router teardown cleanup methods (#774)", () => {
   });
 });
 
+describe("hook-router Front Desk non-interrupting delivery and watchdog alerts (#780)", () => {
+  let tempDir: string;
+  let queueDir: string;
+  let stateDir: string;
+  let agentsDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "paseo-frontdesk-780-test-"));
+    queueDir = join(tempDir, "queues");
+    stateDir = join(tempDir, "state");
+    agentsDir = join(tempDir, "agents");
+    mkdirSync(queueDir, { recursive: true });
+    mkdirSync(stateDir, { recursive: true });
+    mkdirSync(agentsDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    try {
+      rmSync(tempDir, { recursive: true, force: true });
+    } catch {}
+  });
+
+  it("non-SOS webhook for Front Desk queues when busy and delivers without steer: true on turn_ended", async () => {
+    const frontDeskId = "fd-agent-780";
+    let agentStatus = "running";
+    let turnEndedHandler: any = null;
+    const sentMessages: Array<{ text: string; steer?: boolean }> = [];
+
+    const mockPaseo = {
+      agents: {
+        ref: (id: string) => {
+          assert.equal(id, frontDeskId);
+          return {
+            current: () => ({ id, status: agentStatus, activeTurn: agentStatus === "running" ? { id: "turn-1" } : null }),
+            send: async (text: string, options?: any) => {
+              sentMessages.push({ text, steer: options?.steer });
+            },
+          };
+        },
+      },
+    } as any;
+
+    const mockServer = {
+      paseo: mockPaseo,
+      events: { on: () => () => {} },
+      on: (name: string, handler: any) => {
+        if (name === "agent.turn_ended") turnEndedHandler = handler;
+        return () => {};
+      },
+      before: () => () => {},
+      handle: () => {},
+      registerSettings: () => ({} as any),
+      registerProvider: () => {},
+    } as unknown as PluginServerContext;
+
+    const router = new HookRouter(mockServer, { queueDir, stateDir, port: 0 });
+    router.writeFrontDesk(frontDeskId, "operator");
+
+    // Ingest non-SOS webhook targeted to Front Desk (e.g. meta repo issue with attention/frontdesk label)
+    const ingestRes = await router.ingestWebhook("issues", {
+      repository: { full_name: "xpufx-org/meta", html_url: "https://forge.mrs.uppidi.com/xpufx-org/meta" },
+      issue: { number: 42, title: "Routine front desk task" },
+      label: { name: "attention/frontdesk" },
+      action: "labeled",
+      sender: { login: "alice" },
+    });
+
+    assert.equal(ingestRes.frontDesk, true);
+    assert.equal(ingestRes.bypass, true);
+
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Agent is running, so message should be held in queue, NOT sent immediately
+    assert.equal(sentMessages.length, 0);
+    assert.equal(router.getQueue("frontdesk").length, 1);
+
+    // Now turn ends
+    agentStatus = "idle";
+    assert.ok(turnEndedHandler);
+    await turnEndedHandler({ agent: { id: frontDeskId } }, { paseo: mockPaseo });
+
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Message delivered without steering
+    assert.equal(sentMessages.length, 1);
+    assert.equal(sentMessages[0].steer, false);
+    assert.equal(router.getQueue("frontdesk").length, 0);
+  });
+
+  it("SOS webhook for Front Desk bypasses busy check and delivers with steer: true", async () => {
+    const frontDeskId = "fd-agent-780-sos";
+    let agentStatus = "running";
+    const sentMessages: Array<{ text: string; steer?: boolean }> = [];
+
+    const mockPaseo = {
+      agents: {
+        ref: (id: string) => {
+          assert.equal(id, frontDeskId);
+          return {
+            current: () => ({ id, status: agentStatus, activeTurn: { id: "turn-sos" } }),
+            send: async (text: string, options?: any) => {
+              sentMessages.push({ text, steer: options?.steer });
+            },
+          };
+        },
+      },
+    } as any;
+
+    const mockServer = {
+      paseo: mockPaseo,
+      events: { on: () => () => {} },
+      on: () => () => {},
+      before: () => () => {},
+      handle: () => {},
+      registerSettings: () => ({} as any),
+      registerProvider: () => {},
+    } as unknown as PluginServerContext;
+
+    const router = new HookRouter(mockServer, { queueDir, stateDir, port: 0 });
+    router.writeFrontDesk(frontDeskId, "operator");
+
+    // Ingest SOS comment webhook targeted to Front Desk
+    const ingestRes = await router.ingestWebhook("issue_comment", {
+      repository: { full_name: "xpufx-org/meta", html_url: "https://forge.mrs.uppidi.com/xpufx-org/meta" },
+      issue: { number: 42, title: "Emergency" },
+      comment: { body: "/frontdesk /sos Stop everything!" },
+      action: "created",
+      sender: { login: "admin" },
+    });
+
+    assert.equal(ingestRes.frontDesk, true);
+
+    await new Promise((r) => setTimeout(r, 20));
+
+    // Delivered immediately with steer: true despite agentStatus === "running"
+    assert.equal(sentMessages.length, 1);
+    assert.equal(sentMessages[0].steer, true);
+    assert.ok(sentMessages[0].text.includes("Emergency"));
+  });
+
+  it("watchdog audit delivers alerts with steer: false when Front Desk is idle", async () => {
+    const frontDeskId = "fd-idle-audit";
+    const delivered: Array<{ id: string; msg: string; steer?: boolean }> = [];
+    const fakeDeliver = async (id: string, msg: string, o?: { steer?: boolean }) => {
+      delivered.push({ id, msg, steer: o?.steer });
+      return true;
+    };
+
+    const router = new HookRouter(null, { queueDir, stateDir, port: 0 });
+    router.writeFrontDesk(frontDeskId, "operator");
+
+    // Anomaly: pending permission on a worker agent
+    const map = new Map<string, WatchdogAgent>([
+      [frontDeskId, { id: frontDeskId, status: "idle" }],
+      [
+        "worker-needs-perm",
+        {
+          id: "worker-needs-perm",
+          status: "waiting",
+          pendingPermissions: [{ id: "perm-123" }],
+        },
+      ],
+    ]);
+
+    await router.runWatchdogAudit({
+      agentMap: map,
+      agentsDir,
+      deliver: fakeDeliver,
+      stopAgent: async () => ({ ok: true }),
+      frontDeskId,
+      cancellations: new Map(),
+    });
+
+    // Alert should have been delivered to Front Desk
+    const fdAlert = delivered.find((d) => d.id === frontDeskId);
+    assert.ok(fdAlert, "frontdesk alert delivered");
+    assert.equal(fdAlert.steer, false, "watchdog alert must not steer Front Desk");
+    assert.ok(fdAlert.msg.includes("perm-123"));
+  });
+
+  it("watchdog audit queues alert in frontdesk queue when Front Desk is busy", async () => {
+    const frontDeskId = "fd-busy-audit";
+    const delivered: Array<{ id: string; msg: string; steer?: boolean }> = [];
+    const fakeDeliver = async (id: string, msg: string, o?: { steer?: boolean }) => {
+      delivered.push({ id, msg, steer: o?.steer });
+      return true;
+    };
+
+    const router = new HookRouter(null, { queueDir, stateDir, port: 0 });
+    router.writeFrontDesk(frontDeskId, "operator");
+
+    // Front Desk is running an active turn
+    const map = new Map<string, WatchdogAgent>([
+      [frontDeskId, { id: frontDeskId, status: "running", activeTurn: { id: "turn-fd" } as any }],
+      [
+        "worker-stalled",
+        {
+          id: "worker-stalled",
+          status: "running",
+          requiresAttention: true,
+          attentionReason: "input_required",
+        },
+      ],
+    ]);
+
+    await router.runWatchdogAudit({
+      agentMap: map,
+      agentsDir,
+      deliver: fakeDeliver,
+      stopAgent: async () => ({ ok: true }),
+      frontDeskId,
+      cancellations: new Map(),
+    });
+
+    // Front Desk was busy: must NOT be delivered directly via deliver function
+    const fdDeliveries = delivered.filter((d) => d.id === frontDeskId);
+    assert.equal(fdDeliveries.length, 0, "busy Front Desk was not interrupted");
+
+    // Alert was enqueued into frontdesk queue instead
+    const queue = router.getQueue("frontdesk");
+    assert.ok(queue.length >= 1, "alert queued in frontdesk queue");
+    assert.ok(queue[0].msg.includes("attention-required") || queue[0].msg.includes("input_required"));
+  });
+
+  it("runBoardSweep queues alert when Front Desk is busy and does not pass steer: true", async () => {
+    const frontDeskId = "fd-sweep-busy";
+    const delivered: Array<{ id: string; msg: string; steer?: boolean }> = [];
+    const fakeDeliver = async (id: string, msg: string, o?: { steer?: boolean }) => {
+      delivered.push({ id, msg, steer: o?.steer });
+      return true;
+    };
+
+    const router = new HookRouter(null, { queueDir, stateDir, port: 0 });
+    router.writeFrontDesk(frontDeskId, "operator");
+
+    // Cache latest agent map with busy Front Desk
+    await router.runWatchdogAudit({
+      agentMap: new Map([[frontDeskId, { id: frontDeskId, status: "running" }]]),
+      agentsDir,
+      deliver: fakeDeliver,
+      stopAgent: async () => ({ ok: true }),
+      frontDeskId,
+      cancellations: new Map(),
+    });
+
+    await router.runBoardSweep(["xpufx-org/paseo"], failingBoardIo("check failed"));
+
+    // Since Front Desk was busy, board sweep alert is queued, not directly delivered
+    const sweepDeliveries = delivered.filter((d) => d.id === frontDeskId);
+    assert.equal(sweepDeliveries.length, 0);
+
+    const queue = router.getQueue("frontdesk");
+    assert.ok(queue.length >= 1, "board sweep failure queued for frontdesk");
+    assert.ok(queue[0].msg.includes("check failed") || queue[0].msg.includes("FAILED board check"));
+  });
+
+  it("cooldown throttle gates rapid deliveries to Front Desk", async () => {
+    const frontDeskId = "fd-throttle-test";
+    const delivered: Array<{ id: string; msg: string; steer?: boolean }> = [];
+    const fakeDeliver = async (id: string, msg: string, o?: { steer?: boolean }) => {
+      delivered.push({ id, msg, steer: o?.steer });
+      return true;
+    };
+
+    // Configure 500ms throttle
+    const router = new HookRouter(null, { queueDir, stateDir, port: 0, frontDeskThrottleMs: 500 });
+    router.writeFrontDesk(frontDeskId, "operator");
+
+    const map = new Map<string, WatchdogAgent>([
+      [frontDeskId, { id: frontDeskId, status: "idle" }],
+      ["worker-1", { id: "worker-1", status: "waiting", pendingPermissions: [{ id: "p-1" }] }],
+    ]);
+
+    // First audit: Front Desk idle, delivers alert
+    await router.runWatchdogAudit({
+      agentMap: map,
+      agentsDir,
+      deliver: fakeDeliver,
+      stopAgent: async () => ({ ok: true }),
+      frontDeskId,
+      cancellations: new Map(),
+    });
+
+    assert.equal(delivered.length, 1);
+    assert.equal(delivered[0].steer, false);
+
+    // Second audit immediately following (within 500ms window):
+    // Another anomaly: worker pending permission
+    const map2 = new Map<string, WatchdogAgent>([
+      [frontDeskId, { id: frontDeskId, status: "idle" }],
+      ["worker-2", { id: "worker-2", status: "waiting", pendingPermissions: [{ id: "p-2" }] }],
+    ]);
+
+    await router.runWatchdogAudit({
+      agentMap: map2,
+      agentsDir,
+      deliver: fakeDeliver,
+      stopAgent: async () => ({ ok: true }),
+      frontDeskId,
+      cancellations: new Map(),
+    });
+
+    // Delivered count should STILL be 1 because Front Desk is in throttle window
+    assert.equal(delivered.length, 1);
+
+    // Second alert queued in frontdesk queue
+    const queue = router.getQueue("frontdesk");
+    assert.ok(queue.length >= 1, "throttled alert queued for frontdesk");
+    assert.ok(queue[0].msg.includes("p-2"));
+  });
+});
+
+
