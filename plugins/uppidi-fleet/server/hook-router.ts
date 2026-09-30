@@ -2241,6 +2241,36 @@ export class HookRouter {
     }
   }
 
+  public async detachAgent(agentId: string): Promise<boolean> {
+    const paseo = this.getPaseo();
+    if (paseo?.agents) {
+      try {
+        const ref = typeof paseo.agents.ref === "function" ? paseo.agents.ref(agentId) : null;
+        if (typeof (ref as any)?.detach === "function") {
+          await (ref as any).detach();
+          return true;
+        } else if (typeof (paseo.agents as any)?.detach === "function") {
+          await (paseo.agents as any).detach(agentId);
+          return true;
+        }
+      } catch (err) {
+        this.log(
+          `[warn] SDK detachAgent failed for ${agentId}, falling back to CLI: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
+    try {
+      await execFileAsync("paseo", ["agent", "detach", agentId], { timeout: 10000 });
+      return true;
+    } catch (err) {
+      this.log(
+        `[warn] CLI agent detach failed for ${agentId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return false;
+    }
+  }
+
   public isAutoProvisionOrchestratorsEnabled(): boolean {
     if (this.options?.autoProvisionOrchestrators !== undefined) {
       return Boolean(this.options.autoProvisionOrchestrators);
@@ -2495,6 +2525,9 @@ export class HookRouter {
 
     // Explicitly configure autonomous execution mode (yolo)
     await this.setAgentMode(agentId, targetMode);
+
+    // Detach agent so it operates as an autonomous peer rather than inheriting Front Desk/caller parentage
+    await this.detachAgent(agentId).catch(() => {});
 
     // Update metadata
     await this.updateAgentMetadata(agentId, title, {
