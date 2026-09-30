@@ -16,10 +16,10 @@ describe("classifyConnectionError", () => {
     );
   });
 
-  it("maps anything else to a reachability/CORS hint naming the ws url", () => {
+  it("maps anything else to a reachability/hostname hint naming the ws url", () => {
     const message = classifyConnectionError("socket hang up", wsUrl);
     expect(message).toContain(wsUrl);
-    expect(message).toContain("PASEO_CORS_ORIGINS");
+    expect(message).toContain("daemon.hostnames / PASEO_HOSTNAMES");
   });
 });
 

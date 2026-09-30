@@ -57,8 +57,8 @@ export function classifyConnectionError(raw: string, wsUrl: string): string {
   }
   return (
     `Could not reach ${wsUrl}. ` +
-    "If the browser blocks the socket, add this dashboard origin to the daemon CORS list " +
-    "(PASEO_CORS_ORIGINS) and retry."
+    "If the browser blocks the socket, add this dashboard origin to the daemon hostnames list " +
+    "(daemon.hostnames / PASEO_HOSTNAMES) and retry."
   );
 }
 
