@@ -1,19 +1,60 @@
-import { test, describe } from "node:test";
+import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
 import {
   FLEET_MCP_TOOLS,
   executeFleetCheckBoard,
   executeFleetWatchdogAudit,
+  executeFleetBoardSweep,
+  executeFleetPruneOrchestrators,
+  executeFleetQueueInspect,
+  executeFleetQueuePurge,
+  executeFleetHandoffGenerate,
   executeFleetTool,
   handleFleetToolList,
   handleFleetToolExecute,
   renderWatchdogAuditMarkdown,
 } from "./mcp-tools.js";
-import type { WatchdogAuditResult } from "./hook-router.js";
+import { HookRouter, setActiveHookRouter, type WatchdogAuditResult } from "./hook-router.js";
 
 describe("fleet MCP tools and handlers", () => {
+  let tmpDir: string;
+  let router: HookRouter;
+
+  before(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "fleet-mcp-test-"));
+    router = new HookRouter(null, {
+      queueDir: join(tmpDir, "queues"),
+      stateDir: join(tmpDir, "state"),
+      port: 0,
+    });
+    router.enrollRepo("test-org/repo-a");
+    router.enrollRepo("test-org/repo-b");
+    setActiveHookRouter(router);
+  });
+
+  after(() => {
+    setActiveHookRouter(null);
+    try {
+      rmSync(tmpDir, { recursive: true, force: true });
+    } catch {}
+  });
+
   test("FLEET_MCP_TOOLS declares typed tools with valid schemas", () => {
-    assert.equal(FLEET_MCP_TOOLS.length, 2);
+    assert.equal(FLEET_MCP_TOOLS.length, 7);
+
+    const toolNames = FLEET_MCP_TOOLS.map((t) => t.name);
+    assert.deepEqual(toolNames, [
+      "fleet_check_board",
+      "fleet_watchdog_audit",
+      "fleet_board_sweep",
+      "fleet_prune_orchestrators",
+      "fleet_queue_inspect",
+      "fleet_queue_purge",
+      "fleet_handoff_generate",
+    ]);
 
     const boardTool = FLEET_MCP_TOOLS.find((t) => t.name === "fleet_check_board");
     assert.ok(boardTool, "fleet_check_board tool must be registered");
@@ -28,6 +69,37 @@ describe("fleet MCP tools and handlers", () => {
     assert.equal(watchdogTool.inputSchema.type, "object");
     assert.ok(watchdogTool.inputSchema.properties.recover);
     assert.ok(watchdogTool.inputSchema.properties.frontDeskId);
+
+    const sweepTool = FLEET_MCP_TOOLS.find((t) => t.name === "fleet_board_sweep");
+    assert.ok(sweepTool, "fleet_board_sweep tool must be registered");
+    assert.equal(sweepTool.inputSchema.type, "object");
+    assert.ok(sweepTool.inputSchema.properties.repos);
+    assert.ok(sweepTool.inputSchema.properties.json);
+
+    const pruneTool = FLEET_MCP_TOOLS.find((t) => t.name === "fleet_prune_orchestrators");
+    assert.ok(pruneTool, "fleet_prune_orchestrators tool must be registered");
+    assert.equal(pruneTool.inputSchema.type, "object");
+    assert.ok(pruneTool.inputSchema.properties.dryRun);
+    assert.ok(pruneTool.inputSchema.properties.json);
+
+    const queueInspectTool = FLEET_MCP_TOOLS.find((t) => t.name === "fleet_queue_inspect");
+    assert.ok(queueInspectTool, "fleet_queue_inspect tool must be registered");
+    assert.equal(queueInspectTool.inputSchema.type, "object");
+    assert.ok(queueInspectTool.inputSchema.properties.repo);
+    assert.ok(queueInspectTool.inputSchema.properties.json);
+
+    const queuePurgeTool = FLEET_MCP_TOOLS.find((t) => t.name === "fleet_queue_purge");
+    assert.ok(queuePurgeTool, "fleet_queue_purge tool must be registered");
+    assert.equal(queuePurgeTool.inputSchema.type, "object");
+    assert.ok(queuePurgeTool.inputSchema.properties.repo);
+    assert.ok(queuePurgeTool.inputSchema.properties.confirm);
+    assert.ok(queuePurgeTool.inputSchema.properties.json);
+    assert.deepEqual(queuePurgeTool.inputSchema.required, ["repo", "confirm"]);
+
+    const handoffTool = FLEET_MCP_TOOLS.find((t) => t.name === "fleet_handoff_generate");
+    assert.ok(handoffTool, "fleet_handoff_generate tool must be registered");
+    assert.equal(handoffTool.inputSchema.type, "object");
+    assert.ok(handoffTool.inputSchema.properties.json);
   });
 
   test("executeFleetCheckBoard rejects invalid role", async () => {
@@ -83,20 +155,139 @@ describe("fleet MCP tools and handlers", () => {
     assert.match(md, /Recovered:.*Yes/);
   });
 
+  test("executeFleetBoardSweep runs across repos and outputs markdown/json", async () => {
+    const mdRes = await executeFleetBoardSweep({ repos: "test-org/repo-a, test-org/repo-b" });
+    assert.equal(mdRes.isError, false);
+    assert.match(mdRes.content[0]!.text, /# Fleet Board Sweep/);
+    assert.match(mdRes.content[0]!.text, /Swept repositories:/);
+
+    const jsonRes = await executeFleetBoardSweep({ repos: ["test-org/repo-a"], json: true });
+    assert.equal(jsonRes.isError, false);
+    const parsed = JSON.parse(jsonRes.content[0]!.text);
+    assert.equal(parsed.ok, true);
+    assert.equal(parsed.swept, 1);
+  });
+
+  test("executeFleetPruneOrchestrators supports dryRun and json formats", async () => {
+    const dryRes = await executeFleetPruneOrchestrators({ dryRun: true });
+    assert.equal(dryRes.isError, false);
+    assert.match(dryRes.content[0]!.text, /# Fleet Orchestrator Prune \(Dry Run\)/);
+
+    const jsonRes = await executeFleetPruneOrchestrators({ dryRun: false, json: true });
+    assert.equal(jsonRes.isError, false);
+    const parsed = JSON.parse(jsonRes.content[0]!.text);
+    assert.equal(parsed.ok, true);
+    assert.equal(typeof parsed.prunedCount, "number");
+  });
+
+  test("executeFleetQueueInspect inspects fleet queues", async () => {
+    const allRes = await executeFleetQueueInspect({});
+    assert.equal(allRes.isError, false);
+    assert.match(allRes.content[0]!.text, /# Fleet Queue Inspection/);
+    assert.match(allRes.content[0]!.text, /Service: uppidi-fleet-hook-router/);
+
+    const repoRes = await executeFleetQueueInspect({ repo: "test-org/repo-a", json: true });
+    assert.equal(repoRes.isError, false);
+    const parsed = JSON.parse(repoRes.content[0]!.text);
+    assert.equal(parsed.ok, true);
+    assert.ok(Array.isArray(parsed.queues));
+  });
+
+  test("executeFleetQueuePurge validates arguments and purges target queue", async () => {
+    // Missing repo
+    const noRepoRes = await executeFleetQueuePurge({});
+    assert.equal(noRepoRes.isError, true);
+    assert.match(noRepoRes.content[0]!.text, /repo parameter is required/);
+
+    // Confirm false or missing
+    const unconfirmedRes = await executeFleetQueuePurge({ repo: "test-org/purge-target", confirm: false });
+    assert.equal(unconfirmedRes.isError, true);
+    assert.match(unconfirmedRes.content[0]!.text, /confirm must be set to true/);
+
+    // Enqueue a message and then purge
+    router.enqueue("test-org/purge-target", "test event payload 1", false);
+    router.enqueue("test-org/purge-target", "test event payload 2", false);
+
+    const inspectBefore = router.inspectQueues("test-org/purge-target");
+    const targetQueueBefore = (inspectBefore.queues as any[]).find((q) => q.key === "test-org/purge-target");
+    assert.equal(targetQueueBefore?.depth, 2);
+
+    const purgeRes = await executeFleetQueuePurge({ repo: "test-org/purge-target", confirm: true });
+    assert.equal(purgeRes.isError, false);
+    assert.match(purgeRes.content[0]!.text, /# Fleet Queue Purge/);
+    assert.match(purgeRes.content[0]!.text, /Purged Messages: 2/);
+
+    const inspectAfter = router.inspectQueues("test-org/purge-target");
+    const targetQueueAfter = (inspectAfter.queues as any[]).find((q) => q.key === "test-org/purge-target");
+    assert.equal(targetQueueAfter?.depth ?? 0, 0);
+  });
+
+  test("executeFleetHandoffGenerate creates shift handoff report", async () => {
+    const mdRes = await executeFleetHandoffGenerate({});
+    assert.equal(mdRes.isError, false);
+    assert.match(mdRes.content[0]!.text, /# Fleet Shift Handoff Report/);
+    assert.match(mdRes.content[0]!.text, /## Fleet Overview/);
+    assert.match(mdRes.content[0]!.text, /## Active Worker Assignments/);
+    assert.match(mdRes.content[0]!.text, /## Repository Status/);
+
+    const jsonRes = await executeFleetHandoffGenerate({ json: true });
+    assert.equal(jsonRes.isError, false);
+    const parsed = JSON.parse(jsonRes.content[0]!.text);
+    assert.equal(parsed.ok, true);
+    assert.ok(parsed.report);
+  });
+
+  test("executeFleetTool dispatches all 7 tools", async () => {
+    const tools = [
+      "fleet_check_board",
+      "fleet_watchdog_audit",
+      "fleet_board_sweep",
+      "fleet_prune_orchestrators",
+      "fleet_queue_inspect",
+      "fleet_queue_purge",
+      "fleet_handoff_generate",
+    ];
+
+    for (const toolName of tools) {
+      const args = toolName === "fleet_queue_purge" ? { repo: "test-org/dummy", confirm: true } : {};
+      const res = await executeFleetTool(toolName, args);
+      assert.ok(res.content.length > 0);
+      assert.doesNotMatch(res.content[0]!.text, /^Unknown tool/);
+    }
+  });
+
   test("executeFleetTool returns error for unknown tool", async () => {
     const res = await executeFleetTool("unknown_nonexistent_tool");
     assert.equal(res.isError, true);
     assert.match(res.content[0]!.text, /Unknown tool/);
   });
 
-  test("handleFleetToolList returns available tools", async () => {
+  test("handleFleetToolList returns all 7 available tools", async () => {
     const res = await handleFleetToolList({});
     assert.equal(res.ok, true);
-    assert.equal(res.tools.length, 2);
+    assert.equal(res.tools.length, 7);
     assert.deepEqual(
       res.tools.map((t) => t.name),
-      ["fleet_check_board", "fleet_watchdog_audit"],
+      [
+        "fleet_check_board",
+        "fleet_watchdog_audit",
+        "fleet_board_sweep",
+        "fleet_prune_orchestrators",
+        "fleet_queue_inspect",
+        "fleet_queue_purge",
+        "fleet_handoff_generate",
+      ],
     );
+  });
+
+  test("handleFleetToolExecute executes each tool via RPC input", async () => {
+    const res = await handleFleetToolExecute({
+      toolName: "fleet_queue_inspect",
+      arguments: { json: true },
+    });
+    assert.equal(res.ok, true);
+    assert.equal(res.isError, false);
+    assert.ok(res.output);
   });
 
   test("handleFleetToolExecute handles unknown tool cleanly", async () => {

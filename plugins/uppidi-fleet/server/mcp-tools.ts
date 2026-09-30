@@ -118,6 +118,105 @@ export const FLEET_MCP_TOOLS: UppidiToolDefinition[] = [
       },
     },
   },
+  {
+    name: "fleet_board_sweep",
+    description:
+      "Trigger deterministic board sweep across all enrolled (or specified) repositories, evaluating open issues and stale WIP, and alerting Front Desk on actionable work or check errors.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        repos: {
+          type: "string",
+          description:
+            "Target repositories to sweep (comma-delimited slugs e.g. 'owner/repo1,owner/repo2', optional; defaults to all enrolled repositories)",
+        },
+        json: {
+          type: "boolean",
+          description: "Output machine-readable JSON instead of markdown",
+          default: false,
+        },
+      },
+    },
+  },
+  {
+    name: "fleet_prune_orchestrators",
+    description:
+      "Audit registered orchestrators against live Paseo daemon agents, pruning dead, stopped, or killed orchestrators from disk registry.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        dryRun: {
+          type: "boolean",
+          description: "Dry-run mode: report dead orchestrators without deleting records (default: false)",
+          default: false,
+        },
+        json: {
+          type: "boolean",
+          description: "Output machine-readable JSON instead of markdown",
+          default: false,
+        },
+      },
+    },
+  },
+  {
+    name: "fleet_queue_inspect",
+    description:
+      "Inspect buffered webhook payloads, attempt counts, and pending status for repository queues.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        repo: {
+          type: "string",
+          description: "Filter inspection by repository slug (e.g. 'owner/repo' or 'frontdesk', optional)",
+        },
+        json: {
+          type: "boolean",
+          description: "Output machine-readable JSON instead of markdown",
+          default: false,
+        },
+      },
+    },
+  },
+  {
+    name: "fleet_queue_purge",
+    description:
+      "Safely purge or drop stuck/poisoned webhook payloads for a specific repository queue without requiring manual filesystem surgery or full fleet reset.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        repo: {
+          type: "string",
+          description: "Target repository slug to purge (e.g. 'owner/repo' or 'frontdesk')",
+        },
+        confirm: {
+          type: "boolean",
+          description: "Safety confirmation flag (must be explicitly true to execute purge)",
+          default: false,
+        },
+        json: {
+          type: "boolean",
+          description: "Output machine-readable JSON instead of markdown",
+          default: false,
+        },
+      },
+      required: ["repo", "confirm"],
+    },
+  },
+  {
+    name: "fleet_handoff_generate",
+    description:
+      "Generate a fleet shift handoff report (latest-handoff.md) capturing active worker assignments, open PRs, and blocking state across enrolled repositories.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        json: {
+          type: "boolean",
+          description: "Output machine-readable JSON instead of markdown",
+          default: false,
+        },
+      },
+    },
+  },
 ];
 
 export interface FleetToolCallResult {
@@ -271,6 +370,279 @@ export async function executeFleetWatchdogAudit(args: Record<string, unknown> = 
 }
 
 /**
+ * Execute fleet_board_sweep with validated parameters.
+ */
+export async function executeFleetBoardSweep(
+  args: Record<string, unknown> = {},
+): Promise<FleetToolCallResult> {
+  const json = Boolean(args.json);
+  let parsedRepos: string[] | undefined;
+  if (Array.isArray(args.repos)) {
+    parsedRepos = args.repos.map((r) => String(r).trim()).filter(Boolean);
+  } else if (typeof args.repos === "string" && args.repos.trim()) {
+    parsedRepos = args.repos.split(",").map((r) => r.trim()).filter(Boolean);
+  }
+
+  try {
+    const router = getActiveHookRouter() ?? new HookRouter();
+    const result = await router.runBoardSweep(parsedRepos);
+
+    if (json) {
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        isError: !result.ok,
+      };
+    }
+
+    const lines: string[] = [
+      "# Fleet Board Sweep",
+      `- Swept repositories: ${result.swept}`,
+      `- Actionable repositories: ${result.actionable.length}`,
+      `- Front Desk notified: ${result.notified > 0 ? "Yes" : "No"}`,
+    ];
+
+    if (result.actionable.length > 0) {
+      lines.push("", "### Actionable Repositories");
+      for (const a of result.actionable) {
+        lines.push(`- **${a.repo}**: ${a.count} actionable (${a.dispatchable} dispatchable)`);
+      }
+    }
+
+    if (result.errors && result.errors.length > 0) {
+      lines.push("", "### Errors");
+      for (const e of result.errors) {
+        lines.push(`- **${e.repo}**: ${e.error}`);
+      }
+    }
+
+    return {
+      content: [{ type: "text", text: lines.join("\n") }],
+      isError: !result.ok,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      content: [{ type: "text", text: `fleet_board_sweep failed: ${message}` }],
+      isError: true,
+    };
+  }
+}
+
+/**
+ * Execute fleet_prune_orchestrators with validated parameters.
+ */
+export async function executeFleetPruneOrchestrators(
+  args: Record<string, unknown> = {},
+): Promise<FleetToolCallResult> {
+  const json = Boolean(args.json);
+  const dryRun = Boolean(args.dryRun);
+
+  try {
+    const router = getActiveHookRouter() ?? new HookRouter();
+    const result = await router.pruneOrchestrators({ dryRun });
+
+    if (json) {
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        isError: !result.ok,
+      };
+    }
+
+    const lines: string[] = [
+      `# Fleet Orchestrator Prune${result.dryRun ? " (Dry Run)" : ""}`,
+      `- Status: ${result.ok ? "Success" : "Failed"}`,
+      `- Pruned count: ${result.prunedCount}`,
+    ];
+
+    if (result.error) {
+      lines.push(`- Error: ${result.error}`);
+    }
+
+    if (result.pruned.length > 0) {
+      lines.push("", "### Pruned Orchestrators");
+      for (const p of result.pruned) {
+        lines.push(`- **${p.key}** (agent \`${p.agentId || "none"}\`): ${p.reason}`);
+      }
+    } else {
+      lines.push("", "All registered orchestrators are healthy and active.");
+    }
+
+    return {
+      content: [{ type: "text", text: lines.join("\n") }],
+      isError: !result.ok,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      content: [{ type: "text", text: `fleet_prune_orchestrators failed: ${message}` }],
+      isError: true,
+    };
+  }
+}
+
+/**
+ * Execute fleet_queue_inspect with validated parameters.
+ */
+export async function executeFleetQueueInspect(
+  args: Record<string, unknown> = {},
+): Promise<FleetToolCallResult> {
+  const json = Boolean(args.json);
+  const repo = typeof args.repo === "string" && args.repo.trim() ? args.repo.trim() : undefined;
+
+  try {
+    const router = getActiveHookRouter() ?? new HookRouter();
+    const overview = router.inspectQueues(repo);
+
+    if (json) {
+      return {
+        content: [{ type: "text", text: JSON.stringify(overview, null, 2) }],
+        isError: !overview.ok,
+      };
+    }
+
+    const paused = Array.isArray(overview.paused) ? (overview.paused as string[]) : [];
+    const queues = Array.isArray(overview.queues) ? (overview.queues as Array<Record<string, unknown>>) : [];
+
+    const lines: string[] = [
+      "# Fleet Queue Inspection",
+      `- Service: ${String(overview.service ?? "uppidi-fleet-hook-router")}`,
+      `- Uptime: ${String(overview.uptime ?? 0)}s`,
+      `- Paused Queues: ${paused.length > 0 ? paused.join(", ") : "None"}`,
+      `- Total Queues Inspected: ${queues.length}`,
+    ];
+
+    if (queues.length === 0) {
+      lines.push("", repo ? `No queue found matching "${repo}".` : "No queues currently registered.");
+    } else {
+      for (const q of queues) {
+        lines.push("", `### Queue: \`${String(q.key)}\``);
+        lines.push(`- Depth: ${Number(q.depth ?? 0)}`);
+        lines.push(`- Status: ${q.paused ? "Paused" : q.isBusy ? "Busy" : "Idle"}`);
+        lines.push(`- Dropped: ${Number(q.dropped ?? 0)} | Busy Attempts: ${Number(q.busyAttempts ?? 0)}`);
+        const orch = q.orchestrator as { agentId?: string; by?: string } | null;
+        lines.push(`- Orchestrator: ${orch?.agentId ? `\`${orch.agentId}\` (${orch.by ?? "unknown"})` : "_None_"}`);
+
+        const messages = Array.isArray(q.messages) ? (q.messages as Array<{ id: string; ts: number; preview: string }>) : [];
+        if (messages.length > 0) {
+          lines.push(`- Pending Messages (${messages.length}):`);
+          for (const m of messages) {
+            lines.push(`  - \`${m.id}\` (${new Date(m.ts).toISOString()}): ${m.preview}`);
+          }
+        }
+      }
+    }
+
+    return {
+      content: [{ type: "text", text: lines.join("\n") }],
+      isError: !overview.ok,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      content: [{ type: "text", text: `fleet_queue_inspect failed: ${message}` }],
+      isError: true,
+    };
+  }
+}
+
+/**
+ * Execute fleet_queue_purge with validated parameters.
+ */
+export async function executeFleetQueuePurge(
+  args: Record<string, unknown> = {},
+): Promise<FleetToolCallResult> {
+  const json = Boolean(args.json);
+  const repo = typeof args.repo === "string" ? args.repo.trim() : "";
+  const confirm = Boolean(args.confirm);
+
+  if (!repo) {
+    return {
+      content: [{ type: "text", text: "Error: repo parameter is required" }],
+      isError: true,
+    };
+  }
+
+  if (!confirm) {
+    return {
+      content: [
+        {
+          type: "text",
+          text: `Purge aborted: confirm must be set to true to purge queue for "${repo}"`,
+        },
+      ],
+      isError: true,
+    };
+  }
+
+  try {
+    const router = getActiveHookRouter() ?? new HookRouter();
+    const result = router.purgeQueue(repo);
+
+    if (json) {
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        isError: !result.ok,
+      };
+    }
+
+    const lines: string[] = [
+      "# Fleet Queue Purge",
+      `- Status: ${result.ok ? "Success" : "Failed"}`,
+      `- Repository: ${result.repo}`,
+      `- Purged Messages: ${result.purgedMessages}`,
+      `- File Removed: ${result.fileRemoved ? "Yes" : "No"}`,
+    ];
+
+    if (result.error) {
+      lines.push(`- Error: ${result.error}`);
+    }
+
+    return {
+      content: [{ type: "text", text: lines.join("\n") }],
+      isError: !result.ok,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      content: [{ type: "text", text: `fleet_queue_purge failed: ${message}` }],
+      isError: true,
+    };
+  }
+}
+
+/**
+ * Execute fleet_handoff_generate with validated parameters.
+ */
+export async function executeFleetHandoffGenerate(
+  args: Record<string, unknown> = {},
+): Promise<FleetToolCallResult> {
+  const json = Boolean(args.json);
+
+  try {
+    const router = getActiveHookRouter() ?? new HookRouter();
+    const result = await router.generateHandoff();
+
+    if (json) {
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+        isError: !result.ok,
+      };
+    }
+
+    return {
+      content: [{ type: "text", text: result.report }],
+      isError: !result.ok,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      content: [{ type: "text", text: `fleet_handoff_generate failed: ${message}` }],
+      isError: true,
+    };
+  }
+}
+
+/**
  * Dispatch an MCP tool call by name.
  */
 export async function executeFleetTool(
@@ -282,6 +654,16 @@ export async function executeFleetTool(
       return executeFleetCheckBoard(args);
     case "fleet_watchdog_audit":
       return executeFleetWatchdogAudit(args);
+    case "fleet_board_sweep":
+      return executeFleetBoardSweep(args);
+    case "fleet_prune_orchestrators":
+      return executeFleetPruneOrchestrators(args);
+    case "fleet_queue_inspect":
+      return executeFleetQueueInspect(args);
+    case "fleet_queue_purge":
+      return executeFleetQueuePurge(args);
+    case "fleet_handoff_generate":
+      return executeFleetHandoffGenerate(args);
     default:
       return {
         content: [
