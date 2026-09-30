@@ -1,5 +1,6 @@
 import React, { useMemo, useState, useEffect } from "react";
-import { View, Text, ScrollView } from "react-native";
+import { View, Text } from "react-native";
+import { ScrollView } from "@getpaseo/plugin/client/react-native";
 import { useToast } from "@getpaseo/plugin/client/react-native";
 import {
   Badge,

@@ -1,5 +1,5 @@
 import React, { useState, useMemo, useCallback, useContext } from "react";
-import { View, Text, StyleSheet, Linking, Pressable } from "react-native";
+import { View, Text, Linking } from "react-native";
 import { useWorkspace } from "@getpaseo/plugin/client";
 import {
   Card,
@@ -22,6 +22,7 @@ import {
   CommentCard,
   AgentEnvelopeCard,
   ScopedLabelGroup,
+  InteractiveRow,
 } from "paseo-plugin-helper/client";
 import { defineContract } from "paseo-plugin-helper/shared";
 import { z } from "zod";
@@ -401,12 +402,12 @@ function ForgeIssuesViewInner({
                     )}
                   </Stack>
                   {issue.url ? (
-                    <Pressable
+                    <InteractiveRow
                       onPress={() => handleOpenUrl(issue.url)}
                       style={[styles.openButton, { borderColor: colors.border }]}
                     >
                       <Icon name="ExternalLink" size={14} color={colors.accent} />
-                    </Pressable>
+                    </InteractiveRow>
                   ) : null}
                 </Row>
               </Card>
@@ -424,7 +425,7 @@ export function ForgeIssuesView(props: ForgeIssuesViewProps) {
 
 export const ForgesTabView = ForgeIssuesView;
 
-const styles = StyleSheet.create({
+const styles = {
   controlsContainer: {
     marginTop: 8,
   },
@@ -470,7 +471,7 @@ const styles = StyleSheet.create({
     borderRadius: 6,
     borderWidth: 1,
   },
-});
+} as const;
 
 export {
   TicketLifecycleView,

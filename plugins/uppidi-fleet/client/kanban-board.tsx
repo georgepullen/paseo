@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from "react";
-import { View, Text, ScrollView, Pressable, Platform } from "react-native";
+import { View, Text, Platform } from "react-native";
+import { ScrollView } from "@getpaseo/plugin/client/react-native";
 import {
   Badge,
   Button,
@@ -7,6 +8,7 @@ import {
   StatusDot,
   SearchInput,
   usePluginTheme,
+  InteractiveRow,
 } from "paseo-plugin-helper/client";
 import type { UppidiIssue, AttentionLabel, KanbanColumnId } from "../shared/contracts.js";
 
@@ -230,7 +232,7 @@ export function KanbanCard({
         }}
       >
         <Row gap="xs" align="center">
-          <Pressable
+          <InteractiveRow
             onPress={() => onSelect?.(issue.number)}
             accessibilityRole="button"
             accessibilityLabel={`Open issue #${issue.number}`}
@@ -244,14 +246,14 @@ export function KanbanCard({
             >
               #{issue.number}
             </Text>
-          </Pressable>
+          </InteractiveRow>
           <Badge label={issue.repo} variant="neutral" size="sm" />
         </Row>
         <Badge label={attention.label} variant={attention.variant} size="sm" />
       </View>
 
       {/* Title */}
-      <Pressable
+      <InteractiveRow
         onPress={() => onSelect?.(issue.number)}
         accessibilityRole="button"
         accessibilityLabel={`View details for #${issue.number} ${issue.title}`}
@@ -267,7 +269,7 @@ export function KanbanCard({
         >
           {issue.title}
         </Text>
-      </Pressable>
+      </InteractiveRow>
 
       {/* Meta tags (branch, comments) */}
       {(issue.branch || (issue.comments !== undefined && issue.comments > 0)) && (

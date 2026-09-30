@@ -1,5 +1,6 @@
 import React, { useMemo, useRef, useState, useEffect } from "react";
-import { Animated, Linking, Platform, Pressable, ScrollView, Text, View, type NativeSyntheticEvent, type NativeScrollEvent } from "react-native";
+import { Animated, Linking, Platform, Text, View, type NativeSyntheticEvent, type NativeScrollEvent, type ScrollView } from "react-native";
+import { ScrollView as HostScrollView } from "@getpaseo/plugin/client/react-native";
 import {
   AttentionBeacon,
   Badge,
@@ -1204,7 +1205,7 @@ export function FrontDeskWatchDrawer({
       }}
     >
       {/* Drawer Header & Quick Status Strip */}
-      <Pressable
+      <InteractiveRow
         onPress={onToggle}
         accessibilityRole="button"
         accessibilityLabel={isOpen ? "Collapse Front Desk Watch & Console drawer" : "Unroll Front Desk Watch & Console drawer"}
@@ -1247,7 +1248,7 @@ export function FrontDeskWatchDrawer({
             {isOpen ? "Collapse" : "Unroll"}
           </Text>
         </Row>
-      </Pressable>
+      </InteractiveRow>
 
       {/* Expanded Console Body */}
       {isOpen && (
@@ -1305,7 +1306,7 @@ export function FrontDeskWatchDrawer({
               overflow: "hidden",
             }}
           >
-            <ScrollView
+            <HostScrollView
               ref={scrollViewRef}
               nestedScrollEnabled
               contentContainerStyle={{ padding: 10, gap: 8 }}
@@ -1340,7 +1341,7 @@ export function FrontDeskWatchDrawer({
                   />
                 ))
               )}
-            </ScrollView>
+            </HostScrollView>
 
             {!followScroll && displayedItems.length > 0 && (
               <View
