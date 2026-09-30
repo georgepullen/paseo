@@ -1,12 +1,15 @@
-import React, { useState, useMemo, useCallback } from "react";
+import React, { useState, useMemo, useCallback, useContext } from "react";
 import { View, Text, StyleSheet, Linking, Pressable } from "react-native";
 import { useWorkspace } from "@getpaseo/plugin/client";
+import { PluginClientStateProvider, type PluginClientStateSource } from "@getpaseo/plugin/client/host";
 import {
   Card,
   CardHeader,
   Badge,
   Button,
   SearchInput,
+  Select,
+  type SelectOption,
   EmptyState,
   Row,
   Stack,
@@ -23,6 +26,33 @@ import {
 } from "paseo-plugin-helper/client";
 import { defineContract } from "paseo-plugin-helper/shared";
 import { z } from "zod";
+import { isRepoMatching } from "../shared/sort-filter.js";
+
+const probe = PluginClientStateProvider({ children: null, source: null as any });
+const PluginClientStateContext = ((probe as any)?.type?._context || (probe as any)?.type) as React.Context<PluginClientStateSource | null>;
+
+export function usePluginClientStateSource(): PluginClientStateSource | null {
+  if (!PluginClientStateContext) return null;
+  return useContext(PluginClientStateContext);
+}
+
+const EMPTY_CLIENT_STATE_SOURCE: PluginClientStateSource = {
+  subscribe: () => () => {},
+  getWorkspace: () => null,
+  getAgent: () => null,
+};
+
+export function EnsurePluginClientState({ children }: { children: React.ReactNode }) {
+  const source = usePluginClientStateSource();
+  if (source) {
+    return <>{children}</>;
+  }
+  return (
+    <PluginClientStateProvider source={EMPTY_CLIENT_STATE_SOURCE}>
+      {children}
+    </PluginClientStateProvider>
+  );
+}
 
 export const forgeOpenIssuesContract = defineContract({
   name: "forge.open-issues",
@@ -31,6 +61,7 @@ export const forgeOpenIssuesContract = defineContract({
     workspaceId: z.string().optional(),
     directory: z.string().optional(),
     remoteUrl: z.string().optional(),
+    repo: z.string().optional(),
   }),
   output: z.object({
     repo: z.string().nullable().default(null),
@@ -53,6 +84,7 @@ export const forgeOpenIssuesContract = defineContract({
           url: z.string().default(""),
           updatedAt: z.string().default(""),
           isPullRequest: z.boolean().default(false),
+          repo: z.string().optional(),
         }),
       )
       .default([]),
@@ -76,32 +108,83 @@ export const forgeContextContract = defineContract({
 });
 
 export interface ForgeIssuesViewProps {
-  workspaceId: string;
+  workspaceId?: string;
   agentId?: string;
   onClose?: () => void;
+  directory?: string;
+  enrolledRepos?: readonly string[] | string[];
+  activeRepo?: string;
+  selectedRepo?: string;
+  onSelectRepo?: (repo: string) => void;
 }
 
-export function ForgeIssuesView({
-  workspaceId,
+function ForgeIssuesViewInner({
+  workspaceId = "",
   agentId: _agentId,
   onClose: _onClose,
+  directory: propDirectory,
+  enrolledRepos,
+  activeRepo,
+  selectedRepo: controlledSelectedRepo,
+  onSelectRepo,
 }: ForgeIssuesViewProps) {
   const { colors } = usePluginTheme();
   const { Icon } = getClientHost();
   const [searchQuery, setSearchQuery] = useState("");
 
-  const directory = useWorkspace(
+  const workspaceDirectory = useWorkspace(
     workspaceId,
     (w: any) => w?.directory ?? w?.workspaceDirectory,
   ) as string | undefined;
+
+  const directory = workspaceDirectory ?? propDirectory;
 
   const contextQuery = useRpcQuery(forgeContextContract, {
     directory: directory ?? undefined,
   });
 
+  const derivedActiveRepo =
+    activeRepo ??
+    contextQuery.data?.derivedRepo ??
+    (directory ? directory.split("/").pop() : undefined);
+
+  const reposList = useMemo(() => {
+    const set = new Set<string>();
+    if (enrolledRepos) {
+      for (const r of enrolledRepos) if (r) set.add(r);
+    }
+    if (activeRepo) set.add(activeRepo);
+    if (contextQuery.data?.derivedRepo) set.add(contextQuery.data.derivedRepo);
+    return Array.from(set);
+  }, [enrolledRepos, activeRepo, contextQuery.data?.derivedRepo]);
+
+  const [internalRepo, setInternalRepo] = useState<string>(() => {
+    if (controlledSelectedRepo !== undefined) return controlledSelectedRepo;
+    if (derivedActiveRepo && reposList.includes(derivedActiveRepo)) return derivedActiveRepo;
+    if (derivedActiveRepo) return derivedActiveRepo;
+    return "all";
+  });
+
+  const currentRepo = controlledSelectedRepo !== undefined ? controlledSelectedRepo : internalRepo;
+
+  const handleSelectRepo = useCallback(
+    (repo: string) => {
+      setInternalRepo(repo);
+      onSelectRepo?.(repo);
+    },
+    [onSelectRepo],
+  );
+
+  const repoOptions = useMemo<SelectOption[]>(() => [
+    { label: "All Enrolled Repositories", value: "all" },
+    ...reposList.map((r) => ({ label: r, value: r })),
+  ], [reposList]);
+
   const issuesQuery = useRpcQuery(forgeOpenIssuesContract, {
     workspaceId: workspaceId || undefined,
     directory: directory ?? undefined,
+    remoteUrl: currentRepo === "all" ? undefined : currentRepo,
+    repo: currentRepo === "all" ? undefined : currentRepo,
   });
 
   const handleRefresh = useCallback(() => {
@@ -110,8 +193,15 @@ export function ForgeIssuesView({
   }, [issuesQuery, contextQuery]);
 
   const rawIssues = useMemo(() => {
-    return issuesQuery.data?.issues ?? [];
-  }, [issuesQuery.data?.issues]);
+    const list = issuesQuery.data?.issues ?? [];
+    if (currentRepo === "all") return list;
+    return list.filter(
+      (i: any) =>
+        !i.repo ||
+        isRepoMatching(i.repo, currentRepo) ||
+        String(i.repo).toLowerCase() === currentRepo.toLowerCase(),
+    );
+  }, [issuesQuery.data?.issues, currentRepo]);
 
   const filteredIssues = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -130,9 +220,11 @@ export function ForgeIssuesView({
   }, [rawIssues, searchQuery]);
 
   const repoName =
-    issuesQuery.data?.repo ||
-    contextQuery.data?.derivedRepo ||
-    (directory ? directory.split("/").pop() : "Workspace");
+    currentRepo !== "all"
+      ? currentRepo
+      : issuesQuery.data?.repo ||
+        contextQuery.data?.derivedRepo ||
+        "All Enrolled Repositories";
 
   const hostName =
     issuesQuery.data?.host || contextQuery.data?.derivedHost || null;
@@ -150,7 +242,11 @@ export function ForgeIssuesView({
           <CardHeader
             title="Forge Issues"
             subtitle={
-              hostName
+              currentRepo === "all"
+                ? hostName
+                  ? `All Enrolled Repositories on ${hostName}`
+                  : "All Enrolled Repositories"
+                : hostName
                 ? `${repoName} on ${hostName}`
                 : repoName
             }
@@ -161,7 +257,7 @@ export function ForgeIssuesView({
                   <Badge label="Syncing..." variant="accent" styleVariant="tinted" />
                 ) : (
                   <Badge
-                    label={`${rawIssues.length} open`}
+                    label={`${filteredIssues.length} open`}
                     variant="neutral"
                     styleVariant="tinted"
                   />
@@ -176,12 +272,25 @@ export function ForgeIssuesView({
               </Row>
             }
           />
-          <View style={styles.searchContainer}>
-            <SearchInput
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-              placeholder="Filter by issue #, title, label, or author..."
-            />
+          <View style={styles.controlsContainer}>
+            <Row gap="md" align="center" style={styles.controlsRow}>
+              <View style={styles.selectWrapper}>
+                <Select
+                  label="Repository"
+                  size="sm"
+                  options={repoOptions}
+                  value={currentRepo}
+                  onValueChange={handleSelectRepo}
+                />
+              </View>
+              <View style={styles.searchWrapper}>
+                <SearchInput
+                  value={searchQuery}
+                  onChangeText={setSearchQuery}
+                  placeholder="Filter by issue #, title, label, or author..."
+                />
+              </View>
+            </Row>
           </View>
         </Card>
 
@@ -213,7 +322,9 @@ export function ForgeIssuesView({
               description={
                 searchQuery
                   ? `No open issues match "${searchQuery}".`
-                  : "No open issues found for this workspace."
+                  : currentRepo === "all"
+                  ? "No open issues found across enrolled repositories."
+                  : `No open issues found for ${currentRepo}.`
               }
             />
           </Card>
@@ -286,9 +397,33 @@ export function ForgeIssuesView({
   );
 }
 
+export function ForgeIssuesView(props: ForgeIssuesViewProps) {
+  return (
+    <EnsurePluginClientState>
+      <ForgeIssuesViewInner {...props} />
+    </EnsurePluginClientState>
+  );
+}
+
 export const ForgesTabView = ForgeIssuesView;
 
 const styles = StyleSheet.create({
+  controlsContainer: {
+    marginTop: 8,
+  },
+  controlsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    alignItems: "center",
+  },
+  selectWrapper: {
+    minWidth: 200,
+    flexShrink: 0,
+  },
+  searchWrapper: {
+    flex: 1,
+    minWidth: 220,
+  },
   searchContainer: {
     marginTop: 8,
   },
