@@ -3420,4 +3420,207 @@ describe("hook-router stale latestAgentMap cache invalidation and live verificat
   });
 });
 
+describe("hook-router ensure-orchestrator deterministic resolution and idempotency (#793)", () => {
+  let tempDir: string;
+  let queueDir: string;
+  let stateDir: string;
+  let tempRepoDir: string;
+  let router: HookRouter;
+  let spawnedCalls: any[];
+  let stopRouter: (() => Promise<void>) | null = null;
 
+  beforeEach(async () => {
+    tempDir = mkdtempSync(join(tmpdir(), "paseo-ensure-orch-test-"));
+    queueDir = join(tempDir, "queues");
+    stateDir = join(tempDir, "state");
+    tempRepoDir = join(tempDir, "repo-worktree");
+    mkdirSync(queueDir, { recursive: true });
+    mkdirSync(stateDir, { recursive: true });
+    mkdirSync(tempRepoDir, { recursive: true });
+    spawnedCalls = [];
+
+    const workspacesWithRealDir = [
+      {
+        workspaceId: "ws-paseo-main",
+        cwd: tempRepoDir,
+        displayName: "Paseo",
+        isolation: "local",
+        projectKey: "remote:forge.mrs.uppidi.com:222/xpufx-org/paseo",
+      },
+    ];
+
+    router = new HookRouter(null, {
+      host: "127.0.0.1",
+      queueDir,
+      stateDir,
+      port: 0,
+      workspacesData: workspacesWithRealDir,
+      spawnAgent: async (opts) => {
+        spawnedCalls.push(opts);
+        return { id: `agent-${spawnedCalls.length}` };
+      },
+    });
+    (router as any).deliverMessage = async () => true;
+    await router.start();
+    stopRouter = () => router.stop();
+  });
+
+  afterEach(async () => {
+    if (stopRouter) {
+      await stopRouter();
+      stopRouter = null;
+    }
+    try {
+      rmSync(tempDir, { recursive: true, force: true });
+    } catch {}
+  });
+
+  it("validates repo parameter", async () => {
+    const res = await router.ensureOrchestrator({ repo: "" });
+    assert.equal(res.ok, false);
+    assert.match(res.error ?? "", /repo is required/);
+  });
+
+  it("returns error when no workspace found for unknown repository", async () => {
+    const res = await router.ensureOrchestrator({ repo: "unknown/repo" });
+    assert.equal(res.ok, false);
+    assert.match(res.error ?? "", /No workspace found/);
+    assert.equal(res.repo, "unknown/repo");
+  });
+
+  it("deterministically resolves workspace and provisions orchestrator defaulting to yolo mode", async () => {
+    const res = await router.ensureOrchestrator({ repo: "xpufx-org/paseo" });
+    assert.equal(res.ok, true);
+    assert.equal(res.status, "provisioned");
+    assert.equal(res.agentId, "agent-1");
+    assert.equal(res.workspaceId, "ws-paseo-main");
+    assert.equal(res.cwd, tempRepoDir);
+
+    // Verify spawn options
+    assert.equal(spawnedCalls.length, 1);
+    assert.equal(spawnedCalls[0].mode, "yolo");
+    assert.equal(spawnedCalls[0].provider, "antigravity-acp");
+    assert.equal(spawnedCalls[0].labels.role, "orchestrator");
+    assert.equal(spawnedCalls[0].labels.repo, "xpufx-org/paseo");
+
+    // Verify authoritative registry is updated
+    const record = router.readOrchestrator("xpufx-org/paseo");
+    assert.equal(record?.agentId, "agent-1");
+  });
+
+  it("is idempotent: returns existing active orchestrator without duplicate spawns", async () => {
+    // Mock active agent in agentMap
+    const agentMap = new Map<string, any>([
+      ["agent-1", { id: "agent-1", status: "idle" }],
+    ]);
+    (router as any).fetchAgentMap = async () => agentMap;
+
+    // First ensure
+    const first = await router.ensureOrchestrator({ repo: "xpufx-org/paseo" });
+    assert.equal(first.ok, true);
+    assert.equal(first.status, "provisioned");
+    assert.equal(first.agentId, "agent-1");
+    assert.equal(spawnedCalls.length, 1);
+
+    // Second ensure for the same repo
+    const second = await router.ensureOrchestrator({ repo: "xpufx-org/paseo" });
+    assert.equal(second.ok, true);
+    assert.equal(second.status, "existing");
+    assert.equal(second.agentId, "agent-1");
+    assert.equal(spawnedCalls.length, 1, "must not spawn duplicate agent");
+  });
+
+  it("re-provisions when registered agent is closed or terminated", async () => {
+    // First ensure
+    const first = await router.ensureOrchestrator({ repo: "xpufx-org/paseo" });
+    assert.equal(first.ok, true);
+    assert.equal(first.agentId, "agent-1");
+
+    // Mark agent-1 as closed
+    const agentMap = new Map<string, any>([
+      ["agent-1", { id: "agent-1", status: "closed" }],
+      ["agent-2", { id: "agent-2", status: "idle" }],
+    ]);
+    (router as any).fetchAgentMap = async () => agentMap;
+
+    // Second ensure detects closed agent and provisions new agent
+    const second = await router.ensureOrchestrator({ repo: "xpufx-org/paseo" });
+    assert.equal(second.ok, true);
+    assert.equal(second.status, "provisioned");
+    assert.equal(second.agentId, "agent-2");
+    assert.equal(spawnedCalls.length, 2);
+
+    // Authoritative registry is updated with new agentId
+    const record = router.readOrchestrator("xpufx-org/paseo");
+    assert.equal(record?.agentId, "agent-2");
+  });
+
+  it("automatically drains buffered queues upon registration", async () => {
+    // Buffer a message before orchestrator exists
+    router.enqueue("xpufx-org/paseo", "buffered task 1");
+    router.enqueue("forge.mrs.uppidi.com/xpufx-org/paseo", "buffered task 2");
+    assert.equal(router.getQueue("xpufx-org/paseo").length, 1);
+    assert.equal(router.getQueue("forge.mrs.uppidi.com/xpufx-org/paseo").length, 1);
+
+    // Ensure orchestrator
+    const res = await router.ensureOrchestrator({ repo: "xpufx-org/paseo" });
+    assert.equal(res.ok, true);
+    assert.equal(res.status, "provisioned");
+
+    // Queues for candidate keys are drained
+    assert.equal(router.getQueue("xpufx-org/paseo").length, 0);
+    assert.equal(router.getQueue("forge.mrs.uppidi.com/xpufx-org/paseo").length, 0);
+  });
+
+  it("handles HTTP POST /orchestrator/ensure and /orchestrators/ensure", async () => {
+    // 1. Missing repo -> 400
+    const badRes = await fetch(`http://127.0.0.1:${router.port}/orchestrator/ensure`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+    });
+    assert.equal(badRes.status, 400);
+    const badBody = await badRes.json();
+    assert.equal(badBody.ok, false);
+
+    // 2. Unknown repo -> 404
+    const notFoundRes = await fetch(`http://127.0.0.1:${router.port}/orchestrator/ensure`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repo: "unknown/repo" }),
+    });
+    assert.equal(notFoundRes.status, 404);
+    const notFoundBody = await notFoundRes.json();
+    assert.equal(notFoundBody.ok, false);
+
+    // 3. Provisioning path -> 200 provisioned
+    const provRes = await fetch(`http://127.0.0.1:${router.port}/orchestrator/ensure`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repo: "xpufx-org/paseo", mode: "yolo" }),
+    });
+    assert.equal(provRes.status, 200);
+    const provBody = await provRes.json();
+    assert.equal(provBody.ok, true);
+    assert.equal(provBody.status, "provisioned");
+    assert.equal(provBody.agentId, "agent-1");
+
+    // Mock active agent
+    const agentMap = new Map<string, any>([
+      ["agent-1", { id: "agent-1", status: "running" }],
+    ]);
+    (router as any).fetchAgentMap = async () => agentMap;
+
+    // 4. Idempotency path on /orchestrators/ensure -> 200 existing
+    const existRes = await fetch(`http://127.0.0.1:${router.port}/orchestrators/ensure`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repo: "xpufx-org/paseo" }),
+    });
+    assert.equal(existRes.status, 200);
+    const existBody = await existRes.json();
+    assert.equal(existBody.ok, true);
+    assert.equal(existBody.status, "existing");
+    assert.equal(existBody.agentId, "agent-1");
+  });
+});

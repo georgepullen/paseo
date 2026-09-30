@@ -9,7 +9,10 @@ function registeredContractNames(): string[] {
       names.push(contract.name);
     },
   };
-  contribute(server as never);
+  const teardown = contribute(server as never);
+  if (typeof teardown === "function") {
+    teardown();
+  }
   return names;
 }
 

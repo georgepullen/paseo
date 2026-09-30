@@ -21,6 +21,7 @@ import { extractPermissionScope } from "../shared/contracts.js";
 import { getUppidiFleetSettingsStorage } from "./settings.js";
 import { appendRollupReceipt } from "./metrics.js";
 import { createDefaultIssuesCheckIo, runIssuesCheck, type IssuesCheckIo } from "./issues-check.js";
+import { resolveWorkspaceForRepo, type ResolvedWorkspace } from "./workspace-lookup.js";
 
 export interface RouterConfig {
   host?: string;
@@ -133,6 +134,38 @@ export interface HookRouterOptions {
   watchdogAlertCooldownMs?: number;
   boardSweepIntervalMs?: number;
   frontDeskThrottleMs?: number;
+  workspacesData?: any[];
+  projectsData?: any[];
+  workspacesPath?: string;
+  projectsPath?: string;
+  spawnAgent?: (opts: {
+    title: string;
+    prompt: string;
+    cwd?: string;
+    workspaceId?: string;
+    mode?: string;
+    provider?: string;
+    model?: string;
+    labels?: Record<string, string>;
+  }) => Promise<{ id: string } | null>;
+}
+
+export interface EnsureOrchestratorInput {
+  repo: string;
+  provider?: string;
+  model?: string;
+  mode?: string;
+  force?: boolean;
+}
+
+export interface EnsureOrchestratorResult {
+  ok: boolean;
+  agentId?: string;
+  status?: "existing" | "provisioned";
+  repo?: string;
+  workspaceId?: string;
+  cwd?: string;
+  error?: string;
 }
 
 export interface QueueEntry {
@@ -1486,9 +1519,12 @@ export class HookRouter {
   public latestAgentMap: Map<string, WatchdogAgent> | null = null;
   private watchdogTimer: NodeJS.Timeout | null = null;
   private boardSweepTimer: NodeJS.Timeout | null = null;
+  public readonly options?: HookRouterOptions;
+  private inFlightEnsure = new Map<string, Promise<EnsureOrchestratorResult>>();
 
   constructor(server?: PluginServerContext | null, options?: HookRouterOptions) {
     this.server = server ?? null;
+    this.options = options;
     this.configPath = options?.configPath;
     const persisted = loadRouterConfig(this.configPath);
     const settings = (() => {
@@ -2143,6 +2179,262 @@ export class HookRouter {
       this.log(`[error] CLI updateAgent failed for ${agentId}: ${err instanceof Error ? err.message : String(err)}`);
       return false;
     }
+  }
+
+  public async setAgentMode(agentId: string, mode: string = "yolo"): Promise<boolean> {
+    const paseo = this.getPaseo();
+    if (paseo?.agents) {
+      try {
+        const ref = typeof paseo.agents.ref === "function" ? paseo.agents.ref(agentId) : null;
+        if (typeof (ref as any)?.setMode === "function") {
+          await (ref as any).setMode(mode);
+          return true;
+        } else if (typeof (paseo.agents as any)?.setMode === "function") {
+          await (paseo.agents as any).setMode(agentId, mode);
+          return true;
+        }
+      } catch (err) {
+        this.log(
+          `[warn] SDK setAgentMode failed for ${agentId}, falling back to CLI: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
+    try {
+      await execFileAsync("paseo", ["agent", "mode", agentId, mode], { timeout: 10000 });
+      return true;
+    } catch (err) {
+      this.log(
+        `[warn] CLI agent mode failed for ${agentId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return false;
+    }
+  }
+
+  public resolveWorkspace(repo: string): ResolvedWorkspace | null {
+    return resolveWorkspaceForRepo(repo, {
+      workspacesData: this.options?.workspacesData,
+      projectsData: this.options?.projectsData,
+      workspacesPath: this.options?.workspacesPath,
+      projectsPath: this.options?.projectsPath,
+    });
+  }
+
+  public async ensureOrchestrator(
+    input: EnsureOrchestratorInput,
+  ): Promise<EnsureOrchestratorResult> {
+    const rawRepo = input?.repo;
+    if (!rawRepo || typeof rawRepo !== "string" || !rawRepo.trim()) {
+      return { ok: false, error: "repo is required" };
+    }
+    const repo = rawRepo.trim();
+    const canonicalKey = canonicalRepoKey(repo) ?? repo;
+
+    // 1. Existing live agent check (idempotency)
+    if (!input.force) {
+      const existing = this.readOrchestrator(repo);
+      if (existing?.agentId) {
+        let isAlive = false;
+        try {
+          const agentMap = await this.fetchAgentMap();
+          if (agentMap) {
+            const agent = agentMap.get(existing.agentId);
+            if (
+              agent &&
+              agent.status !== "closed" &&
+              agent.status !== "archived" &&
+              agent.status !== "terminated"
+            ) {
+              isAlive = true;
+            }
+          } else {
+            const activeIds = await this.getActiveAgentIds();
+            if (activeIds.has(existing.agentId)) {
+              isAlive = true;
+            }
+          }
+        } catch {
+          // ignore error in liveness check
+        }
+
+        if (isAlive) {
+          this.log(`[info] Active orchestrator already exists for ${repo}: ${existing.agentId}`);
+          return {
+            ok: true,
+            agentId: existing.agentId,
+            status: "existing",
+            repo: existing.key ?? repo,
+          };
+        }
+      }
+    }
+
+    // 2. Coalesce concurrent ensure requests for the same repo
+    const inFlight = this.inFlightEnsure.get(canonicalKey);
+    if (inFlight) {
+      return await inFlight;
+    }
+
+    const promise = this.provisionOrchestrator(repo, input);
+    this.inFlightEnsure.set(canonicalKey, promise);
+    try {
+      return await promise;
+    } finally {
+      this.inFlightEnsure.delete(canonicalKey);
+    }
+  }
+
+  private async provisionOrchestrator(
+    repo: string,
+    input: EnsureOrchestratorInput,
+  ): Promise<EnsureOrchestratorResult> {
+    const canonicalKey = canonicalRepoKey(repo) ?? repo;
+
+    // A. Resolve workspace deterministically
+    const resolved = this.resolveWorkspace(repo);
+    if (!resolved || (!resolved.cwd && !resolved.workspaceId)) {
+      this.log(`[warn] No workspace found for repository "${repo}"`);
+      return {
+        ok: false,
+        error: `No workspace found for repository "${repo}"`,
+        repo,
+      };
+    }
+
+    const targetMode = input.mode?.trim() || "yolo";
+    const targetProvider = input.provider?.trim() || "antigravity-acp";
+    const targetModel = input.model?.trim() || undefined;
+    const title = `Orchestrator · ${canonicalKey}`;
+    const prompt = `You are the project orchestrator for ${repo}. Follow the orchestrator skill to coordinate tasks, supervise worker agents, and manage pull requests and issues.`;
+    const labels: Record<string, string> = {
+      role: "orchestrator",
+      category: "orchestrator",
+      repo,
+    };
+
+    let agentId: string | null = null;
+
+    // Custom test / injection hook
+    if (typeof this.options?.spawnAgent === "function") {
+      try {
+        const spawned = await this.options.spawnAgent({
+          title,
+          prompt,
+          cwd: resolved.cwd,
+          workspaceId: resolved.workspaceId,
+          mode: targetMode,
+          provider: targetProvider,
+          model: targetModel,
+          labels,
+        });
+        agentId = spawned?.id ?? null;
+      } catch (err: any) {
+        return { ok: false, error: err?.message ?? String(err), repo };
+      }
+    } else {
+      // Try SDK first
+      const sdkPaseo = this.getPaseo();
+      if (sdkPaseo?.agents && typeof (sdkPaseo.agents as any).create === "function") {
+        try {
+          const createPayload: Record<string, any> = {
+            title,
+            prompt,
+            role: "orchestrator",
+            cwd: resolved.cwd,
+            labels,
+            mode: targetMode,
+          };
+          if (targetModel) {
+            createPayload.provider = `${targetProvider}/${targetModel}`;
+            createPayload.model = targetModel;
+          } else {
+            createPayload.provider = targetProvider;
+          }
+          const sdkConfig: Record<string, any> = {
+            provider: createPayload.provider,
+            modeId: targetMode,
+            featureValues: { auto_accept: true },
+          };
+          if (resolved.cwd) sdkConfig.cwd = resolved.cwd;
+          createPayload.config = sdkConfig;
+          if (resolved.workspaceId) {
+            createPayload.workspaceId = resolved.workspaceId;
+            createPayload.workspace = resolved.workspaceId;
+          }
+          const created = await (sdkPaseo.agents as any).create(createPayload);
+          agentId = created?.id ?? (typeof created === "string" ? created : null);
+        } catch (err) {
+          this.log(
+            `[warn] SDK agent creation failed for ${repo}, falling back to CLI: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+
+      // CLI fallback
+      if (!agentId) {
+        try {
+          const args = ["run", "-d", "--title", title];
+          if (targetProvider) args.push("--provider", targetProvider);
+          if (targetModel) args.push("--model", targetModel);
+          args.push("--mode", targetMode);
+          if (resolved.workspaceId) args.push("--workspace", resolved.workspaceId);
+          if (resolved.cwd) args.push("--cwd", resolved.cwd);
+          for (const [k, v] of Object.entries(labels)) {
+            args.push("--label", `${k}=${v}`);
+          }
+          args.push("--json", prompt);
+
+          const { stdout } = await execFileAsync("paseo", args, { timeout: 15000 });
+          try {
+            const parsed = JSON.parse(stdout);
+            agentId = parsed?.id ?? parsed?.agentId ?? (typeof parsed === "string" ? parsed : null);
+          } catch {
+            const match = stdout.match(/(?:agent[-_]?[a-zA-Z0-9]+|[a-f0-9]{8,})/);
+            if (match) agentId = match[0];
+          }
+        } catch (err: any) {
+          this.log(`[error] CLI agent run failed for ${repo}: ${err?.message ?? String(err)}`);
+          return { ok: false, error: err?.message ?? String(err), repo };
+        }
+      }
+    }
+
+    if (!agentId) {
+      return { ok: false, error: "Failed to spawn orchestrator agent", repo };
+    }
+
+    // Explicitly configure autonomous execution mode (yolo)
+    await this.setAgentMode(agentId, targetMode);
+
+    // Update metadata
+    await this.updateAgentMetadata(agentId, title, {
+      role: "orchestrator",
+      category: "orchestrator",
+      repo,
+      mode: targetMode,
+    }).catch(() => {});
+
+    // Register in authoritative registry & enrolled repos
+    this.writeOrchestrator(repo, agentId, "ensure");
+    this.enrollRepo(repo);
+
+    // Drain pending queues for repository
+    for (const cand of candidateRepoKeys(repo)) {
+      await this.drain(cand).catch(() => {});
+    }
+
+    this.log(
+      `[info] Orchestrator provisioned for ${repo}: ${agentId} (workspace=${resolved.workspaceId ?? resolved.cwd}, mode=${targetMode})`,
+    );
+
+    return {
+      ok: true,
+      agentId,
+      status: "provisioned",
+      repo,
+      workspaceId: resolved.workspaceId,
+      cwd: resolved.cwd,
+    };
   }
 
   public async getActiveAgentIds(): Promise<Set<string>> {
@@ -4252,6 +4544,36 @@ export class HookRouter {
 
         const list = this.listOrchestratorRecords();
         this.sendJson(res, 200, { ok: true, orchestrators: list });
+        return;
+      }
+
+      if (
+        req.method === "POST" &&
+        (pathname === "/orchestrator/ensure" || pathname === "/orchestrators/ensure")
+      ) {
+        const body = await this.readJsonBody(req).catch(() => ({}));
+        const repo = typeof body?.repo === "string" ? body.repo.trim() : "";
+        if (!repo) {
+          this.sendJson(res, 400, { ok: false, error: "repo is required" });
+          return;
+        }
+        try {
+          const result = await this.ensureOrchestrator({
+            repo,
+            provider: typeof body?.provider === "string" ? body.provider.trim() : undefined,
+            model: typeof body?.model === "string" ? body.model.trim() : undefined,
+            mode: typeof body?.mode === "string" ? body.mode.trim() : undefined,
+            force: Boolean(body?.force),
+          });
+          const statusCode = result.ok
+            ? 200
+            : result.error?.includes("No workspace found")
+              ? 404
+              : 500;
+          this.sendJson(res, statusCode, result);
+        } catch (err: any) {
+          this.sendJson(res, 500, { ok: false, error: err?.message ?? String(err) });
+        }
         return;
       }
 
