@@ -84,11 +84,10 @@ export default function contribute(client: PluginClientContext) {
     renderModal: (props) => <ForgeIssuesModal {...props} />,
   });
 
-  const removePanel = client.addWorkspacePanel({
+  const removePanel = registerWorkspacePanel(client, {
     id: "forges-issues",
     title: "Forge Issues",
     icon: "GitPullRequest",
-    context: "workspace",
     locations: ["workspace", "explorer"],
     Component: ForgeIssuesPanel,
   });
