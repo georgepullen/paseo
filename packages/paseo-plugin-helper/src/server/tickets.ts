@@ -5,6 +5,7 @@ import { PluginStorage } from "./storage.js";
 import { createPluginLogger } from "./logger.js";
 import type { HandleableServerContext } from "./settings.js";
 import {
+  BARE_REPO_PATTERN,
   INSTALL_LABEL_MODES,
   IssueDetailSchema,
   PASEO_LABEL_SCOPES,
@@ -664,6 +665,47 @@ export async function resolveForgeToken(
   return undefined;
 }
 
+export async function resolveDefaultForgeHost(): Promise<string> {
+  if (process.env.FORGEJO_HOST?.trim()) {
+    return process.env.FORGEJO_HOST.trim().replace(/^https?:\/\//, "").replace(/\/+$/, "");
+  }
+  if (process.env.GITEA_HOST?.trim()) {
+    return process.env.GITEA_HOST.trim().replace(/^https?:\/\//, "").replace(/\/+$/, "");
+  }
+  try {
+    const teaConfigPath = join(homedir(), ".config", "tea", "config.yml");
+    const content = await readFile(teaConfigPath, "utf8");
+    const lines = content.split("\n");
+    let defaultLoginUrl = "";
+    let firstLoginUrl = "";
+    let inDefaultLogin = false;
+    for (const line of lines) {
+      if (line.trim().startsWith("- name:")) {
+        inDefaultLogin = false;
+      }
+      if (line.trim().startsWith("default: true")) {
+        inDefaultLogin = true;
+      }
+      if (line.trim().startsWith("url:") || line.trim().startsWith("ssh_host:")) {
+        const urlOrHost = line.replace(/.*(?:url|ssh_host):\s*/, "").trim();
+        if (urlOrHost) {
+          const host = urlOrHost.replace(/^https?:\/\//, "").replace(/\/+$/, "");
+          if (inDefaultLogin && !defaultLoginUrl) {
+            defaultLoginUrl = host;
+          }
+          if (!firstLoginUrl) {
+            firstLoginUrl = host;
+          }
+        }
+      }
+    }
+    if (defaultLoginUrl) return defaultLoginUrl;
+    if (firstLoginUrl) return firstLoginUrl;
+  } catch {}
+
+  return "forge.mrs.uppidi.com";
+}
+
 export async function storedForgeSelection(
   directory: string | undefined,
   storagePluginId = "forges",
@@ -768,7 +810,17 @@ export function createTicketHandlers(options: TicketHandlerOptions = {}): Ticket
     const stored = await storedForgeSelection(directory, storagePluginId);
     const explicit = explicitRemote?.trim() ? explicitRemote.trim() : stored?.trim();
     const remoteUrl = directory ? await gitOriginForDirectory(directory) : null;
-    const resolved = resolveForgeTarget(explicit, remoteUrl);
+    let resolved = resolveForgeTarget(explicit, remoteUrl);
+    if (!resolved.ok && explicit && BARE_REPO_PATTERN.test(explicit)) {
+      const defaultHost = await resolveDefaultForgeHost();
+      if (defaultHost) {
+        const fallbackTarget = `https://${defaultHost}/${explicit}`;
+        const fallbackResolved = resolveForgeTarget(fallbackTarget, remoteUrl);
+        if (fallbackResolved.ok) {
+          resolved = fallbackResolved;
+        }
+      }
+    }
     if (!resolved.ok) {
       return { ok: false, derivedRemote: remoteUrl, error: resolved.error };
     }

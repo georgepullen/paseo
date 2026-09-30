@@ -106,6 +106,7 @@ import {
 import { UppidiFleetToolingView } from "./tooling.js";
 import { UppidiFleetKanbanBoard } from "./kanban-board.js";
 import { ForgeIssuesView } from "./forges-tab.js";
+import { toCanonicalForgeUrl } from "./forges-tab.js";
 
 export type SurfaceTab = "tree" | "dashboard" | "tooling" | "settings" | "board" | "forges";
 
@@ -2415,7 +2416,10 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
                     workspaceId={activeWorkspaceId}
                     directory={activeWorkspaceDirectory}
                     repo={selected.repo}
-                    remoteUrl={(selected as any).remoteUrl}
+                    remoteUrl={
+                      (selected as any).remoteUrl ||
+                      toCanonicalForgeUrl(selected.repo)
+                    }
                     onRefresh={() => {
                       void refetchIssues?.();
                     }}

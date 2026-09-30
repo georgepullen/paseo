@@ -82,6 +82,48 @@ export const forgeContextContract = defineContract({
   }),
 });
 
+export function toCanonicalForgeUrl(repoOrUrl: string | undefined | null): string | undefined {
+  if (!repoOrUrl || repoOrUrl === "all") return undefined;
+  const trimmed = repoOrUrl.trim();
+  if (!trimmed) return undefined;
+  if (trimmed.includes("://") || trimmed.includes("@")) return trimmed;
+  return `https://forge.mrs.uppidi.com/${trimmed.replace(/^\/+/, "")}`;
+}
+
+class SafeWorkspaceBoundary extends React.Component<
+  { children: React.ReactNode },
+  { hasError: boolean }
+> {
+  state = { hasError: false };
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+  componentDidCatch() {}
+  render() {
+    if (this.state.hasError) return null;
+    return this.props.children;
+  }
+}
+
+function WorkspaceDirectoryWatcher({
+  workspaceId,
+  onResolve,
+}: {
+  workspaceId: string;
+  onResolve: (dir: string | undefined) => void;
+}) {
+  const dir = useWorkspace(
+    workspaceId,
+    (w: any) => w?.directory ?? w?.workspaceDirectory,
+  ) as string | undefined;
+
+  React.useEffect(() => {
+    onResolve(dir);
+  }, [dir, onResolve]);
+
+  return null;
+}
+
 export interface ForgeIssuesViewProps {
   workspaceId?: string;
   agentId?: string;
@@ -107,12 +149,8 @@ function ForgeIssuesViewInner({
   const { Icon } = getClientHost();
   const [searchQuery, setSearchQuery] = useState("");
 
-  const workspaceDirectory = useWorkspace(
-    workspaceId,
-    (w: any) => w?.directory ?? w?.workspaceDirectory,
-  ) as string | undefined;
-
-  const directory = workspaceDirectory ?? propDirectory;
+  const [watchedDirectory, setWatchedDirectory] = useState<string | undefined>();
+  const directory = propDirectory ?? watchedDirectory;
 
   const contextQuery = useRpcQuery(forgeContextContract, {
     directory: directory ?? undefined,
@@ -158,7 +196,7 @@ function ForgeIssuesViewInner({
   const issuesQuery = useRpcQuery(forgeOpenIssuesContract, {
     workspaceId: workspaceId || undefined,
     directory: directory ?? undefined,
-    remoteUrl: currentRepo === "all" ? undefined : currentRepo,
+    remoteUrl: toCanonicalForgeUrl(currentRepo),
     repo: currentRepo === "all" ? undefined : currentRepo,
   });
 
@@ -212,6 +250,14 @@ function ForgeIssuesViewInner({
 
   return (
     <ModalBody>
+      {workspaceId && !propDirectory ? (
+        <SafeWorkspaceBoundary>
+          <WorkspaceDirectoryWatcher
+            workspaceId={workspaceId}
+            onResolve={setWatchedDirectory}
+          />
+        </SafeWorkspaceBoundary>
+      ) : null}
       <Stack gap={4}>
         <Card variant="flat">
           <CardHeader
