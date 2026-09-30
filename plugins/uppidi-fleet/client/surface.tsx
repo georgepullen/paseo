@@ -1985,7 +1985,14 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
         </Card>
       ) : activeTab === "forges" ? (
         <ModalBodyScrollOwnerContext.Provider value="host">
-          <ForgeIssuesView workspaceId={activeWorkspaceId} />
+          <ForgeIssuesView
+            workspaceId={activeWorkspaceId}
+            directory={activeWorkspaceDirectory}
+            selectedRepo={selectedRepo}
+            onSelectRepo={setSelectedRepo}
+            enrolledRepos={availableRepos}
+            activeRepo={issuesData?.repo ?? undefined}
+          />
         </ModalBodyScrollOwnerContext.Provider>
       ) : (
         <Stack gap={6}>
