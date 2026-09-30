@@ -14,6 +14,12 @@ import {
   usePluginTheme,
   useRpcQuery,
   getClientHost,
+  TicketLifecycleView,
+  NewIssueComposer,
+  MarkdownLite,
+  CommentCard,
+  AgentEnvelopeCard,
+  ScopedLabelGroup,
 } from "paseo-plugin-helper/client";
 import { defineContract } from "paseo-plugin-helper/shared";
 import { z } from "zod";
@@ -313,3 +319,12 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
 });
+
+export {
+  TicketLifecycleView,
+  NewIssueComposer,
+  MarkdownLite,
+  CommentCard,
+  AgentEnvelopeCard,
+  ScopedLabelGroup,
+};

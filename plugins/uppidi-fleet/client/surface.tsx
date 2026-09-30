@@ -31,6 +31,8 @@ import {
   StatusDot,
   Tabs,
   TextInput,
+  TicketLifecycleView,
+  NewIssueComposer,
   usePluginTheme,
   useRpcQuery,
   useRpcMutation,
@@ -1177,6 +1179,11 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
     return agentWithWorkspace?.workspaceId ?? "";
   }, [(props as any).workspaceId, selectedRepo, allAgents]);
 
+  const activeWorkspaceDirectory =
+    (props as any)?.directory ??
+    (props as any)?.workspaceDirectory ??
+    undefined;
+
   const handleOpenAgent = (agentId: string) => {
     if (props.navigation?.openAgent) {
       props.navigation.openAgent({ agentId });
@@ -2228,6 +2235,12 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
               />
             ) : (
               <>
+            <NewIssueComposer
+              directory={activeWorkspaceDirectory}
+              onCreated={() => {
+                void refetchIssues?.();
+              }}
+            />
             <Row justify="space-between" align="center" wrap gap="xs">
               <View style={{ flex: 1, minWidth: 200 }}>
                 <SearchInput
@@ -2387,39 +2400,50 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
                     </Row>
                   )}
 
-                  <KeyValue
-                    label="Worktree branch"
-                    value={selected.branch ?? "No worktree dispatched yet"}
-                    copyable={!!selected.branch}
-                  />
+                  <TicketLifecycleView
+                    issueNumber={selected.number}
+                    workspaceId={activeWorkspaceId}
+                    directory={activeWorkspaceDirectory}
+                    repo={selected.repo}
+                    remoteUrl={(selected as any).remoteUrl}
+                    onRefresh={() => {
+                      void refetchIssues?.();
+                    }}
+                  >
+                    <KeyValue
+                      label="Worktree branch"
+                      value={selected.branch ?? "No worktree dispatched yet"}
+                      copyable={!!selected.branch}
+                    />
 
-                  {/* Actions: Dispatch Worktree, Open in Forgejo, Close */}
-                  <Row justify="flex-end" align="center" wrap gap="xs" style={{ marginTop: 8 }}>
-                    <Button
-                      label="Close"
-                      variant="ghost"
-                      size="sm"
-                      onPress={() => setSelectedNumber(null)}
-                    />
-                    {selected.url && (
+                    {/* Actions: Dispatch Worktree, Open in Forgejo, Close */}
+                    <Row justify="flex-end" align="center" wrap gap="xs" style={{ marginTop: 8 }}>
                       <Button
-                        label="Open in Forgejo"
-                        icon="ExternalLink"
-                        variant="secondary"
+                        label="Close"
+                        variant="ghost"
                         size="sm"
-                        onPress={() => Linking.openURL(selected.url!)}
+                        onPress={() => setSelectedNumber(null)}
                       />
-                    )}
-                    <Button
-                      label="Dispatch Worktree"
-                      icon="ArrowRight"
-                      variant="primary"
-                      size="sm"
-                      onPress={() => {
-                        toast.show(`Worktree dispatch requested for #${selected.number}`);
-                      }}
-                    />
-                  </Row>
+                      {selected.url && (
+                        <Button
+                          label="Open in Forgejo"
+                          icon="ExternalLink"
+                          variant="secondary"
+                          size="sm"
+                          onPress={() => Linking.openURL(selected.url!)}
+                        />
+                      )}
+                      <Button
+                        label="Dispatch Worktree"
+                        icon="ArrowRight"
+                        variant="primary"
+                        size="sm"
+                        onPress={() => {
+                          toast.show(`Worktree dispatch requested for #${selected.number}`);
+                        }}
+                      />
+                    </Row>
+                  </TicketLifecycleView>
                 </Stack>
               </ModalContent>
             </Modal>
