@@ -10,22 +10,89 @@ import type {
 } from "../shared/contracts.js";
 
 /** Durable per-daemon metrics receipt file (privacy-minimized, platform#18). */
-export function defaultMetricsFilePath(): string {
+export function defaultMetricsFilePath(context?: any): string {
   const override = process.env.UPPIDI_FLEET_METRICS_FILE?.trim();
   if (override) return override;
+
+  if (typeof context === "string" && context.trim()) {
+    const trimmed = context.trim();
+    return trimmed.endsWith(".json") ? trimmed : path.join(trimmed, "metrics.json");
+  }
+
+  if (context && typeof context === "object") {
+    const storage = context.storage;
+    if (typeof storage === "string" && storage.trim()) {
+      const s = storage.trim();
+      return s.endsWith(".json") ? s : path.join(s, "metrics.json");
+    }
+    if (storage && typeof storage === "object") {
+      if (typeof storage.path === "string" && storage.path.trim()) {
+        const p = storage.path.trim();
+        return p.endsWith(".json") ? p : path.join(p, "metrics.json");
+      }
+      if (typeof storage.path === "function") {
+        try {
+          const res = storage.path("metrics.json");
+          if (typeof res === "string" && res.trim()) {
+            const p = res.trim();
+            return p.endsWith(".json") ? p : path.join(p, "metrics.json");
+          }
+        } catch {}
+      }
+      if (typeof storage.filePath === "string" && storage.filePath.trim()) {
+        return storage.filePath.trim();
+      }
+      if (typeof storage.dir === "string" && storage.dir.trim()) {
+        return path.join(storage.dir.trim(), "metrics.json");
+      }
+      if (typeof storage.getFilePath === "function") {
+        try {
+          const res = storage.getFilePath("metrics.json");
+          if (typeof res === "string" && res.trim()) return res.trim();
+        } catch {}
+      }
+    }
+  }
+
+  const pluginData = process.env.PASEO_PLUGIN_DATA?.trim();
+  if (pluginData) {
+    if (pluginData.endsWith("uppidi-fleet") || pluginData.endsWith("uppidi-fleet/")) {
+      return path.join(pluginData, "metrics.json");
+    }
+    if (pluginData.endsWith("xpufx") || pluginData.endsWith("xpufx/")) {
+      return path.join(pluginData, "uppidi-fleet", "metrics.json");
+    }
+    return path.join(pluginData, "xpufx", "uppidi-fleet", "metrics.json");
+  }
+
   const home = process.env.HOME ?? os.homedir();
-  return path.join(home, ".paseo", "uppidi-fleet-metrics.json");
+  return path.join(home, ".paseo", "plugin-data", "xpufx", "uppidi-fleet", "metrics.json");
 }
 
 let metricsFilePathOverride: string | null = null;
+let legacyMetricsFilePathOverride: string | null = null;
+
+/** Legacy durable metrics receipt file path (~/.paseo/uppidi-fleet-metrics.json). */
+export function legacyMetricsFilePath(): string {
+  if (legacyMetricsFilePathOverride !== null) {
+    return legacyMetricsFilePathOverride;
+  }
+  const home = process.env.HOME ?? os.homedir();
+  return path.join(home, ".paseo", "uppidi-fleet-metrics.json");
+}
 
 /** Test hook: pin the receipt file, or pass null to restore the default. */
 export function setMetricsFilePathForTest(filePath: string | null): void {
   metricsFilePathOverride = filePath;
 }
 
-export function getMetricsFilePath(): string {
-  return metricsFilePathOverride ?? defaultMetricsFilePath();
+/** Test hook: pin the legacy receipt file, or pass null to restore the default. */
+export function setLegacyMetricsFilePathForTest(filePath: string | null): void {
+  legacyMetricsFilePathOverride = filePath;
+}
+
+export function getMetricsFilePath(context?: any): string {
+  return metricsFilePathOverride ?? defaultMetricsFilePath(context);
 }
 
 /** Rolling cap on stored receipts, oldest evicted first. */
@@ -540,14 +607,77 @@ interface PersistedMetricsFile {
   candidates?: CandidateModelMetrics[];
 }
 
-async function readMetricsFile(): Promise<PersistedMetricsFile | null> {
+/**
+ * Migrates legacy ~/.paseo/uppidi-fleet-metrics.json to the target metrics file
+ * if the legacy file exists and the target file does not yet exist.
+ * Returns true if migration was performed, false otherwise.
+ */
+export async function migrateLegacyMetrics(
+  targetPath: string = getMetricsFilePath(),
+  legacyPath: string = legacyMetricsFilePath(),
+): Promise<boolean> {
+  if (targetPath === legacyPath) return false;
   try {
-    const raw = await fs.readFile(getMetricsFilePath(), "utf-8");
+    try {
+      await fs.access(targetPath);
+      return false;
+    } catch {}
+
+    const legacyRaw = await fs.readFile(legacyPath, "utf-8");
+    const parsed = JSON.parse(legacyRaw);
+    if (!parsed || typeof parsed !== "object") return false;
+
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    const tmp = `${targetPath}.${process.pid}.${Date.now()}.tmp`;
+    await fs.writeFile(tmp, legacyRaw, "utf8");
+    await fs.rename(tmp, targetPath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function resolveOrMigrateMetrics(targetPath: string): Promise<PersistedMetricsFile | null> {
+  try {
+    const raw = await fs.readFile(targetPath, "utf-8");
     const parsed = JSON.parse(raw);
     return parsed && typeof parsed === "object" ? (parsed as PersistedMetricsFile) : null;
+  } catch (err: any) {
+    if (err && err.code !== "ENOENT") {
+      return null;
+    }
+  }
+
+  const legacyPath = legacyMetricsFilePathOverride ?? (metricsFilePathOverride ? null : legacyMetricsFilePath());
+  if (!legacyPath || targetPath === legacyPath) {
+    return null;
+  }
+
+  try {
+    const legacyRaw = await fs.readFile(legacyPath, "utf-8");
+    const parsed = JSON.parse(legacyRaw);
+    if (!parsed || typeof parsed !== "object") {
+      return null;
+    }
+
+    try {
+      await fs.mkdir(path.dirname(targetPath), { recursive: true });
+      const tmp = `${targetPath}.${process.pid}.${Date.now()}.tmp`;
+      await fs.writeFile(tmp, legacyRaw, "utf8");
+      await fs.rename(tmp, targetPath);
+    } catch {
+      // Fallback to parsed legacy data smoothly if writing to targetPath fails
+    }
+
+    return parsed as PersistedMetricsFile;
   } catch {
     return null;
   }
+}
+
+async function readMetricsFile(context?: any): Promise<PersistedMetricsFile | null> {
+  const filePath = getMetricsFilePath(context);
+  return resolveOrMigrateMetrics(filePath);
 }
 
 /**
@@ -560,8 +690,9 @@ export async function appendRollupReceipt(
   now: number,
   agents: Iterable<RollupAgentInput>,
   cooldownGate?: () => boolean,
+  context?: any,
 ): Promise<AppendRollupResult> {
-  const filePath = getMetricsFilePath();
+  const filePath = getMetricsFilePath(context);
   if (cooldownGate && !cooldownGate()) {
     return { ok: true, skipped: true, receiptsWritten: 0, receiptCount: 0, filePath };
   }
@@ -571,7 +702,7 @@ export async function appendRollupReceipt(
     return { ok: true, skipped: true, receiptsWritten: 0, receiptCount: 0, filePath };
   }
 
-  const existing = await readMetricsFile();
+  const existing = await readMetricsFile(context);
   const priorReceipts = Array.isArray(existing?.receipts) ? existing!.receipts! : [];
   const ts = new Date(now).toISOString();
   const newReceipts: RollupReceipt[] = rollups.map((rollup) => ({ ts, ...rollup }));
@@ -626,8 +757,8 @@ export interface FleetMetrics {
  * matrix is retired as served data: a missing/empty/unparsable file yields an
  * explicit empty state rather than placeholder models (#560/#373, platform#18).
  */
-export async function loadFleetMetrics(): Promise<FleetMetrics> {
-  const parsed = await readMetricsFile();
+export async function loadFleetMetrics(context?: any): Promise<FleetMetrics> {
+  const parsed = await readMetricsFile(context);
   const receipts = Array.isArray(parsed?.receipts) ? parsed!.receipts! : [];
   const candidates =
     receipts.length > 0
@@ -666,10 +797,10 @@ export async function loadFleetMetrics(): Promise<FleetMetrics> {
 
 export async function handleUppidiFleetMetrics(
   input: UppidiFleetMetricsInput,
-  _context: PluginHandlerContext
+  context?: PluginHandlerContext
 ): Promise<UppidiFleetMetricsOutput> {
   const { candidates, taskProfiles, totalEvaluatedTrials, privacyNotice, dataSource, modelCount } =
-    await loadFleetMetrics();
+    await loadFleetMetrics(context);
 
   let filtered = candidates;
   if (input.model) {

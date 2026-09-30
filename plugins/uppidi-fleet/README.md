@@ -878,7 +878,8 @@ these gaps yourself.
   `totalCount` and `onlineCount`.
 - **Fleet metrics are empirical** ([`server/metrics.ts`](./server/metrics.ts)):
   the watchdog tick rolls live per-agent signals into minimized receipts in
-  `~/.paseo/uppidi-fleet-metrics.json`, and the matrix serves only those
+  `~/.paseo/plugin-data/xpufx/uppidi-fleet/metrics.json` (migrating from legacy
+  `~/.paseo/uppidi-fleet-metrics.json` if present), and the matrix serves only those
   receipts. The checked-in `BASELINE_CANDIDATES` matrix is retired as served
   data — it remains exported for tests/back-compat, but a missing/empty file
   yields an explicit empty state ("no empirical data yet"), never placeholders.
@@ -937,7 +938,7 @@ these gaps yourself.
 | `~/.paseo/forgejo-hook/frontdesk.json` | Front Desk agent id (watchdog recipient; resolved via fallbacks — see [§7.7.3](#773-recipient-routing--delivery)). |
 | `~/.paseo/forgejo-hook/latest-handoff.md` | Active Front Desk hand-off snapshot. |
 | `~/.paseo/uppidi-fleet-role-models.json` | Per-role primary model + fallback group. |
-| `~/.paseo/uppidi-fleet-metrics.json` | Fleet capability metrics. |
+| `~/.paseo/plugin-data/xpufx/uppidi-fleet/metrics.json` | Fleet capability metrics (scoped storage; fallback/migration from legacy `~/.paseo/uppidi-fleet-metrics.json`). |
 | `~/.paseo/plugin-data/xpufx/uppidi-fleet/settings.json` | Plugin settings (`hookHost`, `hookPort`, `enrolledRepos`, `mutedRepos`). |
 | `<repo-root>/.agents/skills/` | The fleet's operational skills, at the repository root (outside the plugin package). |
 
@@ -1098,14 +1099,15 @@ exist". [`server/metrics.ts`](./server/metrics.ts) now honors that contract:
   every metrics-bearing live agent into one minimized receipt per
   provider/model — turns completed, median context utilization, cache hit ratio,
   cost, error count, median turn duration — and appends them (capped at 500,
-  oldest evicted) to `~/.paseo/uppidi-fleet-metrics.json`. The write is gated by
+  oldest evicted) to scoped storage `~/.paseo/plugin-data/xpufx/uppidi-fleet/metrics.json`
+  (migrating from legacy `~/.paseo/uppidi-fleet-metrics.json` if present). The write is gated by
   the `metrics_rollup` watchdog cooldown and skipped when no agent carries
   metrics. Privacy per platform#18: counts, ratios, and durations only — no
   transcripts, prompts, or code.
 - The file stores both the raw `receipts` and the derived `candidates`
   (`CandidateModelMetrics`-compatible, additive rollup fields). `loadFleetMetrics`
   re-derives candidates from the stored receipts on read.
-- `~/.paseo/uppidi-fleet-metrics.json` present with receipts ⇒ the empirical
+- `~/.paseo/plugin-data/xpufx/uppidi-fleet/metrics.json` (or legacy file) present with receipts ⇒ the empirical
   matrix is served and the Cockpit badge reads
   `N empirical trials across M models`.
 - File absent, empty, or unparsable ⇒ an **explicit empty state**

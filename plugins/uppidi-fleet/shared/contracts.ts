@@ -1058,7 +1058,9 @@ export type CandidateModelMetrics = z.infer<typeof CandidateModelMetricsSchema>;
 /**
  * One minimized, per-provider/model rollup receipt (#560 / platform#18). Counts,
  * ratios, and durations only — never transcripts, prompts, or code. Produced on
- * the watchdog tick and appended to `~/.paseo/uppidi-fleet-metrics.json`.
+ * the watchdog tick and appended to scoped storage
+ * `~/.paseo/plugin-data/xpufx/uppidi-fleet/metrics.json` (with backward-compatible
+ * migration from legacy `~/.paseo/uppidi-fleet-metrics.json`).
  */
 export const RollupReceiptSchema = z.object({
   ts: z.string(),

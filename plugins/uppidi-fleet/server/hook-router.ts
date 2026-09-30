@@ -137,6 +137,7 @@ export interface HookRouterOptions {
   configPath?: string;
   queueDir?: string;
   stateDir?: string;
+  metricsFilePath?: string;
   secret?: string;
   paseo?: PaseoApi;
   debounceMs?: number;
@@ -571,7 +572,7 @@ export interface WatchdogAuditOptions {
   /**
    * Persist per-provider/model rollup receipts on this tick (#560). Defaults to
    * `true` in production and `false` for injected fixtures, so unit tests never
-   * touch `~/.paseo/uppidi-fleet-metrics.json`.
+   * touch scoped storage (`~/.paseo/plugin-data/xpufx/uppidi-fleet/metrics.json`).
    */
   metricsRollup?: boolean;
 }
@@ -2963,8 +2964,11 @@ export class HookRouter {
             Boolean(agent.model && (agent.metrics || agent.lastUsage)),
         );
         if (hasMetrics) {
-          void appendRollupReceipt(now, agentMap.values(), () =>
-            this.canWatchdogAlert("metrics_rollup", now),
+          void appendRollupReceipt(
+            now,
+            agentMap.values(),
+            () => this.canWatchdogAlert("metrics_rollup", now),
+            this.options?.metricsFilePath ? { storage: this.options.metricsFilePath } : (this.server as any),
           )
             .then((res) => {
               if (res.ok && !res.skipped) {
