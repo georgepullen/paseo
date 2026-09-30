@@ -26,6 +26,11 @@ import {
   STATUS_LIGHT_COLORS,
   deriveHealthGauge,
   DEFAULT_HEALTH_GAUGE_THRESHOLDS,
+  sortProjectGroups,
+  getProjectGroupCreationTime,
+  getProjectGroupActivityTime,
+  type ProjectAgentGroup,
+  type ProjectSortField,
 } from "./sort-filter.js";
 
 import type {
@@ -1319,6 +1324,420 @@ describe("Uppidi Fleet sort & filter predicates", () => {
         NOW
       );
       assert.equal(gauge.overall, "critical");
+    });
+  });
+
+  describe("deterministic presentation order and stable project group sorting (#796)", () => {
+    it("sorts project groups alphabetically by default regardless of running or queued status", () => {
+      const tree: UppidiAgentTreeNode[] = [
+        {
+          agent: {
+            id: "orch-zeta",
+            shortId: "oz",
+            name: "Orchestrator · xpufx-org/zeta-repo",
+            category: "orchestrator",
+            status: "running",
+            deterministicState: "working",
+            project: "xpufx-org/zeta-repo",
+          },
+          depth: 0,
+          children: [],
+        },
+        {
+          agent: {
+            id: "orch-alpha",
+            shortId: "oa",
+            name: "Orchestrator · xpufx-org/alpha-repo",
+            category: "orchestrator",
+            status: "idle",
+            deterministicState: "idle:waiting",
+            project: "xpufx-org/alpha-repo",
+          },
+          depth: 0,
+          children: [],
+        },
+        {
+          agent: {
+            id: "orch-beta",
+            shortId: "ob",
+            name: "Orchestrator · xpufx-org/beta-repo",
+            category: "orchestrator",
+            status: "idle",
+            deterministicState: "idle:waiting",
+            project: "xpufx-org/beta-repo",
+          },
+          depth: 0,
+          children: [],
+        },
+      ];
+
+      const options = {
+        enrolledRepos: ["xpufx-org/zeta-repo", "xpufx-org/alpha-repo", "xpufx-org/beta-repo"],
+        repoQueuedHooks: {
+          "xpufx-org/zeta-repo": 10,
+          "xpufx-org/beta-repo": 5,
+        },
+      };
+
+      const result = buildProjectGroups(tree, options);
+      const names = result.enrolledGroups.map((g) => g.projectName);
+      assert.deepEqual(names, [
+        "xpufx-org/alpha-repo",
+        "xpufx-org/beta-repo",
+        "xpufx-org/zeta-repo",
+      ]);
+    });
+
+    it("maintains stable presentation order across simulated RPC polling refreshes when agent states flip", () => {
+      // 3 repos across 5 polling cycles:
+      // In cycle 1: alpha is idle, beta is working, gamma is idle
+      // In cycle 2: alpha is working, beta is idle, gamma is idle
+      // In cycle 3: alpha is idle, beta is idle, gamma is working (with 5 hooks)
+      // In cycle 4: beta has 20 hooks, alpha has 0 hooks, all idle
+      // In cycle 5: all idle, 0 hooks
+      const repos = ["xpufx-org/gamma-service", "xpufx-org/alpha-app", "xpufx-org/beta-core"];
+      const cycles = [
+        { alphaRunning: false, betaRunning: true, gammaRunning: false, gammaHooks: 0, betaHooks: 0 },
+        { alphaRunning: true, betaRunning: false, gammaRunning: false, gammaHooks: 0, betaHooks: 0 },
+        { alphaRunning: false, betaRunning: false, gammaRunning: true, gammaHooks: 5, betaHooks: 0 },
+        { alphaRunning: false, betaRunning: false, gammaRunning: false, gammaHooks: 0, betaHooks: 20 },
+        { alphaRunning: false, betaRunning: false, gammaRunning: false, gammaHooks: 0, betaHooks: 0 },
+      ];
+
+      for (let i = 0; i < cycles.length; i++) {
+        const cycle = cycles[i];
+        const tree: UppidiAgentTreeNode[] = [
+          {
+            agent: {
+              id: "orch-gamma",
+              shortId: "og",
+              name: "Orchestrator · xpufx-org/gamma-service",
+              category: "orchestrator",
+              status: cycle.gammaRunning ? "running" : "idle",
+              deterministicState: cycle.gammaRunning ? "working" : "idle:waiting",
+              project: "xpufx-org/gamma-service",
+            },
+            depth: 0,
+            children: [],
+          },
+          {
+            agent: {
+              id: "orch-alpha",
+              shortId: "oa",
+              name: "Orchestrator · xpufx-org/alpha-app",
+              category: "orchestrator",
+              status: cycle.alphaRunning ? "running" : "idle",
+              deterministicState: cycle.alphaRunning ? "working" : "idle:waiting",
+              project: "xpufx-org/alpha-app",
+            },
+            depth: 0,
+            children: [],
+          },
+          {
+            agent: {
+              id: "orch-beta",
+              shortId: "ob",
+              name: "Orchestrator · xpufx-org/beta-core",
+              category: "orchestrator",
+              status: cycle.betaRunning ? "running" : "idle",
+              deterministicState: cycle.betaRunning ? "working" : "idle:waiting",
+              project: "xpufx-org/beta-core",
+            },
+            depth: 0,
+            children: [],
+          },
+        ];
+
+        const result = buildProjectGroups(tree, {
+          enrolledRepos: repos,
+          repoQueuedHooks: {
+            "xpufx-org/gamma-service": cycle.gammaHooks,
+            "xpufx-org/beta-core": cycle.betaHooks,
+          },
+        });
+
+        const names = result.enrolledGroups.map((g) => g.projectName);
+        assert.deepEqual(
+          names,
+          ["xpufx-org/alpha-app", "xpufx-org/beta-core", "xpufx-org/gamma-service"],
+          `Presentation order must not jump in polling refresh cycle ${i + 1}`
+        );
+      }
+    });
+
+    it("supports configurable sort by activity / last_change with deterministic tie-breaking", () => {
+      const groupA: ProjectAgentGroup = {
+        projectName: "xpufx-org/alpha",
+        isEnrolled: true,
+        isDetached: false,
+        orchestrators: [],
+        unparentedWorkers: [],
+        allAgents: [
+          {
+            id: "a1",
+            name: "worker-1",
+            category: "worker",
+            status: "idle",
+            lastActivityAt: "2026-09-30T10:00:00.000Z",
+          } as UppidiAgent,
+        ],
+        runningCount: 0,
+        totalCount: 1,
+      };
+
+      const groupB: ProjectAgentGroup = {
+        projectName: "xpufx-org/beta",
+        isEnrolled: true,
+        isDetached: false,
+        orchestrators: [],
+        unparentedWorkers: [],
+        allAgents: [
+          {
+            id: "b1",
+            name: "worker-2",
+            category: "worker",
+            status: "running",
+            lastActivityAt: "2026-09-30T10:30:00.000Z",
+          } as UppidiAgent,
+        ],
+        runningCount: 1,
+        totalCount: 1,
+      };
+
+      const groupC: ProjectAgentGroup = {
+        projectName: "xpufx-org/charlie",
+        isEnrolled: true,
+        isDetached: false,
+        orchestrators: [],
+        unparentedWorkers: [],
+        allAgents: [
+          {
+            id: "c1",
+            name: "worker-3",
+            category: "worker",
+            status: "idle",
+            // Equal activity time to groupA to test tie-breaker
+            lastActivityAt: "2026-09-30T10:00:00.000Z",
+          } as UppidiAgent,
+        ],
+        runningCount: 0,
+        totalCount: 1,
+      };
+
+      // Default desc for activity: newest first
+      const sortedDesc = sortProjectGroups([groupA, groupC, groupB], "activity", "desc");
+      assert.deepEqual(
+        sortedDesc.map((g) => g.projectName),
+        ["xpufx-org/beta", "xpufx-org/alpha", "xpufx-org/charlie"]
+      );
+
+      // Asc for activity: oldest first
+      const sortedAsc = sortProjectGroups([groupA, groupC, groupB], "activity", "asc");
+      assert.deepEqual(
+        sortedAsc.map((g) => g.projectName),
+        ["xpufx-org/alpha", "xpufx-org/charlie", "xpufx-org/beta"]
+      );
+    });
+
+    it("supports configurable sort by creation / created with deterministic tie-breaking", () => {
+      const groupA: ProjectAgentGroup = {
+        projectName: "xpufx-org/repo-first",
+        isEnrolled: true,
+        isDetached: false,
+        orchestrators: [],
+        unparentedWorkers: [],
+        allAgents: [
+          {
+            id: "a1",
+            name: "w1",
+            category: "worker",
+            status: "idle",
+            created: "2026-09-30T08:00:00.000Z",
+          } as UppidiAgent,
+        ],
+        runningCount: 0,
+        totalCount: 1,
+      };
+
+      const groupB: ProjectAgentGroup = {
+        projectName: "xpufx-org/repo-second",
+        isEnrolled: true,
+        isDetached: false,
+        orchestrators: [],
+        unparentedWorkers: [],
+        allAgents: [
+          {
+            id: "b1",
+            name: "w2",
+            category: "worker",
+            status: "idle",
+            created: "2026-09-30T09:00:00.000Z",
+          } as UppidiAgent,
+        ],
+        runningCount: 0,
+        totalCount: 1,
+      };
+
+      const sortedAsc = sortProjectGroups([groupB, groupA], "creation", "asc");
+      assert.deepEqual(
+        sortedAsc.map((g) => g.projectName),
+        ["xpufx-org/repo-first", "xpufx-org/repo-second"]
+      );
+
+      const sortedDesc = sortProjectGroups([groupA, groupB], "creation", "desc");
+      assert.deepEqual(
+        sortedDesc.map((g) => g.projectName),
+        ["xpufx-org/repo-second", "xpufx-org/repo-first"]
+      );
+    });
+
+    it("always keeps enrolled before detached and Default Project last", () => {
+      const enrolled1: ProjectAgentGroup = {
+        projectName: "xpufx-org/zebra",
+        isEnrolled: true,
+        isDetached: false,
+        orchestrators: [],
+        unparentedWorkers: [],
+        allAgents: [],
+        runningCount: 0,
+        totalCount: 0,
+      };
+
+      const enrolled2: ProjectAgentGroup = {
+        projectName: "xpufx-org/aardvark",
+        isEnrolled: true,
+        isDetached: false,
+        orchestrators: [],
+        unparentedWorkers: [],
+        allAgents: [],
+        runningCount: 0,
+        totalCount: 0,
+      };
+
+      const detached1: ProjectAgentGroup = {
+        projectName: "local-scratch-z",
+        isEnrolled: false,
+        isDetached: true,
+        orchestrators: [],
+        unparentedWorkers: [],
+        allAgents: [],
+        runningCount: 0,
+        totalCount: 0,
+      };
+
+      const detached2: ProjectAgentGroup = {
+        projectName: "local-scratch-a",
+        isEnrolled: false,
+        isDetached: true,
+        orchestrators: [],
+        unparentedWorkers: [],
+        allAgents: [],
+        runningCount: 0,
+        totalCount: 0,
+      };
+
+      const defaultProj: ProjectAgentGroup = {
+        projectName: "Default Project",
+        isEnrolled: false,
+        isDetached: true,
+        orchestrators: [],
+        unparentedWorkers: [],
+        allAgents: [],
+        runningCount: 0,
+        totalCount: 0,
+      };
+
+      const sorted = sortProjectGroups(
+        [defaultProj, detached1, enrolled1, detached2, enrolled2],
+        "alphabetical",
+        "asc"
+      );
+
+      assert.deepEqual(
+        sorted.map((g) => g.projectName),
+        [
+          "xpufx-org/aardvark",
+          "xpufx-org/zebra",
+          "local-scratch-a",
+          "local-scratch-z",
+          "Default Project",
+        ]
+      );
+    });
+
+    it("buildProjectGroups forwards sortField and sortDirection options", () => {
+      const tree: UppidiAgentTreeNode[] = [
+        {
+          agent: {
+            id: "a1",
+            shortId: "a1",
+            name: "Orchestrator · repo-a",
+            category: "orchestrator",
+            status: "idle",
+            deterministicState: "idle:waiting",
+            project: "repo-a",
+            created: "2026-09-30T01:00:00.000Z",
+          },
+          depth: 0,
+          children: [],
+        },
+        {
+          agent: {
+            id: "b1",
+            shortId: "b1",
+            name: "Orchestrator · repo-b",
+            category: "orchestrator",
+            status: "idle",
+            deterministicState: "idle:waiting",
+            project: "repo-b",
+            created: "2026-09-30T02:00:00.000Z",
+          },
+          depth: 0,
+          children: [],
+        },
+      ];
+
+      const resAsc = buildProjectGroups(tree, {
+        enrolledRepos: ["repo-a", "repo-b"],
+        sortField: "alphabetical",
+        sortDirection: "asc",
+      });
+      assert.deepEqual(resAsc.enrolledGroups.map((g) => g.projectName), ["repo-a", "repo-b"]);
+
+      const resDesc = buildProjectGroups(tree, {
+        enrolledRepos: ["repo-a", "repo-b"],
+        sortField: "alphabetical",
+        sortDirection: "desc",
+      });
+      assert.deepEqual(resDesc.enrolledGroups.map((g) => g.projectName), ["repo-b", "repo-a"]);
+    });
+
+    it("safely handles empty arrays and agents with missing timestamps", () => {
+      assert.deepEqual(sortProjectGroups([]), []);
+
+      const dummyGroup: ProjectAgentGroup = {
+        projectName: "repo-empty",
+        isEnrolled: true,
+        isDetached: false,
+        orchestrators: [],
+        unparentedWorkers: [],
+        allAgents: [
+          {
+            id: "x1",
+            name: "agent-without-dates",
+            category: "worker",
+            status: "idle",
+          } as UppidiAgent,
+        ],
+        runningCount: 0,
+        totalCount: 1,
+      };
+
+      assert.equal(getProjectGroupCreationTime(dummyGroup), 0);
+      assert.equal(getProjectGroupActivityTime(dummyGroup), 0);
+      const sorted = sortProjectGroups([dummyGroup], "activity");
+      assert.equal(sorted.length, 1);
+      assert.equal(sorted[0].projectName, "repo-empty");
     });
   });
 });

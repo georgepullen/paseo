@@ -64,6 +64,8 @@ import {
   STATUS_LIGHT_COLORS,
   isRepoMatching,
   type ProjectAgentGroup,
+  type ProjectSortField,
+  type SortDirection,
 } from "../shared/sort-filter.js";
 
 export {
@@ -103,6 +105,12 @@ export interface UppidiFleetTreeViewProps {
   selectedRepo?: string;
   /** Agent id currently registered as Front Desk with the hook daemon (#470). */
   registeredFrontDeskAgentId?: string | null;
+  /** Presentation sort field for project / repository groups (#796). Defaults to 'alphabetical'. */
+  repoSortField?: ProjectSortField;
+  onRepoSortFieldChange?: (field: ProjectSortField) => void;
+  /** Presentation sort direction for project / repository groups (#796). */
+  repoSortDirection?: SortDirection;
+  onRepoSortDirectionChange?: (dir: SortDirection) => void;
 }
 
 export interface AgentStatusLightProps {
@@ -2472,6 +2480,10 @@ export const UppidiFleetTreeView: React.FC<UppidiFleetTreeViewProps> = ({
   onToggleRepoMute,
   selectedRepo,
   registeredFrontDeskAgentId,
+  repoSortField: propsRepoSortField,
+  onRepoSortFieldChange,
+  repoSortDirection: propsRepoSortDirection,
+  onRepoSortDirectionChange,
 }) => {
   const { colors, typography } = usePluginTheme();
   const toast = useToast();
@@ -2481,6 +2493,36 @@ export const UppidiFleetTreeView: React.FC<UppidiFleetTreeViewProps> = ({
   const [localBulkArchiving, setLocalBulkArchiving] = useState(false);
   const [frontDeskLoading, setFrontDeskLoading] = useState(false);
   const [actionLoadingRepo, setActionLoadingRepo] = useState<string | null>(null);
+
+  // Presentation sort order state (#796)
+  const [localRepoSortField, setLocalRepoSortField] = useState<ProjectSortField>(
+    propsRepoSortField ?? "alphabetical"
+  );
+  const [localRepoSortDir, setLocalRepoSortDir] = useState<SortDirection>(
+    propsRepoSortDirection ?? "asc"
+  );
+
+  const repoSortField = propsRepoSortField ?? localRepoSortField;
+  const repoSortDir = propsRepoSortDirection ?? localRepoSortDir;
+
+  const cycleRepoSort = () => {
+    let nextField: ProjectSortField = "alphabetical";
+    let nextDir: SortDirection = "asc";
+    if (repoSortField === "alphabetical" || repoSortField === "name") {
+      nextField = "activity";
+      nextDir = "desc";
+    } else if (repoSortField === "activity" || repoSortField === "last_change") {
+      nextField = "creation";
+      nextDir = "asc";
+    } else {
+      nextField = "alphabetical";
+      nextDir = "asc";
+    }
+    setLocalRepoSortField(nextField);
+    setLocalRepoSortDir(nextDir);
+    onRepoSortFieldChange?.(nextField);
+    onRepoSortDirectionChange?.(nextDir);
+  };
 
   // Collapsible tracking states
   const [collapsedProjects, setCollapsedProjects] = useState<Record<string, boolean>>({});
@@ -2746,29 +2788,33 @@ export const UppidiFleetTreeView: React.FC<UppidiFleetTreeViewProps> = ({
     return filterAgentTree(baseTree, matches);
   }, [baseTree, query, stateFilter]);
 
-  // 4. Group by Front Desk and Projects (#403, #426, #470)
+  // 4. Group by Front Desk and Projects (#403, #426, #470, #796)
   const { frontDeskNodes, staleFrontDeskNodes: filteredStaleFrontDeskNodes, enrolledGroups, detachedGroups } = useMemo(() => {
     return buildProjectGroups(filteredTree, {
       enrolledRepos: agentsData?.enrolledRepos,
       mutedRepos: agentsData?.mutedRepos,
       repoQueuedHooks: agentsData?.repoQueuedHooks,
       registeredFrontDeskAgentId,
+      sortField: repoSortField,
+      sortDirection: repoSortDir,
     });
-  }, [filteredTree, agentsData, registeredFrontDeskAgentId]);
+  }, [filteredTree, agentsData, registeredFrontDeskAgentId, repoSortField, repoSortDir]);
 
-  // Unfiltered Front Desk nodes for top display when filter is active (#470)
+  // Unfiltered Front Desk nodes for top display when filter is active (#470, #796)
   const { primaryFrontDeskNode, staleFrontDeskNodes } = useMemo(() => {
     const result = buildProjectGroups(baseTree, {
       enrolledRepos: agentsData?.enrolledRepos,
       mutedRepos: agentsData?.mutedRepos,
       repoQueuedHooks: agentsData?.repoQueuedHooks,
       registeredFrontDeskAgentId,
+      sortField: repoSortField,
+      sortDirection: repoSortDir,
     });
     return {
       primaryFrontDeskNode: result.frontDeskNodes[0] ?? null,
       staleFrontDeskNodes: result.staleFrontDeskNodes,
     };
-  }, [baseTree, agentsData, registeredFrontDeskAgentId]);
+  }, [baseTree, agentsData, registeredFrontDeskAgentId, repoSortField, repoSortDir]);
 
   const displayEnrolled = useMemo(() => {
     let list = enrolledGroups;
@@ -3032,6 +3078,17 @@ export const UppidiFleetTreeView: React.FC<UppidiFleetTreeViewProps> = ({
             size="sm"
             variant="ghost"
             onPress={toggleAllProjects}
+            style={{ paddingVertical: 2, minHeight: 24 }}
+          />
+        )}
+        {allProjects.length > 0 && (
+          <Button
+            label={`Sort: ${repoSortField === "alphabetical" || repoSortField === "name" ? "Name" : repoSortField === "activity" || repoSortField === "last_change" ? "Activity" : "Created"}${repoSortDir === "desc" ? " ↓" : " ↑"}`}
+            icon="ListOrdered"
+            size="sm"
+            variant="ghost"
+            onPress={cycleRepoSort}
+            accessibilityLabel={`Sort repositories: currently ${repoSortField}`}
             style={{ paddingVertical: 2, minHeight: 24 }}
           />
         )}
