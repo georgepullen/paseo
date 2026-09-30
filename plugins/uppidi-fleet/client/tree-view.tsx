@@ -1,5 +1,5 @@
 import React, { useMemo, useRef, useState, useEffect } from "react";
-import { Animated, Linking, Platform, Pressable, ScrollView, Text, View } from "react-native";
+import { Animated, Linking, Platform, Pressable, ScrollView, Text, View, type NativeSyntheticEvent, type NativeScrollEvent } from "react-native";
 import {
   AttentionBeacon,
   Badge,
@@ -1100,6 +1100,48 @@ export function FrontDeskWatchDrawer({
     return items;
   }, [items, filterMode]);
 
+  const [followScroll, setFollowScroll] = useState(true);
+  const scrollViewRef = useRef<ScrollView>(null);
+  const prevCountRef = useRef(displayedItems.length);
+
+  // Auto-scroll to bottom when new items arrive if follow-scroll is active
+  useEffect(() => {
+    if (followScroll && displayedItems.length > 0) {
+      scrollViewRef.current?.scrollToEnd({ animated: true });
+    }
+    prevCountRef.current = displayedItems.length;
+  }, [displayedItems.length, followScroll]);
+
+  const handleContentSizeChange = () => {
+    if (followScroll && displayedItems.length > 0) {
+      scrollViewRef.current?.scrollToEnd({ animated: true });
+    }
+  };
+
+  const handleScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    const { layoutMeasurement, contentOffset, contentSize } = event.nativeEvent;
+    if (contentSize.height <= layoutMeasurement.height) {
+      return;
+    }
+    const distanceFromBottom = contentSize.height - (layoutMeasurement.height + contentOffset.y);
+    const isAtBottom = distanceFromBottom <= 24;
+
+    if (isAtBottom) {
+      if (!followScroll) {
+        setFollowScroll(true);
+      }
+    } else {
+      if (followScroll) {
+        setFollowScroll(false);
+      }
+    }
+  };
+
+  const handleResumeScroll = () => {
+    setFollowScroll(true);
+    scrollViewRef.current?.scrollToEnd({ animated: true });
+  };
+
     const handleSendPrompt = async () => {
     const text = promptText.trim();
     if (!text) return;
@@ -1253,6 +1295,7 @@ export function FrontDeskWatchDrawer({
           {/* Activity Timeline View */}
           <View
             style={{
+              position: "relative",
               maxHeight: 380,
               minHeight: 120,
               borderWidth: 1,
@@ -1263,9 +1306,13 @@ export function FrontDeskWatchDrawer({
             }}
           >
             <ScrollView
+              ref={scrollViewRef}
               nestedScrollEnabled
               contentContainerStyle={{ padding: 10, gap: 8 }}
               showsVerticalScrollIndicator
+              onScroll={handleScroll}
+              scrollEventThrottle={16}
+              onContentSizeChange={handleContentSizeChange}
             >
               {isLoading && items.length === 0 ? (
                 <EmptyState
@@ -1294,6 +1341,36 @@ export function FrontDeskWatchDrawer({
                 ))
               )}
             </ScrollView>
+
+            {!followScroll && displayedItems.length > 0 && (
+              <View
+                testID="frontdesk-resume-scroll-button"
+                style={{
+                  position: "absolute",
+                  bottom: 8,
+                  right: 10,
+                  zIndex: 10,
+                }}
+              >
+                <Button
+                  label="Resume scroll"
+                  icon="ChevronDown"
+                  size="sm"
+                  variant="secondary"
+                  onPress={handleResumeScroll}
+                  accessibilityLabel="Resume scroll"
+                  style={{
+                    backgroundColor: colors.surface2 ?? colors.surface1,
+                    borderColor: colors.border,
+                    borderWidth: 1,
+                    borderRadius: 14,
+                    paddingHorizontal: 8,
+                    paddingVertical: 3,
+                    minHeight: 24,
+                  }}
+                />
+              </View>
+            )}
           </View>
 
           {/* Direct Operator Prompt Bar */}

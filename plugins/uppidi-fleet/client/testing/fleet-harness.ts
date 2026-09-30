@@ -19,7 +19,23 @@ const REACT_URL = pathToFileURL(require.resolve("react")).href;
 const RN_STUB_SOURCE = `
 import React from ${JSON.stringify(REACT_URL)};
 function stub(name) {
-  function RNStub(props) { return React.createElement(name, props, props?.children); }
+  function RNStub(props) {
+    if (props && props.ref) {
+      if (typeof props.ref === "function") {
+        props.ref({
+          scrollToEnd: (opts) => { props.ref.lastScrollToEnd = opts ?? true; },
+          scrollTo: (opts) => { props.ref.lastScrollTo = opts; },
+        });
+      } else if (typeof props.ref === "object") {
+        props.ref.current = {
+          scrollToEnd: (opts) => { props.ref.lastScrollToEnd = opts ?? true; },
+          scrollTo: (opts) => { props.ref.lastScrollTo = opts; },
+        };
+      }
+    }
+    const { ref, ...rest } = props || {};
+    return React.createElement(name, rest, props?.children);
+  }
   Object.defineProperty(RNStub, "name", { value: "RN" + name });
   return RNStub;
 }
