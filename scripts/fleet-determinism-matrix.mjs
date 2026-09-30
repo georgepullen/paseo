@@ -588,6 +588,36 @@ const PARTS = [
     note: "Renders server state and writes back through the deterministic role-model and settings RPCs. The model picker configures another row's spawn; it does not run a model, so it stays deterministic here.",
   },
   {
+    file: `${PLUGIN}/client/forges-tab.tsx`,
+    part: "Forge issues surface: query, filtering, issue rows, status badges",
+    layer: "client",
+    label: DETERMINISTIC,
+    anchors: {
+      exports: ["forgeOpenIssuesContract", "forgeContextContract", "ForgeIssuesView", "ForgesTabView"],
+    },
+    evidence: [
+      [`forges-tab.tsx:21-70`, "declares RPC query contracts for forge open issues and context"],
+      [`forges-tab.tsx:96-100`, "reads issues over useRpcQuery"],
+      [`forges-tab.tsx:110-125`, "filters issues by client query without model interaction"],
+    ],
+    note: "Renders forge issues for the workspace and filters them deterministically.",
+  },
+  {
+    file: `${PLUGIN}/client/kanban-board.tsx`,
+    part: "Fleet Kanban board: column mapping, transitions, ticket cards",
+    layer: "client",
+    label: DETERMINISTIC,
+    anchors: {
+      exports: ["KANBAN_COLUMNS", "getIssueKanbanColumn", "getColumnTransitions", "KanbanCard", "UppidiFleetKanbanBoard"],
+    },
+    evidence: [
+      [`kanban-board.tsx:21-50`, "static column definitions and status mappings"],
+      [`kanban-board.tsx:52-92`, "maps issue labels and state to kanban columns deterministically"],
+      [`kanban-board.tsx:101-124`, "determines valid next column transition targets"],
+    ],
+    note: "Interactive Kanban board mapping issues across lifecycle states.",
+  },
+  {
     file: `${PLUGIN}/client/tree-view.tsx`,
     part: "Agent tree rendering: status lights, health gauges, metrics cards, rows, project groups",
     layer: "client",
