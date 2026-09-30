@@ -1460,7 +1460,7 @@ export class HookRouter {
   private queues = new Map<string, QueueEntry[]>();
   private pausedQueues = new Set<string>();
   private busyQueues = new Set<string>();
-  private busyAttempts = new Map<string, number>();
+  public busyAttempts = new Map<string, number>();
   private droppedCount = new Map<string, number>();
   private draining = new Set<string>();
   private backoffTimers = new Map<string, NodeJS.Timeout>();
@@ -1483,7 +1483,7 @@ export class HookRouter {
   public readonly boardSweepIntervalMs: number;
   public readonly frontDeskThrottleMs: number;
   private lastDeliveryTimes = new Map<string, number>();
-  private latestAgentMap: Map<string, WatchdogAgent> | null = null;
+  public latestAgentMap: Map<string, WatchdogAgent> | null = null;
   private watchdogTimer: NodeJS.Timeout | null = null;
   private boardSweepTimer: NodeJS.Timeout | null = null;
 
@@ -2030,6 +2030,43 @@ export class HookRouter {
       return true;
     }
 
+    const paseo = this.getPaseo();
+    let currentFromRef: any = null;
+    if (paseo?.agents?.ref) {
+      try {
+        const ref = paseo.agents.ref(agentId);
+        currentFromRef = ref?.current ? ref.current() : null;
+      } catch {
+        // Proceed if status check fails
+      }
+    }
+
+    if (currentFromRef) {
+      const isRefBusy = Boolean(
+        currentFromRef.status === "running" ||
+          (currentFromRef.status as string) === "working" ||
+          (currentFromRef.status as string) === "busy" ||
+          Boolean(currentFromRef.activeTurn)
+      );
+      if (isRefBusy) return true;
+      // If live ref is explicitly idle and no explicit agentMap was passed,
+      // update cached map so stale watchdog cache doesn't mask it (#795)
+      if (!agentMap && this.latestAgentMap?.has(agentId)) {
+        const cached = this.latestAgentMap.get(agentId)!;
+        cached.status = currentFromRef.status ?? "idle";
+        cached.activeTurn = null;
+      }
+      if (!agentMap) {
+        if (isFd && this.frontDeskThrottleMs > 0) {
+          const last = this.lastDeliveryTimes.get(agentId) ?? 0;
+          if (Date.now() - last < this.frontDeskThrottleMs) {
+            return true;
+          }
+        }
+        return false;
+      }
+    }
+
     const map = agentMap ?? this.latestAgentMap;
     if (map?.has(agentId)) {
       const agent = map.get(agentId);
@@ -2041,25 +2078,6 @@ export class HookRouter {
           Boolean(agent.activeTurn))
       ) {
         return true;
-      }
-    }
-
-    const paseo = this.getPaseo();
-    if (paseo?.agents?.ref) {
-      try {
-        const ref = paseo.agents.ref(agentId);
-        const current = ref?.current ? ref.current() : null;
-        if (
-          current &&
-          (current.status === "running" ||
-            (current.status as string) === "working" ||
-            (current.status as string) === "busy" ||
-            Boolean(current.activeTurn))
-        ) {
-          return true;
-        }
-      } catch {
-        // Proceed if status check fails
       }
     }
 
@@ -3427,50 +3445,157 @@ export class HookRouter {
     return { ok: true, repo: rawKey, purgedMessages, fileRemoved };
   }
 
+  public getLatestAgentMap(): Map<string, WatchdogAgent> | null {
+    return this.latestAgentMap;
+  }
+
+  public setLatestAgentMap(map: Map<string, WatchdogAgent> | null): void {
+    this.latestAgentMap = map;
+  }
+
+  public updateAgentCache(agentId: string, patch: Partial<WatchdogAgent>): void {
+    if (!agentId || !this.latestAgentMap) return;
+    const existing = this.latestAgentMap.get(agentId);
+    if (existing) {
+      Object.assign(existing, patch);
+    } else {
+      this.latestAgentMap.set(agentId, { id: agentId, ...patch });
+    }
+  }
+
+  public invalidateAgentCache(agentId?: string): void {
+    if (!this.latestAgentMap) return;
+    if (!agentId) {
+      this.latestAgentMap = null;
+    } else {
+      this.latestAgentMap.delete(agentId);
+    }
+  }
+
+  public resetBusyForAgent(agentId: string, triggerDrain = false): void {
+    const frontDesk = this.readFrontDesk();
+    if (frontDesk?.agentId === agentId) {
+      this.busyQueues.delete("frontdesk");
+      this.busyAttempts.delete("frontdesk");
+      this.lastDeliveryTimes.delete(agentId);
+      const timer = this.backoffTimers.get("frontdesk");
+      if (timer) {
+        clearTimeout(timer);
+        this.backoffTimers.delete("frontdesk");
+      }
+      if (triggerDrain && !this.isRepoMuted("frontdesk")) {
+        void this.drain("frontdesk");
+      }
+    }
+
+    for (const [key, items] of this.queues.entries()) {
+      if (key === "frontdesk") continue;
+      const orch = this.readOrchestrator(key);
+      if (orch?.agentId === agentId) {
+        this.busyQueues.delete(key);
+        this.busyAttempts.delete(key);
+        const timer = this.backoffTimers.get(key);
+        if (timer) {
+          clearTimeout(timer);
+          this.backoffTimers.delete(key);
+        }
+        if (triggerDrain && items.length > 0 && !this.isRepoMuted(key)) {
+          void this.drain(key);
+        }
+      }
+    }
+
+    for (const key of Array.from(this.busyAttempts.keys())) {
+      if (key === "frontdesk") continue;
+      const orch = this.readOrchestrator(key);
+      if (orch?.agentId === agentId) {
+        this.busyQueues.delete(key);
+        this.busyAttempts.delete(key);
+        const timer = this.backoffTimers.get(key);
+        if (timer) {
+          clearTimeout(timer);
+          this.backoffTimers.delete(key);
+        }
+      }
+    }
+  }
+
+  public handleLifecycleEvent(name: string, event: any, context?: any): void {
+    if (context?.paseo) {
+      this.activePaseo = context.paseo;
+    }
+    const agent = event?.agent ?? event;
+    const agentId = agent?.id ?? agent?.agentId;
+    if (!agentId) return;
+
+    if (name === "agent.turn_ended") {
+      this.log(`[info] Agent turn ended for agent ${agentId}, triggering queue drain`);
+      if (this.latestAgentMap) {
+        const existing = this.latestAgentMap.get(agentId);
+        if (existing) {
+          existing.status = "idle";
+          existing.activeTurn = null;
+        } else {
+          this.latestAgentMap.set(agentId, { id: agentId, status: "idle", activeTurn: null });
+        }
+      }
+      this.resetBusyForAgent(agentId, true);
+    } else if (name === "agent.turn_started") {
+      if (this.latestAgentMap) {
+        const existing = this.latestAgentMap.get(agentId);
+        if (existing) {
+          existing.status = "running";
+          existing.activeTurn = { startedAt: new Date().toISOString() };
+        } else {
+          this.latestAgentMap.set(agentId, {
+            id: agentId,
+            status: "running",
+            activeTurn: { startedAt: new Date().toISOString() },
+          });
+        }
+      }
+    } else if (name === "agent.updated" || name === "agent_update" || name === "agent.status") {
+      const status = agent.status ?? (agent.activeTurn ? "running" : undefined);
+      if (this.latestAgentMap) {
+        const existing = this.latestAgentMap.get(agentId);
+        if (existing) {
+          if (status !== undefined) existing.status = status;
+          if (agent.activeTurn !== undefined) existing.activeTurn = agent.activeTurn;
+        } else if (status !== undefined) {
+          this.latestAgentMap.set(agentId, { id: agentId, status, activeTurn: agent.activeTurn ?? null });
+        }
+      }
+      if (status === "idle" || status === "stopped" || status === "closed") {
+        this.resetBusyForAgent(agentId, true);
+      }
+    }
+  }
+
   private bindLifecycleEvents(): void {
     if (this.unsubscribeLifecycle) return;
     if (this.server && typeof this.server.on === "function") {
-      this.unsubscribeLifecycle = this.server.on("agent.turn_ended", async (event, context) => {
-        if (context?.paseo) {
-          this.activePaseo = context.paseo;
+      const unsubs: Array<() => void> = [];
+      const safeOn = (name: string, handler: (event: any, context?: any) => Promise<void> | void) => {
+        try {
+          const off = (this.server as any).on(name, handler);
+          if (typeof off === "function") unsubs.push(off);
+        } catch {
+          // Event unsupported
         }
-        const endedAgentId = event?.agent?.id;
-        if (!endedAgentId) return;
+      };
 
-        this.log(`[info] Agent turn ended for agent ${endedAgentId}, triggering queue drain`);
+      safeOn("agent.turn_ended", (event, context) => this.handleLifecycleEvent("agent.turn_ended", event, context));
+      safeOn("agent.turn_started", (event, context) => this.handleLifecycleEvent("agent.turn_started", event, context));
+      safeOn("agent.updated", (event, context) => this.handleLifecycleEvent("agent.updated", event, context));
+      safeOn("agent_update", (event, context) => this.handleLifecycleEvent("agent_update", event, context));
 
-        // Immediate event-driven draining for any queue targeting this agent
-        const frontDesk = this.readFrontDesk();
-        if (frontDesk?.agentId === endedAgentId) {
-          this.busyQueues.delete("frontdesk");
-          this.busyAttempts.delete("frontdesk");
-          this.lastDeliveryTimes.delete(endedAgentId);
-          const timer = this.backoffTimers.get("frontdesk");
-          if (timer) {
-            clearTimeout(timer);
-            this.backoffTimers.delete("frontdesk");
-          }
-          if (!this.isRepoMuted("frontdesk")) {
-            void this.drain("frontdesk");
-          }
+      this.unsubscribeLifecycle = () => {
+        for (const off of unsubs) {
+          try {
+            off();
+          } catch {}
         }
-
-        for (const [key, items] of this.queues.entries()) {
-          if (key === "frontdesk" || items.length === 0) continue;
-          if (this.isRepoMuted(key)) continue;
-          const orch = this.readOrchestrator(key);
-          if (orch?.agentId === endedAgentId) {
-            this.busyQueues.delete(key);
-            this.busyAttempts.delete(key);
-            const timer = this.backoffTimers.get(key);
-            if (timer) {
-              clearTimeout(timer);
-              this.backoffTimers.delete(key);
-            }
-            void this.drain(key);
-          }
-        }
-      });
+      };
     }
   }
 
@@ -3528,17 +3653,41 @@ export class HookRouter {
 
         if (!isBusy && agentRef) {
           try {
-            const currentSnapshot = agentRef.current ? agentRef.current() : null;
-            const refreshed = (!currentSnapshot && agentRef.refresh) ? await agentRef.refresh().catch(() => null) : null;
-            const agent = refreshed?.agent ?? currentSnapshot;
+            let currentSnapshot = agentRef.current ? agentRef.current() : null;
+            let isSnapshotBusy = Boolean(
+              currentSnapshot &&
+                (currentSnapshot.status === "running" ||
+                  (currentSnapshot.status as string) === "working" ||
+                  (currentSnapshot.status as string) === "busy" ||
+                  Boolean(currentSnapshot.activeTurn))
+            );
 
-            if (
-              agent &&
-              (agent.status === "running" ||
-                (agent.status as string) === "working" ||
-                (agent.status as string) === "busy" ||
-                Boolean(agent.activeTurn))
-            ) {
+            // If snapshot is busy (or absent) and refresh is available, perform fresh live lookup via agentRef
+            if ((isSnapshotBusy || !currentSnapshot) && typeof agentRef.refresh === "function") {
+              const refreshed: any = await agentRef.refresh().catch(() => null);
+              const refreshedAgent = refreshed?.agent ?? (refreshed?.status ? refreshed : null);
+              if (refreshedAgent) {
+                currentSnapshot = refreshedAgent;
+                isSnapshotBusy = Boolean(
+                  refreshedAgent.status === "running" ||
+                    (refreshedAgent.status as string) === "working" ||
+                    (refreshedAgent.status as string) === "busy" ||
+                    Boolean(refreshedAgent.activeTurn)
+                );
+                // If refreshed state transitioned to idle, update cache and reset busy attempts (#795)
+                if (!isSnapshotBusy) {
+                  if (this.latestAgentMap?.has(targetAgentId)) {
+                    const entry = this.latestAgentMap.get(targetAgentId)!;
+                    entry.status = refreshedAgent.status ?? "idle";
+                    entry.activeTurn = null;
+                  }
+                  this.busyAttempts.delete(key);
+                  this.busyQueues.delete(key);
+                }
+              }
+            }
+
+            if (isSnapshotBusy) {
               isBusy = true;
             }
           } catch {
@@ -3546,16 +3695,93 @@ export class HookRouter {
           }
         }
 
+        // Check periodic latestAgentMap cache.
+        // If cached state is busy, perform a live check / fresh lookup rather than trusting stale cache (#795).
         if (!isBusy && this.latestAgentMap?.has(targetAgentId)) {
-          const agent = this.latestAgentMap.get(targetAgentId);
-          if (
-            agent &&
-            (agent.status === "running" ||
-              agent.status === "working" ||
-              agent.status === "busy" ||
-              Boolean(agent.activeTurn))
-          ) {
-            isBusy = true;
+          const cachedAgent = this.latestAgentMap.get(targetAgentId);
+          const isCachedBusy = Boolean(
+            cachedAgent &&
+              (cachedAgent.status === "running" ||
+                cachedAgent.status === "working" ||
+                cachedAgent.status === "busy" ||
+                Boolean(cachedAgent.activeTurn))
+          );
+
+          if (isCachedBusy) {
+            let liveVerified = false;
+            let isLiveBusy = false;
+
+            // 1. If agentRef is available, use it for live verification
+            if (agentRef) {
+              try {
+                if (typeof agentRef.refresh === "function") {
+                  const refreshed: any = await agentRef.refresh().catch(() => null);
+                  const refAgent = refreshed?.agent ?? (refreshed?.status ? refreshed : null);
+                  if (refAgent) {
+                    liveVerified = true;
+                    isLiveBusy = Boolean(
+                      refAgent.status === "running" ||
+                        (refAgent.status as string) === "working" ||
+                        (refAgent.status as string) === "busy" ||
+                        Boolean(refAgent.activeTurn)
+                    );
+                  }
+                } else if (typeof agentRef.current === "function") {
+                  const curr = agentRef.current();
+                  if (curr) {
+                    liveVerified = true;
+                    isLiveBusy = Boolean(
+                      curr.status === "running" ||
+                        (curr.status as string) === "working" ||
+                        (curr.status as string) === "busy" ||
+                        Boolean(curr.activeTurn)
+                    );
+                  }
+                }
+              } catch {
+                // fall through to fetchAgentMap
+              }
+            }
+
+            // 2. If not verified via agentRef, query fresh roster via fetchAgentMap
+            if (!liveVerified) {
+              try {
+                const freshMap = await this.fetchAgentMap();
+                if (freshMap) {
+                  liveVerified = true;
+                  this.latestAgentMap = freshMap;
+                  const freshAgent = freshMap.get(targetAgentId);
+                  isLiveBusy = Boolean(
+                    freshAgent &&
+                      (freshAgent.status === "running" ||
+                        freshAgent.status === "working" ||
+                        freshAgent.status === "busy" ||
+                        Boolean(freshAgent.activeTurn))
+                  );
+                }
+              } catch {
+                // fall through
+              }
+            }
+
+            if (liveVerified) {
+              if (isLiveBusy) {
+                isBusy = true;
+              } else {
+                isBusy = false;
+                // Transition to idle detected: update cache and reset attempts
+                if (this.latestAgentMap?.has(targetAgentId)) {
+                  const entry = this.latestAgentMap.get(targetAgentId)!;
+                  entry.status = "idle";
+                  entry.activeTurn = null;
+                }
+                this.busyAttempts.delete(key);
+                this.busyQueues.delete(key);
+              }
+            } else {
+              // If live lookup completely failed, fall back to cached busy
+              isBusy = true;
+            }
           }
         }
 
