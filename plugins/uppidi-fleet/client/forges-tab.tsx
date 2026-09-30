@@ -1,7 +1,6 @@
 import React, { useState, useMemo, useCallback, useContext } from "react";
 import { View, Text, StyleSheet, Linking, Pressable } from "react-native";
 import { useWorkspace } from "@getpaseo/plugin/client";
-import { PluginClientStateProvider, type PluginClientStateSource } from "@getpaseo/plugin/client/host";
 import {
   Card,
   CardHeader,
@@ -28,31 +27,7 @@ import { defineContract } from "paseo-plugin-helper/shared";
 import { z } from "zod";
 import { isRepoMatching } from "../shared/sort-filter.js";
 
-const probe = PluginClientStateProvider({ children: null, source: null as any });
-const PluginClientStateContext = ((probe as any)?.type?._context || (probe as any)?.type) as React.Context<PluginClientStateSource | null>;
 
-export function usePluginClientStateSource(): PluginClientStateSource | null {
-  if (!PluginClientStateContext) return null;
-  return useContext(PluginClientStateContext);
-}
-
-const EMPTY_CLIENT_STATE_SOURCE: PluginClientStateSource = {
-  subscribe: () => () => {},
-  getWorkspace: () => null,
-  getAgent: () => null,
-};
-
-export function EnsurePluginClientState({ children }: { children: React.ReactNode }) {
-  const source = usePluginClientStateSource();
-  if (source) {
-    return <>{children}</>;
-  }
-  return (
-    <PluginClientStateProvider source={EMPTY_CLIENT_STATE_SOURCE}>
-      {children}
-    </PluginClientStateProvider>
-  );
-}
 
 export const forgeOpenIssuesContract = defineContract({
   name: "forge.open-issues",
@@ -398,11 +373,7 @@ function ForgeIssuesViewInner({
 }
 
 export function ForgeIssuesView(props: ForgeIssuesViewProps) {
-  return (
-    <EnsurePluginClientState>
-      <ForgeIssuesViewInner {...props} />
-    </EnsurePluginClientState>
-  );
+  return <ForgeIssuesViewInner {...props} />;
 }
 
 export const ForgesTabView = ForgeIssuesView;
