@@ -29,24 +29,52 @@ describe("resolveDaemonHost", () => {
 });
 
 describe("resolveDaemonWsUrl", () => {
-  it("prefixes bare host:port with ws://", () => {
-    expect(resolveDaemonWsUrl("10.20.30.24:6767")).toBe("ws://10.20.30.24:6767");
+  it("appends /ws to bare host:port", () => {
+    expect(resolveDaemonWsUrl("10.20.30.24:6767")).toBe("ws://10.20.30.24:6767/ws");
+    expect(resolveDaemonWsUrl("10.20.30.24:6767/")).toBe("ws://10.20.30.24:6767/ws");
   });
 
-  it("passes explicit ws urls through", () => {
+  it("appends /ws to bare ws:// and wss:// urls lacking path or with trailing slash", () => {
+    expect(resolveDaemonWsUrl("ws://10.20.30.24:6767")).toBe("ws://10.20.30.24:6767/ws");
+    expect(resolveDaemonWsUrl("ws://10.20.30.24:6767/")).toBe("ws://10.20.30.24:6767/ws");
+  });
+
+  it("preserves /ws when already present without duplicating it", () => {
+    expect(resolveDaemonWsUrl("10.20.30.24:6767/ws")).toBe("ws://10.20.30.24:6767/ws");
+    expect(resolveDaemonWsUrl("ws://10.20.30.24:6767/ws")).toBe("ws://10.20.30.24:6767/ws");
+    expect(resolveDaemonWsUrl("ws://10.20.30.24:6767/ws/")).toBe("ws://10.20.30.24:6767/ws");
+  });
+
+  it("preserves explicit custom path urls", () => {
     expect(resolveDaemonWsUrl("wss://fleet.example/x")).toBe("wss://fleet.example/x");
   });
 
-  it("prefers VITE_PASEO_DAEMON_URL", () => {
+  it("handles DEFAULT_DAEMON_HOST when called without arguments", () => {
+    expect(resolveDaemonWsUrl()).toBe(`ws://${DEFAULT_DAEMON_HOST}/ws`);
+  });
+
+  it("respects VITE_PASEO_DAEMON_HOST", () => {
+    vi.stubEnv("VITE_PASEO_DAEMON_HOST", "fleet-box:6767");
+    expect(resolveDaemonWsUrl()).toBe("ws://fleet-box:6767/ws");
+  });
+
+  it("prefers VITE_PASEO_DAEMON_URL and appends /ws when absent", () => {
     vi.stubEnv("VITE_PASEO_DAEMON_URL", "ws://relay:9999");
-    expect(resolveDaemonWsUrl("10.20.30.24:6767")).toBe("ws://relay:9999");
+    expect(resolveDaemonWsUrl("10.20.30.24:6767")).toBe("ws://relay:9999/ws");
+  });
+
+  it("respects VITE_PASEO_DAEMON_URL when /ws is already present", () => {
+    vi.stubEnv("VITE_PASEO_DAEMON_URL", "ws://relay:9999/ws");
+    expect(resolveDaemonWsUrl("10.20.30.24:6767")).toBe("ws://relay:9999/ws");
   });
 });
 
 describe("resolveDaemonHttpUrl", () => {
-  it("maps ws to http and wss to https", () => {
+  it("maps ws to http and wss to https while stripping /ws", () => {
     expect(resolveDaemonHttpUrl("10.20.30.24:6767")).toBe("http://10.20.30.24:6767");
+    expect(resolveDaemonHttpUrl("ws://10.20.30.24:6767/ws")).toBe("http://10.20.30.24:6767");
     expect(resolveDaemonHttpUrl("wss://fleet.example/x")).toBe("https://fleet.example/x");
+    expect(resolveDaemonHttpUrl()).toBe(`http://${DEFAULT_DAEMON_HOST}`);
   });
 });
 

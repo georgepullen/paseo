@@ -21,19 +21,65 @@ export function resolveDaemonHost(): string {
   return readEnv("VITE_PASEO_DAEMON_HOST") ?? DEFAULT_DAEMON_HOST;
 }
 
+function ensureWsUrl(raw: string): string {
+  const trimmed = raw.trim();
+  let withScheme = trimmed;
+  if (/^https?:\/\//i.test(trimmed)) {
+    withScheme = trimmed.replace(/^http/i, "ws");
+  } else if (!/^wss?:\/\//i.test(trimmed)) {
+    withScheme = `ws://${trimmed}`;
+  }
+
+  try {
+    const parsed = new URL(withScheme);
+    if (!parsed.pathname || parsed.pathname === "/") {
+      parsed.pathname = "/ws";
+    } else if (parsed.pathname === "/ws/") {
+      parsed.pathname = "/ws";
+    } else if (parsed.pathname.endsWith("/ws/")) {
+      parsed.pathname = parsed.pathname.slice(0, -1);
+    }
+    return parsed.toString();
+  } catch {
+    if (withScheme.endsWith("/ws")) return withScheme;
+    if (withScheme.endsWith("/ws/")) return withScheme.slice(0, -1);
+    if (withScheme.endsWith("/")) return `${withScheme}ws`;
+    return `${withScheme}/ws`;
+  }
+}
+
 export function resolveDaemonWsUrl(host?: string): string {
   const explicit = readEnv("VITE_PASEO_DAEMON_URL");
-  if (explicit) return explicit;
-  const target = (host ?? resolveDaemonHost()).trim();
-  if (/^wss?:\/\//i.test(target)) return target;
-  return `ws://${target}`;
+  const target = explicit ?? host ?? resolveDaemonHost();
+  return ensureWsUrl(target);
 }
 
 export function resolveDaemonHttpUrl(host?: string): string {
   const ws = resolveDaemonWsUrl(host);
-  if (ws.startsWith("wss://")) return `https://${ws.slice("wss://".length)}`;
-  if (ws.startsWith("ws://")) return `http://${ws.slice("ws://".length)}`;
-  return ws;
+  let http: string;
+  if (ws.startsWith("wss://")) {
+    http = `https://${ws.slice("wss://".length)}`;
+  } else if (ws.startsWith("ws://")) {
+    http = `http://${ws.slice("ws://".length)}`;
+  } else {
+    http = ws;
+  }
+
+  try {
+    const parsed = new URL(http);
+    let p = parsed.pathname;
+    if (p === "/ws" || p === "/ws/") {
+      p = "";
+    } else if (p.endsWith("/ws/")) {
+      p = p.slice(0, -"/ws/".length);
+    } else if (p.endsWith("/ws")) {
+      p = p.slice(0, -"/ws".length);
+    }
+    const pathPart = p === "/" ? "" : p;
+    return `${parsed.origin}${pathPart}${parsed.search}${parsed.hash}`;
+  } catch {
+    return http.replace(/\/ws\/?([?#]|$)/, "$1").replace(/\/$/, "");
+  }
 }
 
 export function resolveDaemonToken(): string | undefined {
