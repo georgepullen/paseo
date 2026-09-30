@@ -435,6 +435,7 @@ export interface WatchdogAgent {
   title?: string | null;
   name?: string | null;
   status?: string | null;
+  role?: string | null;
   provider?: string | null;
   model?: string | null;
   deterministicState?: string | null;
@@ -1251,6 +1252,7 @@ export interface PruneResult {
   ok: boolean;
   prunedCount: number;
   pruned: Array<{ key: string; agentId: string; reason: string }>;
+  dryRun?: boolean;
   error?: string;
 }
 
@@ -2662,6 +2664,7 @@ export class HookRouter {
   public async pruneOrchestrators(opts: {
     agentMap?: Map<string, WatchdogAgent> | null;
     orchestratorRecords?: OrchestratorRecord[];
+    dryRun?: boolean;
   } = {}): Promise<PruneResult> {
     let agentMap = opts.agentMap ?? null;
     if (!agentMap) {
@@ -2676,13 +2679,17 @@ export class HookRouter {
     for (const record of orchRecords) {
       const { key, agentId } = record;
       if (!agentId || !agentMap.has(agentId)) {
-        const res = this.deleteOrchestrator(key);
-        if (res.ok) {
-          pruned.push({ key, agentId, reason: "agent not found on daemon" });
+        if (!opts.dryRun) {
+          const res = this.deleteOrchestrator(key);
+          if (res.ok) {
+            pruned.push({ key, agentId, reason: "agent not found on daemon" });
+          }
+        } else {
+          pruned.push({ key, agentId, reason: "agent not found on daemon (dry-run)" });
         }
       }
     }
-    return { ok: true, prunedCount: pruned.length, pruned };
+    return { ok: true, prunedCount: pruned.length, pruned, ...(opts.dryRun ? { dryRun: true } : {}) };
   }
 
   // -------------------------------------------------------------------------
@@ -2805,6 +2812,166 @@ export class HookRouter {
       handoffPath: this.handoffPath(),
       summary: this.handoffSummary(snapshot),
       orchestratorsNotified: notified,
+    };
+  }
+
+  public async generateHandoff(opts?: {
+    io?: IssuesCheckIo;
+    agentMap?: Map<string, WatchdogAgent> | null;
+  }): Promise<HandoffResult & { report: string; ok: boolean }> {
+    const agentMap = opts?.agentMap ?? (await this.fetchAgentMap()) ?? new Map<string, WatchdogAgent>();
+    const orchRecords = this.listOrchestratorRecords();
+    const enrolledRepos = this.getEnrolledRepos().filter((r) => r && r !== "frontdesk");
+    const frontDesk = this.readFrontDesk();
+
+    const activeWorkers: Array<{ id: string; title: string; status: string; parentAgentId?: string }> = [];
+    for (const [id, agent] of agentMap.entries()) {
+      const role = String(agent.role ?? "").toLowerCase();
+      const title = String(agent.title ?? "");
+      const isWorker =
+        role === "worker" ||
+        role === "coding_worker" ||
+        title.toLowerCase().startsWith("worker:") ||
+        Boolean(agent.labels?.["paseo.parent-agent-id"]);
+      if (isWorker) {
+        activeWorkers.push({
+          id,
+          title: title || "(untitled worker)",
+          status: String(agent.status ?? "unknown"),
+          parentAgentId: agent.labels?.["paseo.parent-agent-id"],
+        });
+      }
+    }
+
+    const repoSummaries: Array<{
+      repo: string;
+      orchestrator: string | null;
+      orchestratorStatus: string | null;
+      blocking: Array<{ number: number; title: string; reason: string }>;
+      inReview: Array<{ number: number; title: string }>;
+      wip: Array<{ number: number; title: string }>;
+      dispatchableCount: number;
+      error?: string;
+    }> = [];
+
+    for (const repo of enrolledRepos) {
+      const orch = this.readOrchestrator(repo);
+      const orchLive = orch?.agentId ? agentMap.get(orch.agentId) : null;
+      const blocking: Array<{ number: number; title: string; reason: string }> = [];
+      const inReview: Array<{ number: number; title: string }> = [];
+      const wip: Array<{ number: number; title: string }> = [];
+      let dispatchableCount = 0;
+      let error: string | undefined;
+
+      try {
+        const check = await this.runBoardCheck(repo, undefined, opts?.io);
+        if (check.ok && Array.isArray(check.candidates)) {
+          for (const c of check.candidates) {
+            const labels = Array.isArray(c.labels) ? c.labels : [];
+            const isBlocking = labels.some(
+              (l: string) =>
+                l.startsWith("dep/blocked") ||
+                l === "priority/0-sos" ||
+                l === "flag/stop-work" ||
+                l === "attention/2-user" ||
+                l === "attention/frontdesk",
+            );
+            if (isBlocking) {
+              blocking.push({ number: c.number, title: c.title, reason: c.reason });
+            }
+            const isReview = labels.some(
+              (l: string) => l.startsWith("review/") || l === "state/2-review" || l === "state/3-verify",
+            );
+            if (isReview) {
+              inReview.push({ number: c.number, title: c.title });
+            }
+            const isWip = labels.includes("state/1-wip");
+            if (isWip) {
+              wip.push({ number: c.number, title: c.title });
+            }
+            if (c.is_dispatchable) {
+              dispatchableCount++;
+            }
+          }
+        } else if (check.error) {
+          error = check.error;
+        }
+      } catch (err) {
+        error = err instanceof Error ? err.message : String(err);
+      }
+
+      repoSummaries.push({
+        repo,
+        orchestrator: orch?.agentId ?? null,
+        orchestratorStatus: orchLive ? String(orchLive.status ?? "alive") : orch?.agentId ? "unreachable" : "none",
+        blocking,
+        inReview,
+        wip,
+        dispatchableCount,
+        error,
+      });
+    }
+
+    const lines: string[] = [
+      "# Fleet Shift Handoff Report",
+      `*Generated at: ${new Date().toISOString()}*`,
+      "",
+      "## Fleet Overview",
+      `- Enrolled Repositories: ${enrolledRepos.length}`,
+      `- Registered Orchestrators: ${orchRecords.length}`,
+      `- Active Worker Agents: ${activeWorkers.length}`,
+      `- Front Desk: ${frontDesk?.agentId ? `${frontDesk.agentId} (${frontDesk.by ?? "unknown"})` : "None"}`,
+      "",
+      "## Active Worker Assignments",
+    ];
+
+    if (activeWorkers.length === 0) {
+      lines.push("No active worker agents running.");
+    } else {
+      for (const w of activeWorkers) {
+        lines.push(`- **\`${w.id}\`** [${w.status}] - ${w.title}${w.parentAgentId ? ` (parent: \`${w.parentAgentId}\`)` : ""}`);
+      }
+    }
+
+    lines.push("", "## Repository Status");
+    for (const r of repoSummaries) {
+      lines.push(`### \`${r.repo}\``);
+      lines.push(`- **Orchestrator**: ${r.orchestrator ? `\`${r.orchestrator}\` (${r.orchestratorStatus})` : "_None registered_"}`);
+      if (r.error) {
+        lines.push(`- **Triage Error**: ${r.error}`);
+      }
+      if (r.blocking.length > 0) {
+        lines.push(`- **Blocking / Attention Required** (${r.blocking.length}):`);
+        for (const b of r.blocking) {
+          lines.push(`  - #${b.number}: ${b.title} (${b.reason})`);
+        }
+      } else {
+        lines.push("- **Blocking / Attention Required**: None");
+      }
+      if (r.inReview.length > 0) {
+        lines.push(`- **In Review / PRs** (${r.inReview.length}):`);
+        for (const pr of r.inReview) {
+          lines.push(`  - #${pr.number}: ${pr.title}`);
+        }
+      } else {
+        lines.push("- **In Review / PRs**: None");
+      }
+      if (r.wip.length > 0) {
+        lines.push(`- **In Progress (WIP)** (${r.wip.length}):`);
+        for (const w of r.wip) {
+          lines.push(`  - #${w.number}: ${w.title}`);
+        }
+      }
+      lines.push(`- **Dispatchable Candidates**: ${r.dispatchableCount}`);
+      lines.push("");
+    }
+
+    const report = lines.join("\n").trim();
+    const handoffResult = await this.doFrontDeskHandoff({ handoffText: report });
+    return {
+      ...handoffResult,
+      ok: true,
+      report,
     };
   }
 
@@ -3206,6 +3373,60 @@ export class HookRouter {
     return count;
   }
 
+  public purgeQueue(repo: string): { ok: boolean; repo: string; purgedMessages: number; fileRemoved: boolean; error?: string } {
+    const rawKey = String(repo ?? "").trim();
+    if (!rawKey) {
+      return { ok: false, repo: rawKey, purgedMessages: 0, fileRemoved: false, error: "Repository parameter is required" };
+    }
+
+    const canonical = canonicalRepoKey(rawKey) ?? rawKey;
+    const matchingKeys = new Set<string>([rawKey, canonical]);
+    for (const k of this.queues.keys()) {
+      if (k === rawKey || canonicalRepoKey(k) === canonical) {
+        matchingKeys.add(k);
+      }
+    }
+
+    let purgedMessages = 0;
+    let fileRemoved = false;
+
+    for (const key of matchingKeys) {
+      const entries = this.queues.get(key);
+      if (entries) {
+        purgedMessages += entries.length;
+        this.queues.delete(key);
+      }
+      const timer = this.backoffTimers.get(key);
+      if (timer) {
+        clearTimeout(timer);
+        this.backoffTimers.delete(key);
+      }
+      this.busyQueues.delete(key);
+      this.draining.delete(key);
+      this.busyAttempts.delete(key);
+      this.droppedCount.delete(key);
+
+      const target = this.queueFilePath(key);
+      try {
+        if (existsSync(target)) {
+          unlinkSync(target);
+          fileRemoved = true;
+        }
+      } catch {}
+
+      const jsonlTarget = join(this.queueDir, `${sanitizeKey(key)}.jsonl`);
+      try {
+        if (existsSync(jsonlTarget)) {
+          unlinkSync(jsonlTarget);
+          fileRemoved = true;
+        }
+      } catch {}
+    }
+
+    this.log(`[info] Purged queue for ${rawKey}: ${purgedMessages} message(s) purged, fileRemoved=${fileRemoved}`);
+    return { ok: true, repo: rawKey, purgedMessages, fileRemoved };
+  }
+
   private bindLifecycleEvents(): void {
     if (this.unsubscribeLifecycle) return;
     if (this.server && typeof this.server.on === "function") {
@@ -3469,6 +3690,24 @@ export class HookRouter {
       uptime: this.getUptime(),
       paused: Array.from(this.pausedQueues),
       queues: queueItems,
+    };
+  }
+
+  public inspectQueues(repo?: string): Record<string, unknown> {
+    const overview = this.getQueuesOverview();
+    const queues = (overview.queues as Array<Record<string, unknown>>) ?? [];
+    if (!repo || !repo.trim()) {
+      return overview;
+    }
+    const rawTarget = repo.trim();
+    const canonicalTarget = canonicalRepoKey(rawTarget) ?? rawTarget;
+    const filtered = queues.filter((q) => {
+      const k = String(q.key ?? "");
+      return k === rawTarget || canonicalRepoKey(k) === canonicalTarget || k.toLowerCase().includes(rawTarget.toLowerCase());
+    });
+    return {
+      ...overview,
+      queues: filtered,
     };
   }
 
@@ -3736,6 +3975,16 @@ export class HookRouter {
         return;
       }
 
+      if (req.method === "POST" && (pathname === "/frontdesk-handoff/generate" || pathname === "/handoff/generate")) {
+        try {
+          const out = await this.generateHandoff();
+          this.sendJson(res, 200, out);
+        } catch (err: any) {
+          this.sendJson(res, Number(err?.status) || 500, { ok: false, error: err?.message ?? String(err) });
+        }
+        return;
+      }
+
       if (req.method === "POST" && pathname === "/orchestrators/prune") {
         try {
           const result = await this.pruneOrchestrators();
@@ -3823,6 +4072,20 @@ export class HookRouter {
         const target = drainMatch ? decodeURIComponent(drainMatch[1]) : (body?.repo as string | undefined);
         void this.drain(target);
         this.sendJson(res, 200, { ok: true, draining: target ?? "all" });
+        return;
+      }
+
+      // Queue purge endpoints: POST /queues/:key/purge or POST /queue/purge
+      const purgeMatch = pathname.match(/^\/queues\/(.+)\/purge$/);
+      if (req.method === "POST" && (purgeMatch || pathname === "/queue/purge")) {
+        const body = await this.readJsonBody(req).catch(() => ({}));
+        const target = purgeMatch ? decodeURIComponent(purgeMatch[1]) : (body?.repo as string | undefined);
+        if (!target) {
+          this.sendJson(res, 400, { ok: false, error: "Repository is required for queue purge" });
+          return;
+        }
+        const outcome = this.purgeQueue(target);
+        this.sendJson(res, 200, outcome);
         return;
       }
 
