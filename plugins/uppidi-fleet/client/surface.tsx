@@ -1061,7 +1061,10 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
     for (const r of toRepoList(agentsData?.enrolledRepos)) set.add(r);
     for (const q of toList(hookQueues?.queues)) if (q?.key) set.add(q.key);
     for (const i of toList(issuesData?.issues)) if (i?.repo) set.add(i.repo);
-    return Array.from(set);
+    // Stable presentation order (#796): defaultRepo first, remaining repositories sorted alphabetically
+    const list = Array.from(set);
+    const others = list.filter((r) => r !== defaultRepo).sort((a, b) => a.localeCompare(b));
+    return [defaultRepo, ...others];
   }, [issuesData?.repo, issuesData?.issues, agentsData?.enrolledRepos, hookQueues?.queues]);
 
   const repoOptions = useMemo<SelectOption[]>(() => [

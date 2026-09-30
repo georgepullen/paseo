@@ -795,6 +795,32 @@ describe("uppidi-fleet client entry contract", () => {
       );
     });
 
+    it("verifies stable presentation order and sort controls in tree-view and surface (#796)", () => {
+      const treeViewPath = path.resolve(__dirname, "tree-view.tsx");
+      const treeViewSource = fs.readFileSync(treeViewPath, "utf8");
+
+      assert.match(
+        treeViewSource,
+        /repoSortField\?:?\s*ProjectSortField/,
+        "UppidiFleetTreeViewProps must declare repoSortField prop (#796)",
+      );
+      assert.match(
+        treeViewSource,
+        /sortField:\s*repoSortField/,
+        "tree-view must pass repoSortField to buildProjectGroups (#796)",
+      );
+      assert.match(
+        treeViewSource,
+        /icon="ListOrdered"/,
+        "tree-view toolbar must include a sort order button (#796)",
+      );
+      assert.match(
+        surfaceSource,
+        /others = list\.filter\(.*?\)\.sort\(/,
+        "surface.tsx must stably sort available repos alphabetically (#796)",
+      );
+    });
+
     it("verifies Dashboard tab does not contain old Agents & Fleet Hierarchy collapsible and lives in dedicated tab (#441)", () => {
       // 1. Must not contain the old Agents & Fleet Hierarchy collapsible in dashboard
       assert.doesNotMatch(

@@ -739,16 +739,38 @@ export interface ProjectAgentGroup {
   isDetached?: boolean;
 }
 
+export type ProjectSortField =
+  | "alphabetical"
+  | "name"
+  | "activity"
+  | "last_change"
+  | "creation"
+  | "created"
+  | "running"
+  | "dynamic";
+
+export type ProjectGroupSortField = ProjectSortField;
+
 export interface BuildProjectGroupsOptions {
   enrolledRepos?: string[];
   mutedRepos?: string[];
   repoQueuedHooks?: Record<string, number>;
   /**
    * Agent id of the Front Desk currently registered with the hook daemon
-   * (``hookStatus.frontDesk.agentId``). Front Desk is a singleton; only this
+   * (`hookStatus.frontDesk.agentId`). Front Desk is a singleton; only this
    * session is elevated as the authoritative primary Front Desk.
    */
   registeredFrontDeskAgentId?: string | null;
+  /**
+   * Field to sort repository/project groups by (#796).
+   * Defaults to 'alphabetical' for a stable presentation order across polling refreshes.
+   */
+  sortField?: ProjectSortField;
+  /**
+   * Direction to sort repository/project groups by (#796).
+   * Defaults to 'asc' for alphabetical / creation, and 'desc' for activity.
+   */
+  sortDirection?: SortDirection;
 }
 
 export interface BuildProjectGroupsResult {
@@ -1028,32 +1050,14 @@ export function buildProjectGroups(
     };
   });
 
-  // Sort projects:
-  // 1. Enrolled before detached
-  // 2. Running active projects first
-  // 3. Projects with queued hooks
-  // 4. Default Project always last
-  // 5. Alphabetical tie-breaker
-  projectGroups.sort((a, b) => {
-    // Detached always placed after enrolled
-    if (a.isDetached !== b.isDetached) {
-      return a.isDetached ? 1 : -1;
-    }
-    if (a.runningCount > 0 && b.runningCount === 0) return -1;
-    if (b.runningCount > 0 && a.runningCount === 0) return 1;
+  const sortField = options?.sortField ?? "alphabetical";
+  const sortDirection =
+    options?.sortDirection ??
+    (sortField === "activity" || sortField === "last_change" ? "desc" : "asc");
 
-    const aQueued = a.queuedHooksCount ?? 0;
-    const bQueued = b.queuedHooksCount ?? 0;
-    if (aQueued > 0 && bQueued === 0) return -1;
-    if (bQueued > 0 && aQueued === 0) return 1;
-
-    if (a.projectName === "Default Project" && b.projectName !== "Default Project") return 1;
-    if (b.projectName === "Default Project" && a.projectName !== "Default Project") return -1;
-    return a.projectName.localeCompare(b.projectName);
-  });
-
-  const enrolledGroups = projectGroups.filter((g) => !g.isDetached);
-  const detachedGroups = projectGroups.filter((g) => g.isDetached);
+  const sortedProjectGroups = sortProjectGroups(projectGroups, sortField, sortDirection);
+  const enrolledGroups = sortedProjectGroups.filter((g) => !g.isDetached);
+  const detachedGroups = sortedProjectGroups.filter((g) => g.isDetached);
 
   const { primary, stale } = selectPrimaryFrontDeskNode(
     frontDeskCandidates,
@@ -1063,8 +1067,138 @@ export function buildProjectGroups(
   return {
     frontDeskNodes: primary ? [primary] : [],
     staleFrontDeskNodes: stale,
-    projectGroups,
+    projectGroups: sortedProjectGroups,
     enrolledGroups,
     detachedGroups,
   };
+}
+
+function parseTimestamp(val?: string | number | null): number {
+  if (!val) return 0;
+  if (typeof val === "number") return isNaN(val) ? 0 : val;
+  const parsed = Date.parse(val);
+  return isNaN(parsed) ? 0 : parsed;
+}
+
+/**
+ * Derives the earliest inception/creation timestamp for a project group (#796).
+ * Safely handles missing/partial timestamps across all agents in the group.
+ */
+export function getProjectGroupCreationTime(group: ProjectAgentGroup): number {
+  if (!group || !Array.isArray(group.allAgents) || group.allAgents.length === 0) return 0;
+  let minTime = Infinity;
+  for (const agent of group.allAgents) {
+    if (!agent) continue;
+    const candidates = [
+      parseTimestamp(agent.created),
+      parseTimestamp(agent.updatedAt),
+      parseTimestamp(agent.lastActivityAt),
+    ];
+    for (const t of candidates) {
+      if (t > 0 && t < minTime) minTime = t;
+    }
+  }
+  return minTime === Infinity ? 0 : minTime;
+}
+
+/**
+ * Derives the most recent activity timestamp for a project group (#796).
+ * Evaluates lastActivityAt, activeTurnStartedAt, updatedAt, attentionTimestamp, and created.
+ */
+export function getProjectGroupActivityTime(group: ProjectAgentGroup): number {
+  if (!group || !Array.isArray(group.allAgents) || group.allAgents.length === 0) return 0;
+  let maxTime = 0;
+  for (const agent of group.allAgents) {
+    if (!agent) continue;
+    const candidates = [
+      parseTimestamp(agent.lastActivityAt),
+      parseTimestamp(agent.updatedAt),
+      parseTimestamp(agent.metrics?.activeTurnStartedAt),
+      parseTimestamp(agent.metrics?.attentionTimestamp),
+      parseTimestamp(agent.created),
+    ];
+    for (const t of candidates) {
+      if (t > maxTime) maxTime = t;
+    }
+  }
+  return maxTime;
+}
+
+/**
+ * Sorts project groups with deterministic presentation order and stable tie-breaking (#796).
+ *
+ * Rules:
+ * 1. Enrolled repositories always precede detached / local workspaces.
+ * 2. 'Default Project' (unparented workers fallback) is always placed last.
+ * 3. Sorting by field:
+ *    - 'alphabetical' / 'name' (default): A-Z by projectName (deterministic across polling refreshes).
+ *    - 'activity' / 'last_change': most recent agent activity timestamp first (or asc/desc by direction).
+ *    - 'creation' / 'created': earliest agent inception timestamp first (or asc/desc by direction).
+ *    - 'running' / 'dynamic': running active projects first, then queued hooks (legacy dynamic order).
+ * 4. Stable tie-breaker: deterministic alphabetical localeCompare on projectName.
+ */
+export function sortProjectGroups(
+  groups: ProjectAgentGroup[],
+  field: ProjectSortField = "alphabetical",
+  direction: SortDirection = "asc"
+): ProjectAgentGroup[] {
+  const sorted = [...(Array.isArray(groups) ? groups : [])];
+  const mul = direction === "asc" ? 1 : -1;
+
+  sorted.sort((a, b) => {
+    if (!a && !b) return 0;
+    if (!a) return 1;
+    if (!b) return -1;
+
+    // 1. Enrolled repos always come before detached repos (#426)
+    if (a.isDetached !== b.isDetached) {
+      return a.isDetached ? 1 : -1;
+    }
+
+    // 2. 'Default Project' always sorted last
+    if (a.projectName === "Default Project" && b.projectName !== "Default Project") return 1;
+    if (b.projectName === "Default Project" && a.projectName !== "Default Project") return -1;
+
+    // 3. Field-specific sorting
+    switch (field) {
+      case "activity":
+      case "last_change": {
+        const timeA = getProjectGroupActivityTime(a);
+        const timeB = getProjectGroupActivityTime(b);
+        if (timeA !== timeB) {
+          return (timeA - timeB) * mul;
+        }
+        return a.projectName.localeCompare(b.projectName);
+      }
+
+      case "creation":
+      case "created": {
+        const timeA = getProjectGroupCreationTime(a);
+        const timeB = getProjectGroupCreationTime(b);
+        if (timeA !== timeB) {
+          return (timeA - timeB) * mul;
+        }
+        return a.projectName.localeCompare(b.projectName);
+      }
+
+      case "running":
+      case "dynamic": {
+        if (a.runningCount > 0 && b.runningCount === 0) return -1;
+        if (b.runningCount > 0 && a.runningCount === 0) return 1;
+        const aQueued = a.queuedHooksCount ?? 0;
+        const bQueued = b.queuedHooksCount ?? 0;
+        if (aQueued > 0 && bQueued === 0) return -1;
+        if (bQueued > 0 && aQueued === 0) return 1;
+        return a.projectName.localeCompare(b.projectName);
+      }
+
+      case "alphabetical":
+      case "name":
+      default: {
+        return a.projectName.localeCompare(b.projectName) * mul;
+      }
+    }
+  });
+
+  return sorted;
 }
