@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { resolveDaemonHost } from "./config.js";
+import { resolveDaemonHost, resolveDaemonToken } from "./config.js";
 import { DaemonConnection, type ConnectionStatus, type FleetTeardownTarget } from "./daemon/connection.js";
 import { flattenAgents, type CandidateIssue, type FleetAgentsSnapshot } from "./types.js";
 import { ConnectionBar } from "./components/ConnectionBar.js";
@@ -10,6 +10,7 @@ import { TeardownModal } from "./components/TeardownModal.js";
 
 export function App() {
   const [host, setHost] = useState(resolveDaemonHost());
+  const [token, setToken] = useState(resolveDaemonToken() ?? "");
   const [status, setStatus] = useState<ConnectionStatus>("disconnected");
   const [snapshot, setSnapshot] = useState<FleetAgentsSnapshot | null>(null);
   const [candidates, setCandidates] = useState<CandidateIssue[]>([]);
@@ -22,7 +23,9 @@ export function App() {
   const connection = useMemo(() => {
     const next = new DaemonConnection({
       host,
+      token: token || undefined,
       onStatus: (nextStatus) => setStatus(nextStatus),
+      onError: (message) => setError(message),
       onEvent: () => {
         void refresh();
       },
@@ -55,13 +58,14 @@ export function App() {
   }, [status, refresh]);
 
   const handleConnect = useCallback(
-    async (nextHost: string) => {
+    async (nextHost: string, nextToken: string) => {
       const active = connectionRef.current;
       if (!active) return;
       setError(null);
       setHost(nextHost);
+      setToken(nextToken);
       try {
-        await active.connect(nextHost);
+        await active.connect(nextHost, nextToken);
         await refresh();
       } catch (cause) {
         setError(cause instanceof Error ? cause.message : String(cause));
@@ -104,6 +108,7 @@ export function App() {
       <ConnectionBar
         status={status}
         host={host}
+        token={token}
         wsUrl={connection.getWsUrl()}
         onConnect={handleConnect}
         onDisconnect={handleDisconnect}

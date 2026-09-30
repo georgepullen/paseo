@@ -83,7 +83,38 @@ export function resolveDaemonHttpUrl(host?: string): string {
 }
 
 export function resolveDaemonToken(): string | undefined {
-  return readEnv("VITE_PASEO_DAEMON_TOKEN");
+  return readEnv("VITE_PASEO_DAEMON_TOKEN") ?? loadStoredDaemonToken();
+}
+
+const DAEMON_TOKEN_STORAGE_KEY = "uppidi-fleet.daemon-token";
+
+function storage(): Storage | null {
+  try {
+    const holder = globalThis as unknown as { localStorage?: Storage };
+    return holder.localStorage ?? null;
+  } catch {
+    return null;
+  }
+}
+
+export function loadStoredDaemonToken(): string | undefined {
+  try {
+    const value = storage()?.getItem(DAEMON_TOKEN_STORAGE_KEY);
+    return value ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function storeDaemonToken(token: string | undefined): void {
+  const store = storage();
+  if (!store) return;
+  try {
+    if (token) store.setItem(DAEMON_TOKEN_STORAGE_KEY, token);
+    else store.removeItem(DAEMON_TOKEN_STORAGE_KEY);
+  } catch {
+    // Private-mode storage may throw; the token simply won't persist.
+  }
 }
 
 /** Split `host:port` without breaking bare IPv6 or `host` without a port. */

@@ -23,8 +23,36 @@ npm run preview  # serves dist/ on 0.0.0.0:4174
 | `VITE_PASEO_DAEMON_URL` | — | Full override, e.g. `ws://fleet-box:6767` |
 | `VITE_PASEO_DAEMON_TOKEN` | — | Daemon password when auth is enabled |
 
-Copy `.env.example` to `.env` to set them locally. The host is also editable
-in the connection bar at runtime.
+Copy `.env.example` to `.env` to set them locally. The host and token are
+also editable in the connection bar at runtime (the token persists in
+`localStorage` under `uppidi-fleet.daemon-token`).
+
+## Live daemon requirements (10.20.30.24)
+
+The dashboard opens `ws://<daemon-host>/ws` from the browser, so the daemon
+must accept that cross-origin socket. This dashboard cannot change daemon
+security settings — configure these on the daemon host:
+
+- **Listen address**: the daemon must bind a LAN-reachable address, e.g.
+  persisted `daemon.listen = "10.20.30.24:6767"` (env `PASEO_LISTEN`).
+- **CORS origins**: the browser sends `Origin: http://10.20.30.24:4174`
+  (dev: `:5174`). Both must be in the daemon allowlist — persisted
+  `daemon.cors.allowedOrigins` or env
+  `PASEO_CORS_ORIGINS="http://10.20.30.24:4174,http://10.20.30.24:5174"`.
+  A missing origin fails the handshake with HTTP 403 `Origin not allowed`,
+  which the browser reports only as `WebSocket connection to
+  'ws://10.20.30.24:6767/ws' failed`.
+- **Auth**: when the daemon has `daemon.auth.password` set (env
+  `PASEO_PASSWORD` or `paseo daemon set-password`), enter that password in
+  the connection bar Token field (or `VITE_PASEO_DAEMON_TOKEN`). A missing
+  password closes the socket with `Password required`; a wrong one with
+  `Incorrect password` (close code 4401).
+
+| Symptom in dashboard | Cause | Fix |
+| --- | --- | --- |
+| `Could not reach ws://…` right after Connect | CORS origin not allowlisted, or daemon unreachable | Add the dashboard origin to `PASEO_CORS_ORIGINS`; check `daemon.listen` |
+| `Daemon requires a password` | `daemon.auth.password` is set, no token supplied | Enter the token in the connection bar |
+| `Daemon rejected the password` | Wrong token | Re-enter the daemon password |
 
 ## What it shows
 

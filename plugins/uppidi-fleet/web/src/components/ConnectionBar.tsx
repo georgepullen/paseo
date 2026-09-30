@@ -5,8 +5,9 @@ import type { ConnectionStatus } from "../daemon/connection.js";
 interface ConnectionBarProps {
   status: ConnectionStatus;
   host: string;
+  token: string;
   wsUrl: string;
-  onConnect: (host: string) => void;
+  onConnect: (host: string, token: string) => void;
   onDisconnect: () => void;
 }
 
@@ -18,8 +19,9 @@ const STATUS_LABEL: Record<ConnectionStatus, string> = {
   failed: "Unavailable",
 };
 
-export function ConnectionBar({ status, host, wsUrl, onConnect, onDisconnect }: ConnectionBarProps) {
+export function ConnectionBar({ status, host, token, wsUrl, onConnect, onDisconnect }: ConnectionBarProps) {
   const [draft, setDraft] = useState(host);
+  const [draftToken, setDraftToken] = useState(token);
   const connected = status === "connected";
   return (
     <header className="connbar">
@@ -42,12 +44,28 @@ export function ConnectionBar({ status, host, wsUrl, onConnect, onDisconnect }: 
           spellCheck={false}
           autoComplete="off"
         />
+        <label className="muted" htmlFor="daemon-token">
+          Token
+        </label>
+        <input
+          id="daemon-token"
+          className="input"
+          type="password"
+          value={draftToken}
+          onChange={(event) => setDraftToken(event.target.value)}
+          placeholder="daemon password (if set)"
+          autoComplete="off"
+        />
         {connected ? (
           <button type="button" className="btn" onClick={onDisconnect}>
             Disconnect
           </button>
         ) : (
-          <button type="button" className="btn btn-primary" onClick={() => onConnect(draft.trim() || host)}>
+          <button
+            type="button"
+            className="btn btn-primary"
+            onClick={() => onConnect(draft.trim() || host, draftToken.trim())}
+          >
             Connect
           </button>
         )}

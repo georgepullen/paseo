@@ -1,14 +1,18 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   DEFAULT_DAEMON_HOST,
+  loadStoredDaemonToken,
   resolveDaemonHost,
   resolveDaemonHttpUrl,
+  resolveDaemonToken,
   resolveDaemonWsUrl,
   splitHostPort,
+  storeDaemonToken,
 } from "../config.js";
 
 afterEach(() => {
   vi.unstubAllEnvs();
+  localStorage.clear();
 });
 
 describe("resolveDaemonHost", () => {
@@ -75,6 +79,28 @@ describe("resolveDaemonHttpUrl", () => {
     expect(resolveDaemonHttpUrl("ws://10.20.30.24:6767/ws")).toBe("http://10.20.30.24:6767");
     expect(resolveDaemonHttpUrl("wss://fleet.example/x")).toBe("https://fleet.example/x");
     expect(resolveDaemonHttpUrl()).toBe(`http://${DEFAULT_DAEMON_HOST}`);
+  });
+});
+
+describe("resolveDaemonToken", () => {
+  it("returns undefined when neither env nor storage has a token", () => {
+    expect(resolveDaemonToken()).toBeUndefined();
+  });
+
+  it("prefers VITE_PASEO_DAEMON_TOKEN over the stored token", () => {
+    localStorage.setItem("uppidi-fleet.daemon-token", "stored");
+    expect(resolveDaemonToken()).toBe("stored");
+    vi.stubEnv("VITE_PASEO_DAEMON_TOKEN", "from-env");
+    expect(resolveDaemonToken()).toBe("from-env");
+  });
+});
+
+describe("storeDaemonToken", () => {
+  it("round-trips through localStorage and clears on empty", () => {
+    storeDaemonToken("secret");
+    expect(loadStoredDaemonToken()).toBe("secret");
+    storeDaemonToken("");
+    expect(loadStoredDaemonToken()).toBeUndefined();
   });
 });
 

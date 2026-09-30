@@ -1,4 +1,4 @@
-import { resolveDaemonHttpUrl, resolveDaemonToken, resolveDaemonWsUrl } from "../config.js";
+import { resolveDaemonHttpUrl, resolveDaemonToken, resolveDaemonWsUrl, storeDaemonToken } from "../config.js";
 import { normalizeAgentCategory, type CandidateIssue, type FleetAgentsSnapshot } from "../types.js";
 
 export type FleetTeardownTarget = "workers" | "orchestrators" | "frontdesk";
@@ -24,6 +24,7 @@ interface ConnectionOptions {
   token?: string;
   onStatus?: (status: ConnectionStatus) => void;
   onEvent?: (event: DaemonEvent) => void;
+  onError?: (message: string) => void;
 }
 
 export type ConnectionStatus = "disconnected" | "connecting" | "connected" | "reconnecting" | "failed";
@@ -46,6 +47,21 @@ type DaemonClientCtor = new (config: Record<string, unknown>) => DaemonClientLik
 const MAX_BACKOFF_MS = 30_000;
 const BASE_BACKOFF_MS = 1_000;
 
+/** Turn a dial failure into an actionable dashboard message. */
+export function classifyConnectionError(raw: string, wsUrl: string): string {
+  if (/password required/i.test(raw)) {
+    return "Daemon requires a password: enter the daemon token and reconnect.";
+  }
+  if (/incorrect password/i.test(raw)) {
+    return "Daemon rejected the password: check the token and reconnect.";
+  }
+  return (
+    `Could not reach ${wsUrl}. ` +
+    "If the browser blocks the socket, add this dashboard origin to the daemon CORS list " +
+    "(PASEO_CORS_ORIGINS) and retry."
+  );
+}
+
 export class DaemonConnection {
   private status: ConnectionStatus = "disconnected";
   private client: DaemonClientLike | null = null;
@@ -53,8 +69,10 @@ export class DaemonConnection {
   private ctorFailed = false;
   private host: string;
   private token: string | undefined;
+  private lastError: string | null = null;
   private onStatus: ((status: ConnectionStatus) => void) | undefined;
   private onEvent: ((event: DaemonEvent) => void) | undefined;
+  private onError: ((message: string) => void) | undefined;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private reconnectAttempt = 0;
   private closed = false;
@@ -65,10 +83,23 @@ export class DaemonConnection {
     this.token = options.token;
     this.onStatus = options.onStatus;
     this.onEvent = options.onEvent;
+    this.onError = options.onError;
   }
 
   getStatus(): ConnectionStatus {
     return this.status;
+  }
+
+  getLastError(): string | null {
+    return this.lastError;
+  }
+
+  setToken(token: string | undefined): void {
+    this.token = token && token.length > 0 ? token : undefined;
+  }
+
+  getToken(): string | undefined {
+    return this.token ?? resolveDaemonToken();
   }
 
   getHost(): string {
@@ -93,10 +124,15 @@ export class DaemonConnection {
     return Math.min(MAX_BACKOFF_MS, BASE_BACKOFF_MS * 2 ** Math.min(Math.max(0, attempt), 5));
   }
 
-  async connect(host?: string): Promise<void> {
+  async connect(host?: string, token?: string): Promise<void> {
     if (host !== undefined) this.host = host;
+    if (token !== undefined) {
+      this.setToken(token);
+      storeDaemonToken(this.token);
+    }
     this.closed = false;
     this.reconnectAttempt = 0;
+    this.lastError = null;
     this.setStatus("connecting");
     await this.dial();
   }
@@ -148,8 +184,12 @@ export class DaemonConnection {
       await client.connect();
       this.client = client;
       this.reconnectAttempt = 0;
+      this.lastError = null;
       this.setStatus("connected");
-    } catch {
+    } catch (cause) {
+      const raw = cause instanceof Error ? cause.message : String(cause);
+      this.lastError = classifyConnectionError(raw, this.getWsUrl());
+      this.onError?.(this.lastError);
       this.scheduleReconnect();
     }
   }
