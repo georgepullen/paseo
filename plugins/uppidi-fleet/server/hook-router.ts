@@ -28,6 +28,7 @@ export interface RouterConfig {
   port?: number;
   mutedRepos?: string[];
   enrolledRepos?: string[];
+  autoProvisionOrchestrators?: boolean;
 }
 
 export function getAvailableNetworkInterfaces(): string[] {
@@ -79,6 +80,10 @@ export function loadRouterConfig(customPath?: string): RouterConfig {
           port: typeof parsed.port === "number" && !isNaN(parsed.port) ? parsed.port : undefined,
           mutedRepos: Array.isArray(parsed.mutedRepos) ? parsed.mutedRepos.filter((r: unknown) => typeof r === "string") : undefined,
           enrolledRepos: Array.isArray(parsed.enrolledRepos) ? parsed.enrolledRepos.filter((r: unknown) => typeof r === "string") : undefined,
+          autoProvisionOrchestrators:
+            typeof parsed.autoProvisionOrchestrators === "boolean"
+              ? parsed.autoProvisionOrchestrators
+              : undefined,
         };
       }
     } catch {
@@ -99,6 +104,10 @@ export function saveRouterConfig(config: RouterConfig, customPath?: string): voi
     ...config,
     mutedRepos: config.mutedRepos !== undefined ? config.mutedRepos : existing.mutedRepos,
     enrolledRepos: config.enrolledRepos !== undefined ? config.enrolledRepos : existing.enrolledRepos,
+    autoProvisionOrchestrators:
+      config.autoProvisionOrchestrators !== undefined
+        ? config.autoProvisionOrchestrators
+        : existing.autoProvisionOrchestrators,
   };
   const tmp = `${configPath}.${process.pid}.${Date.now()}.tmp`;
   writeFileSync(tmp, JSON.stringify(merged, null, 2), "utf8");
@@ -111,6 +120,9 @@ export function saveRouterConfig(config: RouterConfig, customPath?: string): voi
     if (merged.port !== undefined) updateData.hookPort = merged.port;
     if (merged.enrolledRepos !== undefined) updateData.enrolledRepos = merged.enrolledRepos;
     if (merged.mutedRepos !== undefined) updateData.mutedRepos = merged.mutedRepos;
+    if (merged.autoProvisionOrchestrators !== undefined) {
+      updateData.autoProvisionOrchestrators = merged.autoProvisionOrchestrators;
+    }
     if (Object.keys(updateData).length > 0) {
       storage.update((prev) => ({ ...prev, ...updateData }));
     }
@@ -133,6 +145,8 @@ export interface HookRouterOptions {
   watchdogBusyThreshold?: number;
   watchdogAlertCooldownMs?: number;
   boardSweepIntervalMs?: number;
+  autoProvisionOrchestrators?: boolean;
+  provisionFailureCooldownMs?: number;
   frontDeskThrottleMs?: number;
   workspacesData?: any[];
   projectsData?: any[];
@@ -1319,7 +1333,17 @@ export interface BoardCheckResult {
 export interface BoardSweepResult {
   ok: boolean;
   swept: number;
-  actionable: Array<{ repo: string; count: number; dispatchable: number }>;
+  actionable: Array<{
+    repo: string;
+    count: number;
+    dispatchable: number;
+    orchestrator?: {
+      agentId?: string | null;
+      status: "existing" | "provisioned" | "failed" | "dampened" | "none";
+      error?: string;
+    };
+  }>;
+  autoProvisioned?: Array<{ repo: string; agentId: string }>;
   notified: number;
   /** Repos whose board check failed; surfaced to the caller and Front Desk. */
   errors?: Array<{ repo: string; error: string }>;
@@ -1515,6 +1539,8 @@ export class HookRouter {
   public readonly watchdogAlertCooldownMs: number;
   public readonly boardSweepIntervalMs: number;
   public readonly frontDeskThrottleMs: number;
+  public readonly provisionFailureCooldownMs: number;
+  public readonly provisionFailures = new Map<string, number>();
   private lastDeliveryTimes = new Map<string, number>();
   public latestAgentMap: Map<string, WatchdogAgent> | null = null;
   private watchdogTimer: NodeJS.Timeout | null = null;
@@ -1598,6 +1624,10 @@ export class HookRouter {
         : isTestMode
           ? 0
           : Number(process.env.HOOK_FRONTDESK_THROTTLE_MS ?? 2000);
+    this.provisionFailureCooldownMs =
+      options?.provisionFailureCooldownMs !== undefined
+        ? options.provisionFailureCooldownMs
+        : Number(process.env.PROVISION_FAILURE_COOLDOWN_MS ?? 15 * 60 * 1000);
 
     mkdirSync(this.queueDir, { recursive: true });
     mkdirSync(this.stateDir, { recursive: true });
@@ -2211,6 +2241,81 @@ export class HookRouter {
     }
   }
 
+  public isAutoProvisionOrchestratorsEnabled(): boolean {
+    if (this.options?.autoProvisionOrchestrators !== undefined) {
+      return Boolean(this.options.autoProvisionOrchestrators);
+    }
+    try {
+      const settings = getUppidiFleetSettingsStorage().read();
+      if (settings?.autoProvisionOrchestrators !== undefined) {
+        return Boolean(settings.autoProvisionOrchestrators);
+      }
+    } catch {
+      // ignore
+    }
+    const persisted = loadRouterConfig(this.configPath);
+    if (persisted?.autoProvisionOrchestrators !== undefined) {
+      return Boolean(persisted.autoProvisionOrchestrators);
+    }
+    return true;
+  }
+
+  public canAttemptProvision(repo: string, now = Date.now()): boolean {
+    const canonicalKey = canonicalRepoKey(repo) ?? repo;
+    const lastFailure = this.provisionFailures.get(canonicalKey);
+    if (lastFailure === undefined) {
+      return true;
+    }
+    return now - lastFailure >= this.provisionFailureCooldownMs;
+  }
+
+  public recordProvisionFailure(repo: string, now = Date.now()): void {
+    const canonicalKey = canonicalRepoKey(repo) ?? repo;
+    this.provisionFailures.set(canonicalKey, now);
+  }
+
+  public clearProvisionFailure(repo: string): void {
+    const canonicalKey = canonicalRepoKey(repo) ?? repo;
+    this.provisionFailures.delete(canonicalKey);
+  }
+
+  public async getActiveOrchestrator(
+    repo: string,
+    cachedAgentMap?: Map<string, WatchdogAgent> | null,
+  ): Promise<{ agentId: string; record: OrchestratorRecord } | null> {
+    const existing = this.readOrchestrator(repo);
+    if (!existing?.agentId) return null;
+
+    let isAlive = false;
+    try {
+      const agentMap =
+        cachedAgentMap !== undefined ? cachedAgentMap : await this.fetchAgentMap();
+      if (agentMap) {
+        const agent = agentMap.get(existing.agentId);
+        if (
+          agent &&
+          agent.status !== "closed" &&
+          agent.status !== "archived" &&
+          agent.status !== "terminated"
+        ) {
+          isAlive = true;
+        }
+      } else {
+        const activeIds = await this.getActiveAgentIds();
+        if (activeIds.has(existing.agentId)) {
+          isAlive = true;
+        }
+      }
+    } catch {
+      // ignore error in liveness check
+    }
+
+    if (isAlive) {
+      return { agentId: existing.agentId, record: existing };
+    }
+    return null;
+  }
+
   public resolveWorkspace(repo: string): ResolvedWorkspace | null {
     return resolveWorkspaceForRepo(repo, {
       workspacesData: this.options?.workspacesData,
@@ -2232,40 +2337,16 @@ export class HookRouter {
 
     // 1. Existing live agent check (idempotency)
     if (!input.force) {
-      const existing = this.readOrchestrator(repo);
-      if (existing?.agentId) {
-        let isAlive = false;
-        try {
-          const agentMap = await this.fetchAgentMap();
-          if (agentMap) {
-            const agent = agentMap.get(existing.agentId);
-            if (
-              agent &&
-              agent.status !== "closed" &&
-              agent.status !== "archived" &&
-              agent.status !== "terminated"
-            ) {
-              isAlive = true;
-            }
-          } else {
-            const activeIds = await this.getActiveAgentIds();
-            if (activeIds.has(existing.agentId)) {
-              isAlive = true;
-            }
-          }
-        } catch {
-          // ignore error in liveness check
-        }
-
-        if (isAlive) {
-          this.log(`[info] Active orchestrator already exists for ${repo}: ${existing.agentId}`);
-          return {
-            ok: true,
-            agentId: existing.agentId,
-            status: "existing",
-            repo: existing.key ?? repo,
-          };
-        }
+      const active = await this.getActiveOrchestrator(repo);
+      if (active) {
+        this.clearProvisionFailure(repo);
+        this.log(`[info] Active orchestrator already exists for ${repo}: ${active.agentId}`);
+        return {
+          ok: true,
+          agentId: active.agentId,
+          status: "existing",
+          repo: active.record.key ?? repo,
+        };
       }
     }
 
@@ -2278,7 +2359,16 @@ export class HookRouter {
     const promise = this.provisionOrchestrator(repo, input);
     this.inFlightEnsure.set(canonicalKey, promise);
     try {
-      return await promise;
+      const res = await promise;
+      if (res.ok) {
+        this.clearProvisionFailure(repo);
+      } else {
+        this.recordProvisionFailure(repo);
+      }
+      return res;
+    } catch (err) {
+      this.recordProvisionFailure(repo);
+      throw err;
     } finally {
       this.inFlightEnsure.delete(canonicalKey);
     }
@@ -3353,7 +3443,7 @@ export class HookRouter {
       return parts.length >= 2;
     });
     const targets = Array.from(new Set(rawTargets.map((k) => canonicalRepoKey(k) ?? k)));
-    const actionable: Array<{ repo: string; count: number; dispatchable: number }> = [];
+    const actionable: BoardSweepResult["actionable"] = [];
     const errors: Array<{ repo: string; error: string }> = [];
     for (const repo of targets) {
       let res: BoardCheckResult;
@@ -3372,14 +3462,82 @@ export class HookRouter {
       actionable.push({ repo, count: res.candidates.length, dispatchable });
     }
 
+    const autoProvision = this.isAutoProvisionOrchestratorsEnabled();
+    const autoProvisioned: Array<{ repo: string; agentId: string }> = [];
+
+    if (autoProvision && actionable.length > 0) {
+      let agentMap: Map<string, WatchdogAgent> | null = null;
+      try {
+        agentMap = await this.fetchAgentMap();
+      } catch {
+        // ignore
+      }
+
+      for (const item of actionable) {
+        const active = await this.getActiveOrchestrator(item.repo, agentMap);
+        if (active) {
+          item.orchestrator = {
+            agentId: active.agentId,
+            status: "existing",
+          };
+          continue;
+        }
+
+        if (!this.canAttemptProvision(item.repo)) {
+          this.log(`[info] Provision dampening active for ${item.repo}, skipping orchestrator auto-provision`);
+          item.orchestrator = {
+            status: "dampened",
+          };
+          continue;
+        }
+
+        try {
+          const res = await this.ensureOrchestrator({ repo: item.repo });
+          if (res.ok && res.agentId) {
+            item.orchestrator = {
+              agentId: res.agentId,
+              status: res.status ?? "provisioned",
+            };
+            if (res.status === "provisioned") {
+              autoProvisioned.push({ repo: item.repo, agentId: res.agentId });
+            }
+          } else {
+            item.orchestrator = {
+              status: "failed",
+              error: res.error ?? "unknown error",
+            };
+          }
+        } catch (err) {
+          const errorMsg = err instanceof Error ? err.message : String(err);
+          item.orchestrator = {
+            status: "failed",
+            error: errorMsg,
+          };
+        }
+      }
+    }
+
     let notified = 0;
     const frontDeskId = this.readFrontDesk()?.agentId ?? null;
     if (frontDeskId && (actionable.length > 0 || errors.length > 0)) {
       const sections: string[] = [];
       if (actionable.length > 0) {
-        const lines = actionable.map(
-          (a) => `- ${a.repo}: ${a.count} actionable (${a.dispatchable} dispatchable)`,
-        );
+        const lines = actionable.map((a) => {
+          let detail = `${a.dispatchable} dispatchable`;
+          if (autoProvision && a.orchestrator) {
+            const orch = a.orchestrator;
+            if (orch.status === "provisioned" && orch.agentId) {
+              detail += `, auto-provisioned: ${orch.agentId}`;
+            } else if (orch.status === "existing" && orch.agentId) {
+              detail += `, existing orchestrator: ${orch.agentId}`;
+            } else if (orch.status === "dampened") {
+              detail += `, provision dampened`;
+            } else if (orch.status === "failed") {
+              detail += `, provision failed: ${orch.error ?? "unknown error"}`;
+            }
+          }
+          return `- ${a.repo}: ${a.count} actionable (${detail})`;
+        });
         sections.push(`[Fleet Board Sweep] ${actionable.length} repo(s) with actionable tickets:\n${lines.join("\n")}`);
       }
       if (errors.length > 0) {
@@ -3402,8 +3560,19 @@ export class HookRouter {
         }
       }
     }
-    this.log(`[info] Board sweep complete: ${targets.length} repo(s) swept, ${actionable.length} actionable, ${errors.length} failed`);
-    return { ok: true, swept: targets.length, actionable, notified, ...(errors.length > 0 ? { errors } : {}) };
+    this.log(
+      `[info] Board sweep complete: ${targets.length} repo(s) swept, ${actionable.length} actionable${
+        autoProvisioned.length > 0 ? `, ${autoProvisioned.length} auto-provisioned` : ""
+      }, ${errors.length} failed`,
+    );
+    return {
+      ok: true,
+      swept: targets.length,
+      actionable,
+      notified,
+      ...(autoProvisioned.length > 0 ? { autoProvisioned } : {}),
+      ...(errors.length > 0 ? { errors } : {}),
+    };
   }
 
   public startBackgroundLoops(): void {

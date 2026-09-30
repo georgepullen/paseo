@@ -3624,3 +3624,183 @@ describe("hook-router ensure-orchestrator deterministic resolution and idempoten
     assert.equal(existBody.agentId, "agent-1");
   });
 });
+
+describe("board sweep auto-reconciliation (#794)", () => {
+  let router: HookRouter;
+  let tempDir: string;
+  let queueDir: string;
+  let stateDir: string;
+  let tempRepoDir: string;
+  let spawnedCalls: any[] = [];
+  let deliveredMessages: Array<{ dest: string; msg: string }> = [];
+  let stopRouter: (() => Promise<void>) | null = null;
+
+  beforeEach(async () => {
+    tempDir = mkdtempSync(join(tmpdir(), "paseo-sweep-reconcile-test-"));
+    queueDir = join(tempDir, "queues");
+    stateDir = join(tempDir, "state");
+    tempRepoDir = join(tempDir, "repo-worktree");
+    mkdirSync(queueDir, { recursive: true });
+    mkdirSync(stateDir, { recursive: true });
+    mkdirSync(tempRepoDir, { recursive: true });
+    spawnedCalls = [];
+    deliveredMessages = [];
+
+    const workspacesWithRealDir = [
+      {
+        workspaceId: "ws-paseo-main",
+        cwd: tempRepoDir,
+        displayName: "Paseo",
+        isolation: "local",
+        projectKey: "remote:forge.mrs.uppidi.com:222/xpufx-org/paseo",
+      },
+    ];
+
+    router = new HookRouter(null, {
+      host: "127.0.0.1",
+      queueDir,
+      stateDir,
+      port: 0,
+      workspacesData: workspacesWithRealDir,
+      spawnAgent: async (opts) => {
+        spawnedCalls.push(opts);
+        return { id: `agent-${spawnedCalls.length}` };
+      },
+    });
+    router.writeFrontDesk("front-desk-1");
+    (router as any).deliverMessage = async (dest: string, msg: string) => {
+      deliveredMessages.push({ dest, msg });
+      return true;
+    };
+    (router as any).runBoardCheck = async (repo: string) => {
+      return {
+        repo,
+        ok: true,
+        candidates: [
+          {
+            number: 1,
+            title: "Task 1",
+            labels: ["attention/1-agent"],
+            category: "dispatchable",
+            is_dispatchable: true,
+            reason: "ready",
+          },
+        ],
+      };
+    };
+    await router.start();
+    stopRouter = () => router.stop();
+  });
+
+  afterEach(async () => {
+    if (stopRouter) {
+      await stopRouter();
+      stopRouter = null;
+    }
+    try {
+      rmSync(tempDir, { recursive: true, force: true });
+    } catch {}
+  });
+
+  it("auto-provisions missing orchestrator for actionable repo and summarizes in Front Desk message", async () => {
+    const sweep = await router.runBoardSweep(["xpufx-org/paseo"]);
+    assert.equal(sweep.ok, true);
+    assert.equal(sweep.swept, 1);
+    assert.equal(sweep.actionable.length, 1);
+    assert.equal(sweep.actionable[0].orchestrator?.status, "provisioned");
+    assert.equal(sweep.actionable[0].orchestrator?.agentId, "agent-1");
+    assert.deepEqual(sweep.autoProvisioned, [{ repo: "forge.mrs.uppidi.com/xpufx-org/paseo", agentId: "agent-1" }]);
+    assert.equal(spawnedCalls.length, 1);
+
+    // Front Desk notification includes auto-provision outcome
+    assert.equal(deliveredMessages.length, 1);
+    assert.equal(deliveredMessages[0].dest, "front-desk-1");
+    assert.ok(
+      deliveredMessages[0].msg.includes("auto-provisioned: agent-1"),
+      `Expected auto-provisioned message, got: ${deliveredMessages[0].msg}`,
+    );
+  });
+
+  it("identifies existing active orchestrator without re-provisioning", async () => {
+    // Write an existing registered orchestrator
+    router.writeOrchestrator("xpufx-org/paseo", "agent-existing");
+    const agentMap = new Map<string, any>([
+      ["agent-existing", { id: "agent-existing", status: "running" }],
+    ]);
+    (router as any).fetchAgentMap = async () => agentMap;
+
+    const sweep = await router.runBoardSweep(["xpufx-org/paseo"]);
+    assert.equal(sweep.ok, true);
+    assert.equal(sweep.actionable[0].orchestrator?.status, "existing");
+    assert.equal(sweep.actionable[0].orchestrator?.agentId, "agent-existing");
+    assert.equal(sweep.autoProvisioned, undefined);
+    assert.equal(spawnedCalls.length, 0);
+
+    // Front Desk message details existing orchestrator
+    assert.equal(deliveredMessages.length, 1);
+    assert.ok(
+      deliveredMessages[0].msg.includes("existing orchestrator: agent-existing"),
+      `Expected existing orchestrator message, got: ${deliveredMessages[0].msg}`,
+    );
+  });
+
+  it("respects autoProvisionOrchestrators disabled configuration toggle", async () => {
+    // Reconfigure router with autoProvisionOrchestrators: false
+    (router as any).options.autoProvisionOrchestrators = false;
+
+    const sweep = await router.runBoardSweep(["xpufx-org/paseo"]);
+    assert.equal(sweep.ok, true);
+    assert.equal(sweep.actionable.length, 1);
+    assert.equal(sweep.actionable[0].orchestrator, undefined);
+    assert.equal(sweep.autoProvisioned, undefined);
+    assert.equal(spawnedCalls.length, 0);
+
+    // Front Desk message retains notify-only format
+    assert.equal(deliveredMessages.length, 1);
+    assert.ok(
+      deliveredMessages[0].msg.includes("- forge.mrs.uppidi.com/xpufx-org/paseo: 1 actionable (1 dispatchable)"),
+      `Expected notify-only format, got: ${deliveredMessages[0].msg}`,
+    );
+  });
+
+  it("applies failure dampening / cooldown to prevent rapid retry storms", async () => {
+    // Set short test cooldown of 5000ms
+    (router as any).options.provisionFailureCooldownMs = 5000;
+    (router as any).provisionFailureCooldownMs = 5000;
+
+    // Simulate a repo that fails to resolve workspace
+    (router as any).runBoardCheck = async (repo: string) => ({
+      repo,
+      ok: true,
+      candidates: [{ number: 2, title: "Bug", labels: [], category: "ready", is_dispatchable: true, reason: "ready" }],
+    });
+
+    // First sweep on an unresolvable repo causes provision failure
+    const sweep1 = await router.runBoardSweep(["unknown/unresolvable-repo"]);
+    assert.equal(sweep1.actionable[0].orchestrator?.status, "failed");
+    assert.equal(router.canAttemptProvision("unknown/unresolvable-repo"), false);
+    assert.equal(deliveredMessages.length, 1);
+    assert.ok(deliveredMessages[0].msg.includes("provision failed:"));
+
+    // Second sweep immediately afterwards: failure dampening is active
+    deliveredMessages = [];
+    const sweep2 = await router.runBoardSweep(["unknown/unresolvable-repo"]);
+    assert.equal(sweep2.actionable[0].orchestrator?.status, "dampened");
+    assert.equal(deliveredMessages.length, 1);
+    assert.ok(
+      deliveredMessages[0].msg.includes("provision dampened"),
+      `Expected provision dampened in message, got: ${deliveredMessages[0].msg}`,
+    );
+
+    // After cooldown expires, provisioning is re-attempted
+    const pastTime = Date.now() - 6000;
+    router.recordProvisionFailure("unknown/unresolvable-repo", pastTime);
+    assert.equal(router.canAttemptProvision("unknown/unresolvable-repo"), true);
+
+    deliveredMessages = [];
+    const sweep3 = await router.runBoardSweep(["unknown/unresolvable-repo"]);
+    // Re-attempts and fails again, re-updating cooldown
+    assert.equal(sweep3.actionable[0].orchestrator?.status, "failed");
+    assert.ok(router.provisionFailures.get("forge.mrs.uppidi.com/unknown/unresolvable-repo")! > pastTime);
+  });
+});

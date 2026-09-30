@@ -530,6 +530,21 @@ const PARTS = [
     ],
     note: "Declares fleet MCP tools and dispatches executions with argument validation. Fully deterministic control plane; does not query an LLM.",
   },
+  {
+    file: `${PLUGIN}/server/workspace-lookup.ts`,
+    part: "Deterministic repository workspace resolution and candidate ranking",
+    layer: "server",
+    label: DETERMINISTIC,
+    anchors: {
+      exports: [
+        "resolveWorkspaceForRepo",
+      ],
+    },
+    evidence: [
+      [`workspace-lookup.ts:54-130`, "deterministically matches repo slugs against projects/workspaces registry"],
+    ],
+    note: "Resolves daemon workspace directory for repository checkouts deterministically by ranking unarchived primary workspaces.",
+  },
 
   // ---------------------------------------------------------------- client ---
   {
@@ -829,6 +844,18 @@ const PARTS = [
       [`fleet-mcp-server.mjs:60-110`, "dispatches initialize, ping, tools/list, and tools/call"],
     ],
     note: "Exposes fleet tools over standard Model Context Protocol stdio transport for any MCP-compatible client.",
+  },
+  {
+    file: `${PLUGIN}/bin/fleet-ensure-orchestrator.mjs`,
+    part: "Standalone CLI entrypoint to deterministically ensure repo orchestrators",
+    layer: "script",
+    label: DETERMINISTIC,
+    anchors: { symbols: ["fleet-ensure-orchestrator", "ensureOrchestrator"] },
+    evidence: [
+      [`fleet-ensure-orchestrator.mjs:30-65`, "parses CLI flags (--repo, --mode, --provider, --model, --force, --json)"],
+      [`fleet-ensure-orchestrator.mjs:70-100`, "invokes router.ensureOrchestrator and prints outcome or JSON"],
+    ],
+    note: "Standalone executable CLI wrapping HookRouter deterministic orchestrator provisioning.",
   },
 ];
 

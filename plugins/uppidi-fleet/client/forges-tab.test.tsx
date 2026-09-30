@@ -60,7 +60,7 @@ describe("Issue #791: Uppidi Fleet sidebar issues tab and repo dropdown", () => 
     };
 
     harness.payloads["forge.context"] = {
-      directory: "/home/xpufx/.paseo/worktrees/2h0dw6vb/fix-791-fleet-sidebar-issues-tab",
+      directory: "/home/user/.paseo/worktrees/2h0dw6vb/fix-791-fleet-sidebar-issues-tab",
       derivedRepo: "xpufx-org/paseo",
       derivedHost: "forge.mrs.uppidi.com",
     };
