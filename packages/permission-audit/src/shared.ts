@@ -1,5 +1,3 @@
-import os from "node:os";
-import path from "node:path";
 import { z } from "zod";
 import { defineContract } from "paseo-plugin-helper/shared";
 
@@ -62,23 +60,4 @@ export const PERMISSION_AUDIT_FILENAME = "permissions.jsonl";
 export interface PermissionLogPaths {
   primary: string;
   legacy: string;
-}
-
-export function resolvePermissionLogPaths(): PermissionLogPaths {
-  const override = process.env.PASEO_PERMISSION_LOG_PATH?.trim();
-  const legacy = path.join(os.homedir(), ".paseo", "logs", PERMISSION_AUDIT_FILENAME);
-  if (override) return { primary: override, legacy };
-  const primary = path.join(
-    os.homedir(),
-    ".paseo",
-    "plugin-data",
-    "xpufx",
-    PERMISSION_AUDIT_PLUGIN_ID,
-    PERMISSION_AUDIT_FILENAME,
-  );
-  return { primary, legacy };
-}
-
-export function resolveDefaultLogPath(): string {
-  return resolvePermissionLogPaths().primary;
 }

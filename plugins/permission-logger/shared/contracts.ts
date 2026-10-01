@@ -6,10 +6,13 @@ export {
   permissionLoggerQuery,
   PERMISSION_AUDIT_FILENAME,
   PERMISSION_AUDIT_PLUGIN_ID,
-  resolveDefaultLogPath,
-  resolvePermissionLogPaths,
   type PermissionAuditEntry,
   type PermissionDecision,
   type PermissionQueryFilter,
-  type PermissionLogPaths,
 } from "permission-audit/shared";
+
+export {
+  resolveDefaultLogPath,
+  resolvePermissionLogPaths,
+  type PermissionLogPaths,
+} from "permission-audit/server";

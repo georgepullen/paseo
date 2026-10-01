@@ -1,26 +1,46 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import {
+  PERMISSION_AUDIT_FILENAME,
+  PERMISSION_AUDIT_PLUGIN_ID,
   PermissionAuditEntrySchema,
   permissionAuditQuery,
   permissionLoggerQuery,
-  resolvePermissionLogPaths,
   type PermissionAuditEntry,
   type PermissionDecision,
+  type PermissionLogPaths,
   type PermissionQueryFilter,
 } from "./shared.js";
 
 export type {
   PermissionAuditEntry,
   PermissionDecision,
+  PermissionLogPaths,
   PermissionQueryFilter,
 } from "./shared.js";
 export {
+  PERMISSION_AUDIT_FILENAME,
+  PERMISSION_AUDIT_PLUGIN_ID,
   PermissionAuditEntrySchema,
   permissionAuditQuery,
   permissionLoggerQuery,
-  resolvePermissionLogPaths,
 } from "./shared.js";
+
+export function resolvePermissionLogPaths(): PermissionLogPaths {
+  const override = process.env.PASEO_PERMISSION_LOG_PATH?.trim();
+  const legacy = path.join(os.homedir(), ".paseo", "logs", PERMISSION_AUDIT_FILENAME);
+  if (override) return { primary: override, legacy };
+  const primary = path.join(
+    os.homedir(),
+    ".paseo",
+    "plugin-data",
+    "xpufx",
+    PERMISSION_AUDIT_PLUGIN_ID,
+    PERMISSION_AUDIT_FILENAME,
+  );
+  return { primary, legacy };
+}
 
 export function resolveDefaultLogPath(): string {
   return resolvePermissionLogPaths().primary;

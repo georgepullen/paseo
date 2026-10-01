@@ -4,8 +4,8 @@ import {
   PermissionQueryFilterSchema,
   permissionAuditQuery,
   permissionLoggerQuery,
-  resolvePermissionLogPaths,
 } from "./shared.js";
+import { resolvePermissionLogPaths } from "./server.js";
 
 describe("permission audit contracts", () => {
   it("validates audit entries and rejects decisions outside the enum", () => {
