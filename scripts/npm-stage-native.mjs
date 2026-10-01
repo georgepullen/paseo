@@ -6,6 +6,13 @@ import path from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
 
+/**
+ * npm's synthetic version for the first publish of a never-before-published
+ * package. `npm stage publish` exits 0 after creating it even though the
+ * requested version never reached the staging area.
+ */
+export const PLACEHOLDER_VERSION = "0.0.0-stage";
+
 function commandResult(command, args) {
   return execFileSync(command, args, { encoding: "utf8" });
 }
@@ -15,25 +22,61 @@ export function hasStagedVersion(stages, packageName, version) {
 }
 
 /**
- * Versions already live on the registry can never be staged: npm rejects them
- * with "You cannot publish over the previously published versions", and the run
- * aborts before it reaches the packages that are actually new. `npm view` exits
- * non-zero for a package that has never been published, so a failed lookup means
- * "not published" rather than an error.
+ * Versions already live on the registry can never be restaged: npm rejects them
+ * with "You cannot publish over the previously published versions". Skip them
+ * before staging so the run does not spend a registry round-trip on a version
+ * that cannot change.
  */
 export function isPublishedVersion(versions, version) {
   return Array.isArray(versions) && versions.includes(version);
 }
 
-/** Published versions of a package, or `[]` when it is not on the registry yet. */
-export function publishedVersions(packageName, { run = commandResult, npmBin = "npm" } = {}) {
+export function isPlaceholderVersion(version) {
+  return version === PLACEHOLDER_VERSION;
+}
+
+/**
+ * Only a definitive registry 404 means "this package has never been published".
+ * Auth, TLS, and network failures carry different codes and must surface rather
+ * than be silently read as "not published", which would change the code path.
+ */
+export function isNotFoundError(err) {
+  const text = [err?.message, err?.stderr, err?.stdout].filter(Boolean).join("\n");
+  return /\bE404\b/i.test(text) || /404\s+not\s+found/i.test(text) || /not in this registry/i.test(text);
+}
+
+/**
+ * Read a package's published versions. `published: false` is returned only for
+ * a definitive 404; any other `npm view` failure throws so a flaky registry
+ * read cannot silently change the staging path.
+ */
+export function registryLookup(packageName, { run = commandResult, npmBin = "npm" } = {}) {
+  let out;
   try {
-    const out = run(npmBin, ["view", packageName, "versions", "--json"]);
-    const parsed = JSON.parse(out);
-    return Array.isArray(parsed) ? parsed : [parsed];
-  } catch {
-    return [];
+    out = run(npmBin, ["view", packageName, "versions", "--json"]);
+  } catch (err) {
+    if (isNotFoundError(err)) return { published: false, versions: [] };
+    throw new Error(`npm view ${packageName} failed: ${err.message}`, { cause: err });
   }
+  let parsed;
+  try {
+    parsed = JSON.parse(out);
+  } catch (err) {
+    throw new Error(`npm view ${packageName} returned unparseable output: ${err.message}`, { cause: err });
+  }
+  return { published: true, versions: Array.isArray(parsed) ? parsed : [parsed] };
+}
+
+/** Published versions of a package, or `[]` when a definitive 404 says it is not on the registry yet. */
+export function publishedVersions(packageName, options) {
+  return registryLookup(packageName, options).versions;
+}
+
+/** The staging-area entries for one package (`npm stage list <pkg> --json`). */
+export function readStages(packageName, { run = commandResult, npmBin = "npm" } = {}) {
+  const out = run(npmBin, ["stage", "list", packageName, "--json"]);
+  const parsed = JSON.parse(out);
+  return Array.isArray(parsed) ? parsed : [];
 }
 
 export function notificationSummary(packageName, version) {
@@ -77,28 +120,158 @@ function notifyStaged({ run, notifyBin, link }, entry) {
   }
 }
 
+/**
+ * Guard the human `npm stage approve` step. Approving a stage list that only
+ * holds the placeholder would move `latest` to `0.0.0-stage`, so refuse and name
+ * the direct-publish remediation instead.
+ */
+export function assertApprovable(stages, version) {
+  const rows = Array.isArray(stages) ? stages : [];
+  if (rows.some((stage) => stage?.version === version)) return true;
+  if (rows.some((stage) => isPlaceholderVersion(stage?.version))) {
+    throw new Error(`refusing to approve ${PLACEHOLDER_VERSION}: it is a placeholder, not ${version}; run 'npm publish --access public' (2FA) to publish the real version first.`);
+  }
+  throw new Error(`no staged entry for ${version}; nothing to approve.`);
+}
+
+/**
+ * The only safe approve command for a stage list, or the reason approval is
+ * refused. Never returns a command that would move `latest` to the placeholder.
+ */
+export function approvalGuidance(stages, version) {
+  try {
+    assertApprovable(stages, version);
+  } catch (err) {
+    return { approvable: false, message: err.message };
+  }
+  const stage = (Array.isArray(stages) ? stages : []).find((row) => row?.version === version);
+  return { approvable: true, message: `npm stage approve ${stage?.id ?? "<stage-id>"} (2FA)` };
+}
+
+/**
+ * Confirm what npm actually stored. `npm stage publish` exits 0 even when npm
+ * only creates the placeholder, so the exit code is not evidence: re-read the
+ * staging area and require the intended version to be present.
+ */
+export function verifyStage(entry, { run = commandResult, npmBin = "npm", notifyBin = "2fado", link, notify = true, stagesBefore = [], publishedBefore = [] } = {}) {
+  const stagesAfter = readStages(entry.publishAs, { run, npmBin });
+  if (hasStagedVersion(stagesAfter, entry.publishAs, entry.version)) {
+    const guidance = approvalGuidance(stagesAfter, entry.version);
+    console.log(`[npm-stage] verified ${entry.publishAs}@${entry.version} in the staging area; approve with: ${guidance.message}`);
+    if (notify) notifyStaged({ run, notifyBin, link }, entry);
+    return { outcome: "staged", packageName: entry.publishAs, version: entry.version, detail: "verified in the npm staging area" };
+  }
+
+  // `||` short-circuits so a transient npm view failure cannot mask placeholder
+  // evidence already visible in the stage lists.
+  const placeholderSeen = stagesAfter.some((stage) => isPlaceholderVersion(stage?.version))
+    || stagesBefore.some((stage) => isPlaceholderVersion(stage?.version))
+    || publishedBefore.some(isPlaceholderVersion)
+    || publishedVersions(entry.publishAs, { run, npmBin }).some(isPlaceholderVersion);
+
+  if (placeholderSeen) {
+    console.warn(`[npm-stage] PLACEHOLDER STAGE: ${entry.publishAs}@${entry.version} is NOT in the staging area.`);
+    console.warn(`[npm-stage] npm only created the ${PLACEHOLDER_VERSION} placeholder; approving it would leave 'latest' pointing at an empty version.`);
+    console.warn(`[npm-stage] Do NOT run 'npm stage approve'. One-time remediation (operator 2FA):`);
+    console.warn(`[npm-stage]   npm publish --access public   # run in the package directory; afterwards npm stage works normally`);
+    return { outcome: "placeholder", packageName: entry.publishAs, version: entry.version, detail: `only ${PLACEHOLDER_VERSION} present` };
+  }
+
+  console.warn(`[npm-stage] UNVERIFIED STAGE: npm stage publish accepted ${entry.publishAs}@${entry.version} but it is absent from npm stage list.`);
+  return { outcome: "failed", packageName: entry.publishAs, version: entry.version, detail: `npm stage publish succeeded but ${entry.version} is absent from npm stage list` };
+}
+
 /** Stage one tarball; skips and npm errors deliberately return before notify. */
-export function stagePackage(entry, { run = commandResult, npmBin = "npm", notifyBin = "2fado", link, notify = true, baseDir }) {
-  const stages = JSON.parse(run(npmBin, ["stage", "list", entry.publishAs, "--json"]));
+export function stagePackage(entry, { run = commandResult, npmBin = "npm", notifyBin = "2fado", link, notify = true, baseDir } = {}) {
+  const stages = readStages(entry.publishAs, { run, npmBin });
   if (hasStagedVersion(stages, entry.publishAs, entry.version)) {
     console.log(`[npm-stage] skipping ${entry.publishAs}@${entry.version}: already staged; not a fresh stage.`);
-    return { outcome: "skipped" };
+    return { outcome: "skipped", packageName: entry.publishAs, version: entry.version, detail: "already staged" };
   }
-  if (isPublishedVersion(publishedVersions(entry.publishAs, { run, npmBin }), entry.version)) {
+  const lookup = registryLookup(entry.publishAs, { run, npmBin });
+  if (isPublishedVersion(lookup.versions, entry.version)) {
     console.log(`[npm-stage] skipping ${entry.publishAs}@${entry.version}: already published; npm cannot restage a live version.`);
-    return { outcome: "skipped" };
+    return { outcome: "skipped", packageName: entry.publishAs, version: entry.version, detail: "already published" };
   }
 
   console.log(`[npm-stage] staging ${entry.publishAs}@${entry.version} from ${entry.tarball}`);
   run(npmBin, ["stage", "publish", localTarballPath(entry.tarball, baseDir), "--access", "public"]);
-  if (notify) notifyStaged({ run, notifyBin, link }, entry);
-  return { outcome: "staged" };
+  return verifyStage(entry, { run, npmBin, notifyBin, link, notify, stagesBefore: stages, publishedBefore: lookup.versions });
 }
 
+/**
+ * Stage every manifest package, isolating per-package errors so one bad entry
+ * cannot abort the rest of the batch. Only a malformed manifest is systemic and
+ * throws; per-package npm failures become `failed` rows.
+ */
 export function stagePackages(manifest, options) {
   if (!Array.isArray(manifest?.packages)) throw new Error("manifest packages must be an array");
   const notify = options?.notify ?? preflightNotifyDaemon(options ?? {});
-  return manifest.packages.map((entry) => stagePackage(entry, { ...options, notify }));
+  return manifest.packages.map((entry) => {
+    try {
+      return stagePackage(entry, { ...options, notify });
+    } catch (err) {
+      console.error(`[npm-stage] failed ${entry.publishAs}@${entry.version}: ${err.message}`);
+      return { outcome: "failed", packageName: entry.publishAs, version: entry.version, detail: err.message };
+    }
+  });
+}
+
+/** Collapse a multi-line npm error into one table cell without breaking the row. */
+function tableCell(text) {
+  return String(text ?? "").replace(/\s+/g, " ").replace(/\|/g, "\\|").trim();
+}
+
+/** Markdown table of every package's outcome, for the operator and CI summary. */
+export function formatOutcomeTable(results) {
+  const rows = Array.isArray(results) ? results : [];
+  const lines = ["| package | version | outcome | detail |", "| --- | --- | --- | --- |"];
+  for (const row of rows) {
+    lines.push(`| ${tableCell(row.packageName)} | ${tableCell(row.version)} | ${tableCell(row.outcome)} | ${tableCell(row.detail)} |`);
+  }
+  return lines.join("\n");
+}
+
+/** Tally of outcomes in a batch. */
+export function outcomeCounts(results) {
+  const counts = { staged: 0, skipped: 0, placeholder: 0, failed: 0 };
+  for (const row of Array.isArray(results) ? results : []) counts[row.outcome] = (counts[row.outcome] ?? 0) + 1;
+  return counts;
+}
+
+/**
+ * A batch only fails when it made no progress: every package either failed or
+ * landed on a placeholder. A batch where anything staged or was already
+ * staged/published is a success even if some entries failed, because the
+ * outcome table reports each failure.
+ */
+export function shouldFailBatch(results) {
+  const rows = Array.isArray(results) ? results : [];
+  return rows.length > 0 && !rows.some((row) => row.outcome === "staged" || row.outcome === "skipped");
+}
+
+function reportOutcomes(results, env = process.env) {
+  const counts = outcomeCounts(results);
+  const table = formatOutcomeTable(results);
+  const tally = `${counts.staged} staged, ${counts.skipped} skipped, ${counts.placeholder} placeholder, ${counts.failed} failed`;
+  console.log("[npm-stage] per-package outcome:");
+  console.log(table);
+  console.log(`[npm-stage] ${tally}`);
+  if (counts.placeholder > 0) {
+    console.warn("[npm-stage] placeholder stage(s) detected — approving one would leave 'latest' pointing at 0.0.0-stage:");
+    console.warn("[npm-stage]   npm publish --access public   # run in the package directory; prompts for npm 2FA/OTP");
+    console.warn("[npm-stage]   Do NOT run 'npm stage approve' for a placeholder-only stage.");
+  }
+  if (env.GITHUB_STEP_SUMMARY) {
+    try {
+      const remediation = counts.placeholder > 0
+        ? "\n\nPlaceholder stage(s) need a one-time direct publish before npm stage can accept the real version: `npm publish --access public` (2FA/OTP). Do not approve the placeholder."
+        : "";
+      fs.appendFileSync(env.GITHUB_STEP_SUMMARY, `\n### npm stage outcomes\n\n${table}\n\n${tally}${remediation}\n`);
+    } catch (err) {
+      console.warn(`[npm-stage] could not append to GITHUB_STEP_SUMMARY (continuing): ${err.message}`);
+    }
+  }
 }
 
 function parseArgs(argv) {
@@ -117,12 +290,18 @@ export function main(argv = process.argv.slice(2), env = process.env) {
   const { manifestPath } = parseArgs(argv);
   const resolved = path.resolve(manifestPath);
   const manifest = JSON.parse(fs.readFileSync(resolved, "utf8"));
-  return stagePackages(manifest, {
+  const results = stagePackages(manifest, {
     npmBin: env.NPM_STAGE_NPM_BIN || "npm",
     notifyBin: env.TWOFADO_NOTIFY_BIN || "2fado",
     link: workflowRunLink(env),
     baseDir: path.dirname(resolved),
   });
+  reportOutcomes(results, env);
+  if (shouldFailBatch(results)) {
+    console.error(`[npm-stage] no package staged or skipped (${results.length} attempted); failing the run.`);
+    process.exitCode = 1;
+  }
+  return results;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) main();
