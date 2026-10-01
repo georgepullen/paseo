@@ -1,7 +1,8 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { BusyGate, isBusyStatus, readLifecycleStatus, type BusyProbe } from "./busy.ts";
+import { BusyGate, isBusyStatus, readLifecycleStatus, UnresolvableTargetError, type BusyProbe } from "./busy.ts";
 import { DEFER_VERDICT_TTL_MS, LOCAL_DAEMON } from "./defer-queue.ts";
+import { unknownDaemonMessage } from "./unknown-daemon.ts";
 
 const PEER = { daemon: "hsi", agentId: "agent-remote" };
 const LOCAL = { daemon: LOCAL_DAEMON, agentId: "agent-local" };
@@ -132,5 +133,51 @@ describe("busy gate", () => {
     gate.invalidate(PEER);
     assert.equal(await gate.isBusy(PEER), false);
     assert.equal(calls.length, 2);
+  });
+});
+
+/**
+ * The three "cannot tell" cases a probe can hit (#842). Only an unresolvable
+ * target is a configuration error; a failed probe and an unreadable lifecycle
+ * keep the fail-open contract — a swallowed message is the worse failure.
+ */
+describe("unresolvable targets (#842)", () => {
+  it("re-throws when the probe reports an unresolvable target", async () => {
+    const { gate } = gateWith(async () => {
+      throw new UnresolvableTargetError("ghost", unknownDaemonMessage("ghost"));
+    });
+    await assert.rejects(() => gate.isBusy(PEER), (cause: unknown) => {
+      assert.ok(cause instanceof UnresolvableTargetError);
+      assert.equal(cause.daemon, "ghost");
+      return true;
+    });
+  });
+
+  it("names the unresolved daemon and points at the peer configuration", () => {
+    const cause = new UnresolvableTargetError("ghost", unknownDaemonMessage("ghost"));
+    assert.match(cause.message, /unknown daemon 'ghost'/);
+    assert.match(cause.message, /x_comms_add_daemon/);
+  });
+
+  it("still fails open when the probe itself throws", async () => {
+    const { gate } = gateWith(async () => {
+      throw new Error("peer unreachable");
+    });
+    assert.equal(await gate.isBusy(PEER), false);
+  });
+
+  it("still fails open when the lifecycle is unreadable", async () => {
+    const { gate } = gateWith(async () => null);
+    assert.equal(await gate.isBusy(PEER), false);
+  });
+
+  it("caches no verdict for an unresolvable target", async () => {
+    // A cached "not busy" would let the next send dispatch into the same void.
+    const { gate, calls } = gateWith(async () => {
+      throw new UnresolvableTargetError("ghost", unknownDaemonMessage("ghost"));
+    });
+    await assert.rejects(() => gate.isBusy(PEER));
+    await assert.rejects(() => gate.isBusy(PEER));
+    assert.deepEqual(calls, ["hsi/agent-remote", "hsi/agent-remote"], "every send re-asks and is refused");
   });
 });

@@ -435,8 +435,25 @@ export async function handleConversationSend(
   // replaceRunning: true, so dispatching into a running target cuts its turn
   // short. Defer instead (#598) — the target picks the message up at the start
   // of its next turn and nothing is interrupted in either direction.
-  if (await busyGate().isBusy(target)) {
-    return deferForBusyTarget(message, target);
+  try {
+    if (await busyGate().isBusy(target)) {
+      return deferForBusyTarget(message, target);
+    }
+  } catch (cause) {
+    if (!(cause instanceof UnresolvableTargetError)) throw cause;
+    // A target that names no resolvable peer is a configuration error, not a
+    // transport one: refusing here beats dispatching into a void and learning
+    // about it from the outbox after a retry loop that can never succeed (#842).
+    log.warn(`send: refused ${message.messageId} for '${target.daemon}/${target.agentId}': ${cause.message}`);
+    return {
+      daemon: message.daemon,
+      agentId: message.agentId,
+      ok: false,
+      error: cause.message,
+      delivery: "dropped",
+      queueDepth: 0,
+      expiresAt: null,
+    };
   }
 
   try {
@@ -595,7 +612,7 @@ import {
   type DeferEntry,
   type DeferTarget,
 } from "./defer-queue.ts";
-import { BusyGate, readLifecycleStatus } from "./busy.ts";
+import { BusyGate, readLifecycleStatus, UnresolvableTargetError } from "./busy.ts";
 import { stateDir, migrateFromRoot } from "./registry";
 
 const UI_PREFS_FILE = join(stateDir(), "plugin.json");
@@ -1342,6 +1359,12 @@ async function runBusyProbe(args: string[]): Promise<unknown> {
  * from the turn hooks, which need no probe at all); a peer comes from
  * `paseo inspect --host`, the only route to another daemon's agent state —
  * there is no cross-daemon turn subscription to wait on.
+ *
+ * The three "cannot tell" cases stay distinct (#842): an unresolvable
+ * registry entry is a configuration error and throws
+ * {@link UnresolvableTargetError}; a probe that throws and a payload with no
+ * readable lifecycle both return null, which the gate treats as "do not
+ * block" (fail open).
  */
 async function probeTargetLifecycle(target: DeferTarget): Promise<string | null> {
   if (target.daemon === LOCAL_DAEMON) {
@@ -1355,7 +1378,7 @@ async function probeTargetLifecycle(target: DeferTarget): Promise<string | null>
     }
   }
   const entry = targetRegistryEntry(target.daemon);
-  if (!entry) return null;
+  if (!entry) throw new UnresolvableTargetError(target.daemon, unknownDaemonMessage(target.daemon));
   try {
     return readLifecycleStatus(await runBusyProbe(["inspect", target.agentId, "--host", entry.value, "--json"]));
   } catch {
@@ -1570,7 +1593,18 @@ export async function drainDeferQueue(options: DeferDrainOptions = {}): Promise<
     )
     .slice(0, DEFER_MAX_TARGETS_PER_PASS);
   for (const target of targets) {
-    if (await busyGate().isBusy(target)) {
+    let busy: boolean;
+    try {
+      busy = await busyGate().isBusy(target);
+    } catch (cause) {
+      if (!(cause instanceof UnresolvableTargetError)) throw cause;
+      // A queued message whose daemon vanished from the registry (or was
+      // switched off) can never be delivered. Skip it and let the expiry path
+      // drop it with a notice, rather than failing the whole pass (#842).
+      summary.skipped += deferDepth(dir, target);
+      continue;
+    }
+    if (busy) {
       summary.skipped += deferDepth(dir, target);
       continue;
     }

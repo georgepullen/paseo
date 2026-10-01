@@ -271,7 +271,10 @@ lifecycle first.
   preempt the turn the first send just started.
 * **The gate fails open.** A probe that errors or reports an unreadable state
   dispatches. Failing closed would turn "cannot tell" into a silently swallowed
-  message, which is the worse failure.
+  message, which is the worse failure. The one exception is an unresolvable
+  target (#842): a daemon that names no registry entry (or is switched off in
+  settings) is a configuration error, so the send is refused with the
+  unknown-daemon diagnostic instead of dispatching into a void.
 
 ### 3.2 The defer queue
 

@@ -62,6 +62,22 @@ export function isBusyStatus(status: string | null | undefined): boolean {
 /** Answers the lifecycle of a target, or null when it cannot be read. */
 export type BusyProbe = (target: DeferTarget) => Promise<string | null>;
 
+/**
+ * The target names no resolvable peer: not in the registry, or switched off
+ * in settings. A configuration error, not a transient one — it will not fix
+ * itself on the next pass, so the gate re-throws it instead of failing open
+ * into a dispatch that cannot land (#842).
+ */
+export class UnresolvableTargetError extends Error {
+  readonly daemon: string;
+
+  constructor(daemon: string, message: string) {
+    super(message);
+    this.name = "UnresolvableTargetError";
+    this.daemon = daemon;
+  }
+}
+
 interface Verdict {
   busy: boolean;
   at: number;
@@ -119,6 +135,10 @@ export class BusyGate {
    * and lets the outbox handle an undeliverable target. Failing closed would
    * turn "cannot tell" into "silently swallow the message", which is a worse
    * failure than the preemption it was meant to prevent.
+   *
+   * The one exception is {@link UnresolvableTargetError}: a target that names no
+   * resolvable peer is a configuration error, and dispatching it would only
+   * fail later and less legibly, so it propagates to the caller.
    */
   async isBusy(target: DeferTarget): Promise<boolean> {
     if (target.daemon === LOCAL_DAEMON && this.runningTurns.has(target.agentId)) return true;
@@ -127,7 +147,8 @@ export class BusyGate {
     let status: string | null = null;
     try {
       status = await this.probe(target);
-    } catch {
+    } catch (cause) {
+      if (cause instanceof UnresolvableTargetError) throw cause;
       status = null;
     }
     const busy = isBusyStatus(status);
