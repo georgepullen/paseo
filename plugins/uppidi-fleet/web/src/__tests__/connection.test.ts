@@ -1,5 +1,36 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { DaemonConnection, classifyConnectionError } from "../daemon/connection.js";
+
+const nativeClient = vi.hoisted(() => {
+  const subscription = {
+    subscribe: vi.fn(() => () => undefined),
+    release: vi.fn(async () => undefined),
+  };
+  return {
+    connect: vi.fn(async () => undefined),
+    close: vi.fn(async () => undefined),
+    agents: {
+      list: vi.fn(async (options?: { subscribe?: Record<string, never> }) => ({
+        entries: options?.subscribe
+          ? [{ agent: { id: "fd-1", name: "Fleet Front Desk", category: "front-desk", status: "running" } }]
+          : [{ agent: { id: "fd-1", name: "Fleet Front Desk", category: "front-desk", status: "running" } }],
+        subscription: options?.subscribe ? subscription : undefined,
+      })),
+      ref: vi.fn(() => ({ archive: vi.fn(async () => undefined) })),
+    },
+    workspaces: {
+      list: vi.fn(async (options?: { subscribe?: Record<string, never> }) => ({
+        entries: [{ cwd: "/workspace/paseo" }],
+        subscription: options?.subscribe ? subscription : undefined,
+      })),
+    },
+    searchForge: vi.fn(async () => ({
+      items: [{ number: 829, title: "native", url: "https://forge/issues/829", state: "open", labels: ["state/1-wip"], projectPath: "xpufx-org/paseo", updatedAt: "now" }],
+    })),
+  };
+});
+
+vi.mock("@getpaseo/client", () => ({ createPaseoClient: () => nativeClient }));
 
 describe("classifyConnectionError", () => {
   const wsUrl = "ws://10.20.30.24:6767/ws";
@@ -46,5 +77,26 @@ describe("DaemonConnection token plumbing", () => {
     localStorage.setItem("uppidi-fleet.daemon-token", "stored-secret");
     const connection = new DaemonConnection({ host: "10.20.30.24:6767" });
     expect(connection.getToken()).toBe("stored-secret");
+  });
+});
+
+describe("native daemon data flow", () => {
+  it("uses native agent/workspace subscriptions and Forge search without plugin RPCs", async () => {
+    const events: string[] = [];
+    const connection = new DaemonConnection({ host: "10.20.30.24:6767", onEvent: (event) => events.push(event.type) });
+    await connection.connect();
+
+    await expect(connection.fetchAgents()).resolves.toMatchObject({
+      totalCount: 1,
+      frontdesk: [{ id: "fd-1", category: "frontdesk" }],
+    });
+    await expect(connection.fetchCandidates()).resolves.toEqual([
+      expect.objectContaining({ number: 829, status: "In progress", repo: "paseo" }),
+    ]);
+    expect(nativeClient.agents.list).toHaveBeenCalledWith({ subscribe: {} });
+    expect(nativeClient.workspaces.list).toHaveBeenCalledWith({ subscribe: {} });
+    expect(nativeClient.searchForge).toHaveBeenCalledWith({ cwd: "/workspace/paseo", query: "", limit: 50, kinds: ["issue"] });
+    expect(events).toEqual([]);
+    await connection.disconnect();
   });
 });

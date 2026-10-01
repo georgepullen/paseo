@@ -1,9 +1,7 @@
 import { resolveDaemonHttpUrl, resolveDaemonToken, resolveDaemonWsUrl, storeDaemonToken } from "../config.js";
-import { normalizeAgentCategory, type CandidateIssue, type FleetAgentsSnapshot } from "../types.js";
+import { normalizeAgentCategory, type CandidateIssue, type FleetAgent, type FleetAgentsSnapshot } from "../types.js";
 
 export type FleetTeardownTarget = "workers" | "orchestrators" | "frontdesk";
-
-export const FLEET_TEARDOWN_RPC = "fleet-teardown";
 
 export interface FleetTeardownResult {
   ok: boolean;
@@ -34,15 +32,28 @@ export interface DaemonEvent {
   [key: string]: unknown;
 }
 
+interface NativeSubscription {
+  ready?: Promise<unknown>;
+  subscribe(observer: { snapshot?: (value: unknown) => void; update?: (value: unknown) => void; error?: (error: unknown) => void }): () => void;
+  release(): Promise<void>;
+}
+
 interface DaemonClientLike {
   connect(): Promise<unknown>;
   close(): Promise<unknown> | unknown;
-  invokePluginRpc(pluginId: string, method: string, input: unknown): Promise<unknown>;
+  agents: {
+    list(options?: { subscribe?: Record<string, never> }): Promise<{ entries?: unknown[]; subscription?: NativeSubscription }>;
+    ref(agent: unknown): { archive(): Promise<unknown> };
+  };
+  workspaces: {
+    list(options?: { subscribe?: Record<string, never> }): Promise<{ entries?: unknown[]; subscription?: NativeSubscription }>;
+  };
+  searchForge(options: { cwd: string; query: string; limit?: number; kinds?: string[] }): Promise<{ items?: unknown[] }>;
   subscribeConnectionStatus?(listener: (status: string) => void): () => void;
   subscribe?(handler: (event: DaemonEvent) => void): () => void;
 }
 
-type DaemonClientCtor = new (config: Record<string, unknown>) => DaemonClientLike;
+type DaemonClientFactory = (config: Record<string, unknown>) => DaemonClientLike;
 
 const MAX_BACKOFF_MS = 30_000;
 const BASE_BACKOFF_MS = 1_000;
@@ -65,7 +76,7 @@ export function classifyConnectionError(raw: string, wsUrl: string): string {
 export class DaemonConnection {
   private status: ConnectionStatus = "disconnected";
   private client: DaemonClientLike | null = null;
-  private ctor: DaemonClientCtor | null = null;
+  private ctor: DaemonClientFactory | null = null;
   private ctorFailed = false;
   private host: string;
   private token: string | undefined;
@@ -137,13 +148,13 @@ export class DaemonConnection {
     await this.dial();
   }
 
-  private async loadClientCtor(): Promise<DaemonClientCtor | null> {
+  private async loadClientCtor(): Promise<DaemonClientFactory | null> {
     if (this.ctor || this.ctorFailed) return this.ctor;
     try {
-      const mod = (await import("@getpaseo/client/internal/daemon-client")) as unknown as {
-        DaemonClient: DaemonClientCtor;
+      const mod = (await import("@getpaseo/client")) as unknown as {
+        createPaseoClient: (config: Record<string, unknown>) => DaemonClientLike;
       };
-      this.ctor = mod.DaemonClient;
+      this.ctor = mod.createPaseoClient;
       return this.ctor;
     } catch {
       this.ctorFailed = true;
@@ -160,7 +171,7 @@ export class DaemonConnection {
     }
     try {
       const token = this.token ?? resolveDaemonToken();
-      const client = new Ctor({
+      const client = Ctor({
         url: this.getWsUrl(),
         clientId: `uppidi-fleet-web-${Math.random().toString(36).slice(2, 10)}`,
         clientType: "browser",
@@ -179,10 +190,9 @@ export class DaemonConnection {
         }
       });
       if (maybeUnsubStatus) this.unsubscribers.push(maybeUnsubStatus);
-      const maybeUnsubEvents = client.subscribe?.((event) => this.onEvent?.(event));
-      if (maybeUnsubEvents) this.unsubscribers.push(maybeUnsubEvents);
       await client.connect();
       this.client = client;
+      await this.startNativeSubscriptions(client);
       this.reconnectAttempt = 0;
       this.lastError = null;
       this.setStatus("connected");
@@ -192,6 +202,31 @@ export class DaemonConnection {
       this.onError?.(this.lastError);
       this.scheduleReconnect();
     }
+  }
+
+  private async startNativeSubscriptions(client: DaemonClientLike): Promise<void> {
+    const subscribe = async (load: () => Promise<{ subscription?: NativeSubscription }>) => {
+      try {
+        const result = await load();
+        const subscription = result.subscription;
+        if (!subscription) return;
+        const unsubscribe = subscription.subscribe({
+          snapshot: () => this.onEvent?.({ type: "native_snapshot" }),
+          update: (event) => this.onEvent?.({ type: "native_update", payload: event }),
+          error: (error) => this.onError?.(error instanceof Error ? error.message : String(error)),
+        });
+        this.unsubscribers.push(() => {
+          unsubscribe();
+          void subscription.release();
+        });
+      } catch (error) {
+        this.onError?.(error instanceof Error ? error.message : String(error));
+      }
+    };
+    await Promise.all([
+      subscribe(() => client.agents.list({ subscribe: {} })),
+      subscribe(() => client.workspaces.list({ subscribe: {} })),
+    ]);
   }
 
   private scheduleReconnect(): void {
@@ -205,103 +240,101 @@ export class DaemonConnection {
     }, delay);
   }
 
-  async invokeFleetRpc<T>(method: string, input: unknown): Promise<T> {
-    if (!this.client) throw new Error("Not connected to the Paseo daemon.");
-    const result = await this.client.invokePluginRpc("uppidi-fleet", method, input);
-    return result as T;
-  }
-
   async fetchAgents(): Promise<FleetAgentsSnapshot> {
-    const raw = await this.invokeFleetRpc<{
-      ok: boolean;
-      frontdesk?: unknown[];
-      orchestrators?: unknown[];
-      workers?: unknown[];
-      totalCount?: number;
-      runningCount?: number;
-      idleCount?: number;
-      errorCount?: number;
-      error?: string;
-    }>("agents", {});
-    if (!raw || raw.ok !== true) throw new Error(raw?.error ?? "Daemon returned ok=false for uppidi-fleet.agents.");
-    const pick = (list: unknown[] | undefined) =>
+    if (!this.client) throw new Error("Not connected to the Paseo daemon.");
+    const raw = await this.client.agents.list();
+    const pick = (list: unknown[] | undefined): FleetAgent[] =>
       (Array.isArray(list) ? list : []).map((entry) => {
-        const agent = (entry ?? {}) as Record<string, unknown>;
+        const agent = ((entry as Record<string, unknown>)?.agent ?? entry ?? {}) as Record<string, unknown>;
+        const status = String(agent["status"] ?? "unknown");
+        const labels = (agent["labels"] ?? {}) as Record<string, unknown>;
+        const category = agent["category"] ?? labels["uppidi.category"] ?? agent["role"] ?? agent["name"];
         return {
           id: String(agent["id"] ?? ""),
           name: String(agent["name"] ?? agent["id"] ?? "unknown"),
-          category: normalizeAgentCategory(agent["category"]),
+          category: normalizeAgentCategory(category),
           provider: typeof agent["provider"] === "string" ? agent["provider"] : undefined,
-          model: typeof agent["model"] === "string" ? agent["model"] : null,
-          deterministicState: (typeof agent["deterministicState"] === "string"
-            ? agent["deterministicState"]
-            : "unknown") as FleetAgentsSnapshot["workers"][number]["deterministicState"],
-          project: typeof agent["project"] === "string" ? agent["project"] : undefined,
+          model: typeof agent["model"] === "string" ? agent["model"] : typeof agent["provider"] === "string" && agent["provider"].includes("/") ? agent["provider"].split("/")[1] : null,
+          deterministicState: (status === "running" ? "running" : status === "error" || status === "failed" ? "failed:error" : status === "idle" ? "idle:waiting" : "unknown") as FleetAgentsSnapshot["workers"][number]["deterministicState"],
+          project: typeof agent["project"] === "string" ? agent["project"] : typeof agent["cwd"] === "string" ? agent["cwd"] : undefined,
           branch: typeof agent["branch"] === "string" ? agent["branch"] : undefined,
-          updatedAt: typeof agent["updatedAt"] === "string" ? agent["updatedAt"] : undefined,
-          requiresAttention: agent["requiresAttention"] === true,
+          updatedAt: typeof agent["updatedAt"] === "string" ? agent["updatedAt"] : typeof agent["lastActivityAt"] === "string" ? agent["lastActivityAt"] : undefined,
+          requiresAttention: agent["requiresAttention"] === true || (Array.isArray(agent["pendingPermissions"]) && agent["pendingPermissions"].length > 0),
         };
       });
-    const frontdesk = pick(raw.frontdesk);
-    const orchestrators = pick(raw.orchestrators);
-    const workers = pick(raw.workers);
-    const total = raw.totalCount ?? frontdesk.length + orchestrators.length + workers.length;
+    const all = pick(raw.entries);
+    const frontdesk = all.filter((agent) => agent.category === "frontdesk");
+    const orchestrators = all.filter((agent) => agent.category === "orchestrator");
+    const workers = all.filter((agent) => agent.category === "worker");
+    const runningCount = all.filter((agent) => agent.deterministicState === "running").length;
+    const errorCount = all.filter((agent) => agent.deterministicState.startsWith("failed:")).length;
     return {
       frontdesk,
       orchestrators,
       workers,
-      totalCount: total,
-      runningCount: raw.runningCount ?? 0,
-      idleCount: raw.idleCount ?? 0,
-      errorCount: raw.errorCount ?? 0,
+      totalCount: all.length,
+      runningCount,
+      idleCount: Math.max(0, all.length - runningCount - errorCount),
+      errorCount,
     };
   }
 
   async fetchCandidates(): Promise<CandidateIssue[]> {
-    const raw = await this.invokeFleetRpc<{ ok: boolean; issues?: unknown[]; error?: string }>("issues", {
-      state: "open",
+    if (!this.client) throw new Error("Not connected to the Paseo daemon.");
+    const workspaces = await this.client.workspaces.list();
+    const cwds = [...new Set((workspaces.entries ?? []).map((entry) => (entry as Record<string, unknown>).cwd).filter((cwd): cwd is string => typeof cwd === "string" && cwd.length > 0))];
+    const responses = await Promise.all(cwds.map((cwd) => this.client!.searchForge({ cwd, query: "", limit: 50, kinds: ["issue"] })));
+    const seen = new Set<number>();
+    const issues = responses.flatMap((response) => response.items ?? []).filter((entry) => {
+      const number = Number((entry as Record<string, unknown>).number ?? 0);
+      if (!number || seen.has(number)) return false;
+      seen.add(number);
+      return true;
     });
-    if (!raw || raw.ok !== true) throw new Error(raw?.error ?? "Daemon returned ok=false for uppidi-fleet.issues.");
-    return (Array.isArray(raw.issues) ? raw.issues : []).map((entry) => {
+    return issues.map((entry) => {
       const issue = (entry ?? {}) as Record<string, unknown>;
-      const status = String(issue["status"] ?? "Backlog");
+      const labels = Array.isArray(issue["labels"]) ? issue["labels"].map(String) : [];
+      const status = String(issue["state"] ?? "open") === "closed" ? "Done" : labels.includes("state/1-wip") ? "In progress" : labels.some((label) => label === "state/2-review" || label === "state/3-verify") ? "Review" : "Backlog";
       return {
         number: Number(issue["number"] ?? 0),
         title: String(issue["title"] ?? ""),
-        repo: String(issue["repo"] ?? ""),
+        repo: String(issue["projectPath"] ?? "").split("/").pop() ?? "",
         status: (["Backlog", "In progress", "Review", "Done"] as const).includes(
           status as CandidateIssue["status"],
         )
           ? (status as CandidateIssue["status"])
           : "Backlog",
-        attention: String(issue["attention"] ?? "attention/1-agent"),
-        branch: typeof issue["branch"] === "string" ? issue["branch"] : undefined,
+        attention: labels.find((label) => label.startsWith("attention/")) ?? "attention/1-agent",
+        branch: typeof issue["headRefName"] === "string" ? issue["headRefName"] : undefined,
         url: typeof issue["url"] === "string" ? issue["url"] : undefined,
-        labels: Array.isArray(issue["labels"]) ? issue["labels"].map(String) : [],
-        comments: Number(issue["comments"] ?? 0),
+        labels,
+        comments: 0,
         updatedAt: typeof issue["updatedAt"] === "string" ? issue["updatedAt"] : undefined,
       };
     });
   }
 
   async teardownFleet(targets: FleetTeardownTarget[]): Promise<FleetTeardownResult> {
-    const raw = await this.invokeFleetRpc<{
-      ok: boolean;
-      tornDown?: Partial<Record<FleetTeardownTarget, number>>;
-      errors?: unknown;
-      message?: string;
-      error?: string;
-    }>(FLEET_TEARDOWN_RPC, buildTeardownInput(targets));
+    if (!this.client) throw new Error("Not connected to the Paseo daemon.");
+    const agents = await this.fetchAgents();
+    const requested = new Set(targets);
+    const selected = [...agents.frontdesk, ...agents.orchestrators, ...agents.workers].filter((agent) => requested.has(agent.category === "frontdesk" ? "frontdesk" : agent.category === "orchestrator" ? "orchestrators" : "workers"));
+    const errors: string[] = [];
+    const tornDown: Record<FleetTeardownTarget, number> = { workers: 0, orchestrators: 0, frontdesk: 0 };
+    await Promise.all(selected.map(async (agent) => {
+      try {
+        await this.client!.agents.ref(agent.id).archive();
+        tornDown[agent.category === "frontdesk" ? "frontdesk" : agent.category === "orchestrator" ? "orchestrators" : "workers"] += 1;
+      } catch (error) {
+        errors.push(`${agent.name}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }));
     return {
-      ok: raw?.ok === true,
-      tornDown: {
-        workers: Number(raw?.tornDown?.workers ?? 0),
-        orchestrators: Number(raw?.tornDown?.orchestrators ?? 0),
-        frontdesk: Number(raw?.tornDown?.frontdesk ?? 0),
-      },
-      errors: Array.isArray(raw?.errors) ? raw.errors.map(String) : [],
-      message: raw?.message,
-      error: raw?.error,
+      ok: errors.length === 0,
+      tornDown,
+      errors,
+      message: `Archived ${selected.length} native daemon agent(s).`,
+      error: errors.length > 0 ? errors.join("; ") : undefined,
     };
   }
 

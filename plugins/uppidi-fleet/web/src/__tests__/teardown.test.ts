@@ -1,11 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildTeardownInput, DaemonConnection, FLEET_TEARDOWN_RPC } from "../daemon/connection.js";
-
-describe("FLEET_TEARDOWN_RPC", () => {
-  it("targets the fleet-teardown plugin RPC", () => {
-    expect(FLEET_TEARDOWN_RPC).toBe("fleet-teardown");
-  });
-});
+import { buildTeardownInput, DaemonConnection } from "../daemon/connection.js";
 
 describe("buildTeardownInput", () => {
   it("always sends confirm:true with deduplicated targets", () => {

@@ -101,12 +101,14 @@ export function flattenAgents(snapshot: FleetAgentsSnapshot | null): FleetAgent[
   return [...snapshot.frontdesk, ...snapshot.orchestrators, ...snapshot.workers];
 }
 
-const CATEGORY_OF = new Set<AgentCategory>(["frontdesk", "orchestrator", "worker"]);
-
 export function isAgentCategory(value: unknown): value is AgentCategory {
-  return typeof value === "string" && CATEGORY_OF.has(value as AgentCategory);
+  if (typeof value !== "string") return false;
+  const normalized = value.trim().toLowerCase().replace(/-/g, "");
+  return normalized === "frontdesk" || normalized === "orchestrator" || normalized === "worker";
 }
 
 export function normalizeAgentCategory(value: unknown): AgentCategory {
-  return isAgentCategory(value) ? value : "worker";
+  if (!isAgentCategory(value)) return "worker";
+  const normalized = String(value).trim().toLowerCase().replace(/-/g, "");
+  return normalized as AgentCategory;
 }

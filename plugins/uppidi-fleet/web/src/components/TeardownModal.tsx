@@ -35,7 +35,7 @@ export function TeardownModal({ open, busy, result, onClose, onConfirm }: Teardo
       >
         <h2 id="teardown-title">Teardown fleet</h2>
         <p className="muted">
-          Archives fleet agents by category via <code>uppidi-fleet.fleet-teardown</code>. This is destructive and
+          Archives fleet agents by category through the daemon&apos;s native agent API. This is destructive and
           cannot be undone from here.
         </p>
         <fieldset>

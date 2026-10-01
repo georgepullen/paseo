@@ -1,9 +1,10 @@
 # uppidi-fleet/web — standalone fleet dashboard
 
 Standalone web application for monitoring and managing the Uppidi fleet.
-Independent from the Paseo desktop plugin UI: it connects to a Paseo daemon
-over WebSocket (via `@getpaseo/client`) from any host — it does not need to
-run on the same server as the daemon.
+Independent from the Paseo desktop plugin UI and the `uppidi-fleet` plugin: it
+connects to a Paseo daemon over its native WebSocket API (via
+`@getpaseo/client`) from any host. The dashboard works even when the plugin is
+not installed or loaded on that daemon.
 
 ## Run
 
@@ -56,18 +57,21 @@ settings — configure these on the daemon host:
 
 - **Fleet health** — aggregated running/idle/errored/attention counts plus
   frontdesk / orchestrator / worker split.
-- **Running agents** — frontdesk, orchestrators, and workers grouped from
-  `uppidi-fleet.agents`.
-- **Candidate issues** — open triage candidates from `uppidi-fleet.issues`.
-- **Teardown fleet** — danger modal calling `uppidi-fleet.fleet-teardown`
-  with explicit target checkboxes and an arm confirmation.
+- **Running agents** — frontdesk, orchestrators, and workers grouped from the
+  native `agents.list()` snapshot and its WebSocket subscription.
+- **Candidate issues** — open Forge issues queried through the native daemon
+  `searchForge()` API using native workspace directories.
+- **Teardown fleet** — danger modal archives selected agents through native
+  agent handles (`agents.ref(id).archive()`).
 
-## RPC contract note
+## Native data flow
 
-The desktop plugin registers the teardown handler as
-`uppidi-fleet.fleet-teardown` (`uppidiFleetTeardownContract`). This dashboard
-calls that exact method name; `fleet.teardown` in earlier notes refers to the
-same handler.
+After connecting, the app subscribes to native agent and workspace snapshots
+with `agents.list({ subscribe: {} })` and `workspaces.list({ subscribe: {} })`.
+Snapshot/update notifications refresh the dashboard; explicit refreshes use
+the same native lists. Forge issues are queried with `searchForge()` for each
+known workspace. No plugin RPC is made by the web app, so the daemon does not
+need the `uppidi-fleet` plugin loaded.
 
 ## Tests
 
