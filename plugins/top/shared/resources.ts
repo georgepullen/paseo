@@ -654,7 +654,7 @@ export const TopSettingsSchema = z.preprocess(
     recordTurnTelemetry: z.boolean().optional(),
     timelineCadence: z.number().min(0).max(10).default(1),
     intervalSeconds: z.number().min(1).max(60).default(3),
-    defaultTab: z.enum(["system", "context", "settings", "about"]).default("system"),
+    defaultTab: z.enum(["system", "context", "permissions", "settings", "about"]).default("system"),
   })
 );
 

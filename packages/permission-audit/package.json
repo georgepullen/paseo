@@ -1,0 +1,27 @@
+{
+  "name": "permission-audit",
+  "version": "0.1.0",
+  "description": "Shared permission audit library: contracts, event parser, JSONL store, and PermissionAuditView UI",
+  "license": "MIT",
+  "type": "module",
+  "exports": {
+    "./shared": "./src/shared.ts",
+    "./server": "./src/server.ts",
+    "./client": "./src/client.tsx"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "npm run typecheck && vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/react": "^19.0.10",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
+    "typescript": "^5.9.3",
+    "vitest": "^3.0.0"
+  }
+}

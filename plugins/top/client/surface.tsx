@@ -18,6 +18,7 @@ import {
   usePluginTheme,
 } from "paseo-plugin-helper/client";
 import { formatBytes, formatUptime } from "paseo-plugin-helper/shared";
+import { PermissionAuditView } from "permission-audit/client";
 import {
   topSettingsContract,
   checkboxesFromTarget,
@@ -32,11 +33,12 @@ import { ChoiceChips } from "./settings-ui";
 import { useTopResourceQuery } from "./resources-query";
 import { FleetView } from "./multi-host-view";
 
-type SurfaceTab = "system" | "fleet" | "settings" | "about";
+type SurfaceTab = "system" | "fleet" | "permissions" | "settings" | "about";
 
 const TABS = [
   { id: "system", label: "Activity", shortLabel: "Activity", icon: "Activity" },
   { id: "fleet", label: "Fleet", shortLabel: "Fleet", icon: "Server" },
+  { id: "permissions", label: "Permissions", shortLabel: "Permissions", icon: "ShieldCheck" },
   { id: "settings", label: "Settings", shortLabel: "Settings", icon: "Sliders" },
   { id: "about", label: "About", shortLabel: "About", icon: "Info" },
 ];
@@ -173,6 +175,8 @@ export function TopDashboardSurface(_props: PluginSurfaceProps) {
       )}
 
       {activeTab === "fleet" && <FleetView />}
+
+      {activeTab === "permissions" && <PermissionAuditView variant="compact" />}
 
       {activeTab === "settings" && (
         <Stack gap={12}>

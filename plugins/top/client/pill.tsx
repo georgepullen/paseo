@@ -46,6 +46,7 @@ import {
   resolveMetricStatus,
   type MetricThresholds,
 } from "paseo-plugin-helper/shared";
+import { PermissionAuditView } from "permission-audit/client";
 import {
   getSystemResourcesRpc,
   topSettingsContract,
@@ -138,6 +139,7 @@ const MEM_THRESHOLDS: MetricThresholds = { warning: 70, danger: 85 };
 const TABS = [
   { id: "system", label: "System", shortLabel: "System", icon: "Activity" },
   { id: "context", label: "Workspace", shortLabel: "Workspace", icon: "GitBranch" },
+  { id: "permissions", label: "Permissions", shortLabel: "Permissions", icon: "ShieldCheck" },
   { id: "settings", label: "Settings", shortLabel: "Settings", icon: "Sliders" },
   { id: "about", label: "About", shortLabel: "About", icon: "Info" },
 ];
@@ -175,7 +177,7 @@ function getMetricColors(
 // so pill call sites keep a single import path.
 export type { PillItemType } from "./pill-labels";
 
-export type ModalTab = "system" | "context" | "settings" | "about";
+export type ModalTab = "system" | "context" | "permissions" | "settings" | "about";
 
 export function getItemTab(item: PillItemType): "system" | "context" {
   switch (item) {
@@ -1676,6 +1678,10 @@ function ResourceModal({ theme, workspaceId, agentId, initialTab, payload }: Res
           }}
         />
       </>
+    )}
+
+    {activeTab === "permissions" && (
+      <PermissionAuditView variant="compact" />
     )}
 
     {activeTab === "about" && (

@@ -22,25 +22,19 @@ describe("permission-logger client entry", () => {
 });
 
 describe("permission-logger surface", () => {
-  it("renders recent requests via the query contract with search and decision filters", () => {
+  it("renders the shared audit view as a scrolling page", () => {
     const source = readSource("client/surface.tsx");
-    expect(source).toContain("permissionLoggerQuery");
-    expect(source).toContain("SearchInput");
-    expect(source).toContain("DataTable");
-    expect(source).toContain("EmptyState");
-    expect(source).toContain("permission-logger-search");
-    expect(source).toMatch(/All.*Pending.*Allowed.*Denied|decision/);
-    expect(source).toContain('"pending"');
-    expect(source).toContain('"warning"');
+    expect(source).toContain("PermissionAuditView");
+    expect(source).toContain("permission-audit/client");
+    expect(source).toContain('"page"');
   });
 });
 
 describe("permission-logger server entry", () => {
-  it("wires the query RPC and permission event subscription", () => {
+  it("wires the shared audit server with query RPCs and event subscription", () => {
     const source = readSource("index.server.ts");
-    expect(source).toContain("permissionLoggerQuery");
-    expect(source).toContain("subscribePermissionEvents");
-    expect(source).toContain("PermissionLogStore");
+    expect(source).toContain("registerPermissionAuditServer");
+    expect(source).toContain("permission-audit/server");
   });
 
   it("declares the plugin manifest with paseo >=0.9 and npm install build", () => {

@@ -5,7 +5,10 @@
       "paseo-plugin-helper/client": ["../../packages/paseo-plugin-helper/src/client/index.ts"],
       "paseo-plugin-helper/server": ["../../packages/paseo-plugin-helper/src/server/index.ts"],
       "paseo-plugin-helper/shared": ["../../packages/paseo-plugin-helper/src/shared/index.ts"],
-      "paseo-plugin-helper/mcp": ["../../packages/paseo-plugin-helper/src/mcp/index.ts"]
+      "paseo-plugin-helper/mcp": ["../../packages/paseo-plugin-helper/src/mcp/index.ts"],
+      "permission-audit/shared": ["../../packages/permission-audit/src/shared.ts"],
+      "permission-audit/server": ["../../packages/permission-audit/src/server.ts"],
+      "permission-audit/client": ["../../packages/permission-audit/src/client.tsx"]
     },
     "target": "ES2020",
     "module": "ESNext",

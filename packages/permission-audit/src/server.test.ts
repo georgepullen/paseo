@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -6,11 +6,107 @@ import {
   createPermissionLogger,
   extractAgentAttribution,
   normalizeDecision,
+  PermissionLogStore,
+  registerPermissionAuditServer,
   splitRequestEvent,
   splitResolveEvent,
   subscribePermissionEvents,
-} from "./listener";
-import { PermissionLogStore } from "./storage";
+} from "./server.js";
+import type { PermissionAuditEntry } from "./shared.js";
+
+function entry(overrides: Partial<PermissionAuditEntry> = {}): PermissionAuditEntry {
+  return {
+    id: `req-${Math.random().toString(36).slice(2)}`,
+    timestamp: "2026-09-28T10:00:00.000Z",
+    agentId: "agent-1",
+    kind: "tool",
+    name: "bash",
+    input: { command: "ls" },
+    decision: "allow",
+    ...overrides,
+  };
+}
+
+describe("PermissionLogStore", () => {
+  let dir: string;
+  let store: PermissionLogStore;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), "perm-log-"));
+    store = new PermissionLogStore({ filePath: path.join(dir, "permissions.jsonl") });
+  });
+
+  it("reads empty when no log file exists", () => {
+    expect(store.readAll()).toEqual([]);
+  });
+
+  it("appends entries as JSONL lines and reads them back", () => {
+    store.append(entry({ id: "a" }));
+    store.append(entry({ id: "b", decision: "deny" }));
+    const lines = fs.readFileSync(store.filePath, "utf8").trim().split("\n");
+    expect(lines).toHaveLength(2);
+    expect(lines.every((line) => JSON.parse(line))).toBe(true);
+    expect(store.readAll().map((e) => e.id)).toEqual(["a", "b"]);
+  });
+
+  it("skips corrupt lines instead of failing the whole log", () => {
+    store.append(entry({ id: "a" }));
+    fs.appendFileSync(store.filePath, "not-json\n");
+    store.append(entry({ id: "b" }));
+    expect(store.readAll().map((e) => e.id)).toEqual(["a", "b"]);
+  });
+
+  it("filters by agentId, model, decision, and date range", () => {
+    store.append(entry({ id: "a", agentId: "a1", agentModel: "m1", decision: "allow", timestamp: "2026-09-10T00:00:00.000Z" }));
+    store.append(entry({ id: "b", agentId: "a2", agentModel: "m1", decision: "deny", timestamp: "2026-09-20T00:00:00.000Z" }));
+    store.append(entry({ id: "c", agentId: "a1", agentModel: "m2", decision: "deny", timestamp: "2026-09-25T00:00:00.000Z" }));
+
+    expect(store.query({ agentId: "a1", limit: 100 }).total).toBe(2);
+    expect(store.query({ model: "m1", limit: 100 }).total).toBe(2);
+    expect(store.query({ decision: "deny", limit: 100 }).total).toBe(2);
+    expect(
+      store.query({ from: "2026-09-15", to: "2026-09-22", limit: 100 }).entries.map((e) => e.id),
+    ).toEqual(["b"]);
+  });
+
+  it("readLatest and query resolve entries by id, reflecting pending-to-allowed transition", () => {
+    store.append(entry({ id: "req-x", decision: "pending", timestamp: "2026-09-20T10:00:00.000Z" }));
+    expect(store.query({ decision: "pending" }).total).toBe(1);
+    expect(store.query({ decision: "allow" }).total).toBe(0);
+
+    store.append(entry({ id: "req-x", decision: "allow", timestamp: "2026-09-20T10:00:05.000Z" }));
+    expect(store.readAll()).toHaveLength(2);
+    expect(store.readLatest()).toHaveLength(1);
+    expect(store.readLatest()[0]?.decision).toBe("allow");
+    expect(store.query({ decision: "pending" }).total).toBe(0);
+    expect(store.query({ decision: "allow" }).total).toBe(1);
+    expect(store.query({}).total).toBe(1);
+  });
+
+  it("searches tool names and serialized input, newest first, honoring limit", () => {
+    store.append(entry({ id: "a", name: "bash", input: { command: "rm -rf /tmp/x" }, timestamp: "2026-09-10T00:00:00.000Z" }));
+    store.append(entry({ id: "b", name: "read", input: { path: "/etc/hosts" }, timestamp: "2026-09-20T00:00:00.000Z" }));
+    const result = store.query({ search: "rm -rf", limit: 100 });
+    expect(result.entries.map((e) => e.id)).toEqual(["a"]);
+    const limited = store.query({ limit: 1 });
+    expect(limited.entries).toHaveLength(1);
+    expect(limited.total).toBe(2);
+    expect(limited.entries[0]?.id).toBe("b");
+  });
+
+  it("merges the legacy log path and keeps appending to the scoped path", () => {
+    const legacyDir = fs.mkdtempSync(path.join(os.tmpdir(), "perm-legacy-"));
+    const primaryDir = fs.mkdtempSync(path.join(os.tmpdir(), "perm-primary-"));
+    const legacyFile = path.join(legacyDir, "permissions.jsonl");
+    const primaryFile = path.join(primaryDir, "permissions.jsonl");
+    fs.writeFileSync(legacyFile, `${JSON.stringify(entry({ id: "old" }))}\n`, "utf8");
+    const scoped = new PermissionLogStore({ filePath: primaryFile, legacyFilePath: legacyFile });
+    expect(scoped.readAll().map((e) => e.id)).toEqual(["old"]);
+    scoped.append(entry({ id: "new" }));
+    expect(scoped.readAll().map((e) => e.id)).toEqual(["old", "new"]);
+    expect(fs.readFileSync(legacyFile, "utf8").trim().split("\n")).toHaveLength(1);
+  });
+});
 
 describe("extractAgentAttribution", () => {
   it("resolves model, provider, mode, and title from agent context", () => {
@@ -124,7 +220,6 @@ describe("event capture and pairing", () => {
     });
     expect(store.query({ decision: "pending" }).total).toBe(1);
 
-    // Agent resumes turn without Paseo core firing agent.permission_resolved
     const resolved = logger.handleTurnActivity({ agentId: "a_opencode" });
     expect(resolved).toHaveLength(1);
     expect(resolved[0]).toMatchObject({ id: "r_opencode", decision: "allow" });
@@ -203,5 +298,38 @@ describe("subscribePermissionEvents", () => {
     });
     expect(() => subscribePermissionEvents({}, logger)()).not.toThrow();
     expect(vi.fn()).toBeDefined();
+  });
+});
+
+describe("registerPermissionAuditServer", () => {
+  it("wires query contracts and permission event subscription with a shared store", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "perm-register-"));
+    const handled = new Map<string, (input: any) => unknown>();
+    const seenEvents: string[] = [];
+    const server = {
+      on: (name: string, _handler: (event: unknown, context: unknown) => void) => {
+        seenEvents.push(name);
+        return () => {};
+      },
+      handle: (contract: { name: string }, handler: (input: any) => unknown) => {
+        handled.set(contract.name, handler);
+      },
+    };
+    const { store, unsubscribe } = registerPermissionAuditServer(server, {
+      filePath: path.join(dir, "permissions.jsonl"),
+      now: () => "2026-09-28T10:00:00.000Z",
+    });
+    expect(handled.has("permission-audit.query")).toBe(true);
+    expect(handled.has("permission-logger.query")).toBe(true);
+    expect(seenEvents).toContain("agent.permission_requested");
+
+    store.append(entry({ id: "q1", agentId: "agent-7", decision: "deny" }));
+    const result = handled.get("permission-audit.query")?.({ limit: 100 }) as {
+      entries: PermissionAuditEntry[];
+      total: number;
+    };
+    expect(result.total).toBe(1);
+    expect(result.entries[0]?.agentId).toBe("agent-7");
+    expect(() => unsubscribe()).not.toThrow();
   });
 });

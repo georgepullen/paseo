@@ -1,5 +1,6 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { guardRpcHandler } from "paseo-plugin-helper/server";
+import { registerPermissionAuditServer } from "permission-audit/server";
 import {
   getSystemResourcesRpc,
   getCustomPillsRpc,
@@ -73,6 +74,11 @@ export default function contribute(server: PluginServerContext) {
   server.handle(getCustomPillsRpc, handleGetCustomPills);
   server.handle(listCustomPillsRpc, handleListCustomPills);
   server.handle(runCustomPillModalCommandRpc, handleRunCustomPillModalCommand);
+
+  const { unsubscribe: unsubscribePermissionAudit } = registerPermissionAuditServer(
+    server as unknown as Parameters<typeof registerPermissionAuditServer>[0],
+    { logger: log },
+  );
 
   const turnStartTimes = new Map<string, number>();
   const turnGitBefore = new Map<string, { insertions: number; deletions: number; filesChanged: number }>();
@@ -283,6 +289,7 @@ export default function contribute(server: PluginServerContext) {
     lastCanceledAt.clear();
     lastCanceledUserMessages.clear();
     customPillPoller.stop();
+    unsubscribePermissionAudit();
     unsubscribeTurnStarted();
     unsubscribeAgentCreated();
     unsubscribeTurnEnded();
