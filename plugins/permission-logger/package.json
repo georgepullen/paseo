@@ -1,7 +1,7 @@
 {
   "name": "@xpufx/paseo-permission-logger",
   "private": false,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Audit logger for Paseo permission requests: records tool/plan/mode/question decisions with agent attribution",
   "license": "MIT",
   "type": "module",

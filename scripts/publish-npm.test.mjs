@@ -74,7 +74,6 @@ const EXPECTED_PLUGINS = [
   "twofado",
   "uppidi-fleet",
   "wellbeing",
-  "worktree-install",
   "x-comms",
 ];
 check(
@@ -85,6 +84,7 @@ check(
 // `uppidi-forge` is a committed symlink alias of `uppidi-fleet`, not a
 // distinct package. Publishing it would ship the same plugin under two names.
 check("excludes the uppidi-forge symlink alias", !ids.includes("uppidi-forge"));
+check("excludes private plugins like worktree-install", !ids.includes("worktree-install"));
 check("discovers the plugins that matter", ids.includes("top") && ids.includes("mcp-tools") && ids.includes("uppidi-fleet") && ids.includes("wellbeing"));
 const top = manifestFor("top");
 check("top is READY", readiness(top).length === 0);

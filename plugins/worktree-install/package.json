@@ -2,7 +2,7 @@
   "name": "@xpufx/paseo-worktree-install",
   "version": "0.1.0",
   "description": "Fleet, queue, and ticket surface for Paseo, laid out independently of the shared plugin-helper UI kit",
-  "private": false,
+  "private": true,
   "license": "MIT",
   "type": "module",
   "scripts": {

@@ -37,8 +37,8 @@ test("every publishable plugin is covered", () => {
   assert.ok(covered.size >= 11, `expected the full publishable set, got ${covered.size}`);
 });
 
-test("the three plugins the hardcoded array omitted are covered", () => {
-  for (const id of ["uppidi-fleet", "wellbeing", "worktree-install"]) {
+test("the plugins the hardcoded array omitted are covered", () => {
+  for (const id of ["uppidi-fleet", "wellbeing"]) {
     assert.ok(pluginIds().includes(id), `${id} must be a publishable plugin`);
     assert.ok(
       !src.includes(`id: "${id}"`) || src.includes("publishablePackages"),

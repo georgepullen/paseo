@@ -1,6 +1,6 @@
 {
   "name": "@xpufx/paseo-wellbeing",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Operator presence tracking, circadian schedule management, and fatigue/wind-down alerting for Paseo",
   "private": false,
   "license": "MIT",

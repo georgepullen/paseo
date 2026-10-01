@@ -98,6 +98,16 @@ export function pluginIds() {
     // explicitly so the alias can never be staged and published twice.
     .filter((e) => !e.isSymbolicLink() && e.isDirectory())
     .filter((e) => fs.existsSync(path.join(PLUGIN_DIR, e.name, "paseo-plugin.json")))
+    .filter((e) => {
+      const pkgPath = path.join(PLUGIN_DIR, e.name, "package.json");
+      if (!fs.existsSync(pkgPath)) return false;
+      try {
+        const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+        return pkg.private !== true;
+      } catch {
+        return false;
+      }
+    })
     .map((e) => e.name)
     .sort();
 }
