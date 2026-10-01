@@ -436,6 +436,7 @@ export async function executeFleetBoardSweep(
       "# Fleet Board Sweep",
       `- Swept repositories: ${result.swept}`,
       `- Actionable repositories: ${result.actionable.length}`,
+      `- Orchestrator records pruned: ${result.prunedCount}`,
       `- Front Desk notified: ${result.notified > 0 ? "Yes" : "No"}`,
     ];
 

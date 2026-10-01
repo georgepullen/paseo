@@ -1340,7 +1340,6 @@ export const uppidiFleetSettingsSchema = z.object({
   hookPort: z.number().int().min(1).max(65535).default(8099),
   enrolledRepos: z.array(z.string()).default([]),
   mutedRepos: z.array(z.string()).default([]),
-  autoProvisionOrchestrators: z.boolean().default(true),
 });
 export type UppidiFleetSettings = z.infer<typeof uppidiFleetSettingsSchema>;
 
@@ -1800,4 +1799,3 @@ export function parseTranscriptToActivityItems(
   commitCurrent();
   return items;
 }
-

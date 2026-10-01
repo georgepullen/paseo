@@ -13,7 +13,6 @@ export interface LegacyRouterConfig {
   enrolledRepos?: string[];
   mutedRepos?: string[];
   secret?: string;
-  autoProvisionOrchestrators?: boolean;
 }
 
 export function getLegacyRouterConfig(customPath?: string): LegacyRouterConfig {
@@ -52,10 +51,6 @@ export function getLegacyRouterConfig(customPath?: string): LegacyRouterConfig {
               : undefined,
             secret:
               typeof parsed.secret === "string" ? parsed.secret : undefined,
-            autoProvisionOrchestrators:
-              typeof parsed.autoProvisionOrchestrators === "boolean"
-                ? parsed.autoProvisionOrchestrators
-                : undefined,
           };
         }
       } catch {
@@ -78,8 +73,7 @@ export function migrateLegacyConfigIfNeeded(
       legacy.host !== undefined ||
       legacy.port !== undefined ||
       legacy.enrolledRepos !== undefined ||
-      legacy.mutedRepos !== undefined ||
-      legacy.autoProvisionOrchestrators !== undefined;
+      legacy.mutedRepos !== undefined;
 
     if (!fileExists) {
       if (hasLegacy) {
@@ -88,7 +82,6 @@ export function migrateLegacyConfigIfNeeded(
           hookPort: legacy.port ?? 8099,
           enrolledRepos: legacy.enrolledRepos ?? [],
           mutedRepos: legacy.mutedRepos ?? [],
-          autoProvisionOrchestrators: legacy.autoProvisionOrchestrators ?? true,
         };
         storage.write(initial);
         return true;
@@ -113,10 +106,6 @@ export function migrateLegacyConfigIfNeeded(
     if (parsed.mutedRepos === undefined && legacy.mutedRepos) {
       patch.mutedRepos = legacy.mutedRepos;
     }
-    if (parsed.autoProvisionOrchestrators === undefined && legacy.autoProvisionOrchestrators !== undefined) {
-      patch.autoProvisionOrchestrators = legacy.autoProvisionOrchestrators;
-    }
-
     if (Object.keys(patch).length > 0) {
       storage.update((prev) => ({ ...prev, ...patch }));
       return true;

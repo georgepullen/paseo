@@ -698,20 +698,17 @@ describe("uppidi-fleet shared contracts", () => {
     assert.equal(defaults.hookPort, 8099);
     assert.deepEqual(defaults.enrolledRepos, []);
     assert.deepEqual(defaults.mutedRepos, []);
-    assert.equal(defaults.autoProvisionOrchestrators, true);
 
     const customized = uppidiFleetSettingsSchema.parse({
       hookHost: "0.0.0.0",
       hookPort: 9000,
       enrolledRepos: ["xpufx-org/paseo"],
       mutedRepos: ["xpufx-org/other"],
-      autoProvisionOrchestrators: false,
     });
     assert.equal(customized.hookHost, "0.0.0.0");
     assert.equal(customized.hookPort, 9000);
     assert.deepEqual(customized.enrolledRepos, ["xpufx-org/paseo"]);
     assert.deepEqual(customized.mutedRepos, ["xpufx-org/other"]);
-    assert.equal(customized.autoProvisionOrchestrators, false);
   });
 });
 
@@ -1157,5 +1154,4 @@ describe("subagent lifecycle contract & structured block detail (#537)", () => {
     });
   });
 });
-
 

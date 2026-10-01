@@ -2010,7 +2010,6 @@ describe("hook-router HTTP handoff, prune, and board sweep routes (#458)", () =>
       queueDir,
       stateDir,
       port: 0,
-      autoProvisionOrchestrators: false,
       spawnAgent: async () => ({ id: "mock-http-extra-agent" }),
     });
     await router.start();
@@ -3708,106 +3707,38 @@ describe("board sweep auto-reconciliation (#794)", () => {
     } catch {}
   });
 
-  it("auto-provisions missing orchestrator for actionable repo and summarizes in Front Desk message", async () => {
+  it("reports actionable repos without auto-provisioning an orchestrator", async () => {
     const sweep = await router.runBoardSweep(["xpufx-org/paseo"]);
     assert.equal(sweep.ok, true);
     assert.equal(sweep.swept, 1);
     assert.equal(sweep.actionable.length, 1);
-    assert.equal(sweep.actionable[0].orchestrator?.status, "provisioned");
-    assert.equal(sweep.actionable[0].orchestrator?.agentId, "agent-1");
-    assert.deepEqual(sweep.autoProvisioned, [{ repo: "forge.mrs.uppidi.com/xpufx-org/paseo", agentId: "agent-1" }]);
-    assert.equal(spawnedCalls.length, 1);
+    assert.equal(sweep.prunedCount, 0);
+    assert.equal(spawnedCalls.length, 0);
 
-    // Front Desk notification includes auto-provision outcome
     assert.equal(deliveredMessages.length, 1);
     assert.equal(deliveredMessages[0].dest, "front-desk-1");
     assert.ok(
-      deliveredMessages[0].msg.includes("auto-provisioned: agent-1"),
-      `Expected auto-provisioned message, got: ${deliveredMessages[0].msg}`,
+      deliveredMessages[0].msg.includes("1 actionable (1 dispatchable)"),
+      `Expected notify-only message, got: ${deliveredMessages[0].msg}`,
     );
   });
 
-  it("identifies existing active orchestrator without re-provisioning", async () => {
-    // Write an existing registered orchestrator
-    router.writeOrchestrator("xpufx-org/paseo", "agent-existing");
-    const agentMap = new Map<string, any>([
-      ["agent-existing", { id: "agent-existing", status: "running" }],
-    ]);
-    (router as any).fetchAgentMap = async () => agentMap;
+  it("prunes orchestrator records whose agents are absent from the daemon", async () => {
+    router.writeOrchestrator("xpufx-org/paseo", "dead-agent");
+    (router as any).fetchAgentMap = async () => new Map();
 
     const sweep = await router.runBoardSweep(["xpufx-org/paseo"]);
-    assert.equal(sweep.ok, true);
-    assert.equal(sweep.actionable[0].orchestrator?.status, "existing");
-    assert.equal(sweep.actionable[0].orchestrator?.agentId, "agent-existing");
-    assert.equal(sweep.autoProvisioned, undefined);
-    assert.equal(spawnedCalls.length, 0);
 
-    // Front Desk message details existing orchestrator
-    assert.equal(deliveredMessages.length, 1);
-    assert.ok(
-      deliveredMessages[0].msg.includes("existing orchestrator: agent-existing"),
-      `Expected existing orchestrator message, got: ${deliveredMessages[0].msg}`,
-    );
+    assert.equal(sweep.prunedCount, 1);
+    assert.equal(router.readOrchestrator("xpufx-org/paseo"), null);
   });
 
-  it("respects autoProvisionOrchestrators disabled configuration toggle", async () => {
-    // Reconfigure router with autoProvisionOrchestrators: false
-    (router as any).options.autoProvisionOrchestrators = false;
+  it("does not treat error-status orchestrators as active", async () => {
+    router.writeOrchestrator("xpufx-org/paseo", "errored-agent");
+    (router as any).fetchAgentMap = async () =>
+      new Map([["errored-agent", { id: "errored-agent", status: "error" }]]);
 
-    const sweep = await router.runBoardSweep(["xpufx-org/paseo"]);
-    assert.equal(sweep.ok, true);
-    assert.equal(sweep.actionable.length, 1);
-    assert.equal(sweep.actionable[0].orchestrator, undefined);
-    assert.equal(sweep.autoProvisioned, undefined);
-    assert.equal(spawnedCalls.length, 0);
-
-    // Front Desk message retains notify-only format
-    assert.equal(deliveredMessages.length, 1);
-    assert.ok(
-      deliveredMessages[0].msg.includes("- forge.mrs.uppidi.com/xpufx-org/paseo: 1 actionable (1 dispatchable)"),
-      `Expected notify-only format, got: ${deliveredMessages[0].msg}`,
-    );
-  });
-
-  it("applies failure dampening / cooldown to prevent rapid retry storms", async () => {
-    // Set short test cooldown of 5000ms
-    (router as any).options.provisionFailureCooldownMs = 5000;
-    (router as any).provisionFailureCooldownMs = 5000;
-
-    // Simulate a repo that fails to resolve workspace
-    (router as any).runBoardCheck = async (repo: string) => ({
-      repo,
-      ok: true,
-      candidates: [{ number: 2, title: "Bug", labels: [], category: "ready", is_dispatchable: true, reason: "ready" }],
-    });
-
-    // First sweep on an unresolvable repo causes provision failure
-    const sweep1 = await router.runBoardSweep(["unknown/unresolvable-repo"]);
-    assert.equal(sweep1.actionable[0].orchestrator?.status, "failed");
-    assert.equal(router.canAttemptProvision("unknown/unresolvable-repo"), false);
-    assert.equal(deliveredMessages.length, 1);
-    assert.ok(deliveredMessages[0].msg.includes("provision failed:"));
-
-    // Second sweep immediately afterwards: failure dampening is active
-    deliveredMessages = [];
-    const sweep2 = await router.runBoardSweep(["unknown/unresolvable-repo"]);
-    assert.equal(sweep2.actionable[0].orchestrator?.status, "dampened");
-    assert.equal(deliveredMessages.length, 1);
-    assert.ok(
-      deliveredMessages[0].msg.includes("provision dampened"),
-      `Expected provision dampened in message, got: ${deliveredMessages[0].msg}`,
-    );
-
-    // After cooldown expires, provisioning is re-attempted
-    const pastTime = Date.now() - 6000;
-    router.recordProvisionFailure("unknown/unresolvable-repo", pastTime);
-    assert.equal(router.canAttemptProvision("unknown/unresolvable-repo"), true);
-
-    deliveredMessages = [];
-    const sweep3 = await router.runBoardSweep(["unknown/unresolvable-repo"]);
-    // Re-attempts and fails again, re-updating cooldown
-    assert.equal(sweep3.actionable[0].orchestrator?.status, "failed");
-    assert.ok(router.provisionFailures.get("forge.mrs.uppidi.com/unknown/unresolvable-repo")! > pastTime);
+    assert.equal(await router.getActiveOrchestrator("xpufx-org/paseo"), null);
   });
 });
 
@@ -3894,4 +3825,3 @@ describe("test isolation & CLI agent execution safety (#814)", () => {
     assert.equal(resolved, null);
   });
 });
-
