@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { homedir } from "node:os";
 import { join } from "node:path";
+import { stateDir } from "./registry.ts";
 
 /**
  * Defer queue: outbound items held because their target is mid-turn (#598).
@@ -147,7 +147,7 @@ export function parseDeferTargetKey(key: string): DeferTarget | null {
 }
 
 export function deferQueueDir(): string {
-  return join(homedir(), ".paseo", "paseo-x-comms", DEFER_QUEUE_DIRNAME);
+  return join(stateDir(), DEFER_QUEUE_DIRNAME);
 }
 
 /** Same directory the injected MCP server reads, by construction. */

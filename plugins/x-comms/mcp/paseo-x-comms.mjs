@@ -7,7 +7,7 @@
 // connection (E2EE); anything else is a direct host target (`host:port`,
 // `tcp://…`, `unix://…`, IPC paths, bare port).
 //
-//   Daemons:  ~/.paseo/paseo-x-comms/registry.json   { name: "<offer URL | direct host>" }
+//   Daemons:  ~/.paseo/plugin-data/xpufx/paseo-x-comms/registry.json   { name: "<offer URL | direct host>" }
 //             (the registry file is the primary way to configure daemons;
 //              offer from `paseo daemon pair` on the target, or a direct host)
 //
@@ -18,11 +18,11 @@
 //
 // Env overrides (testability / power users):
 //   PASEO_X_COMMS_REMOTES    registry file path
-//                                     (default ~/.paseo/paseo-x-comms/registry.json)
+//                                     (default ~/.paseo/plugin-data/xpufx/paseo-x-comms/registry.json)
 //   PASEO_X_COMMS_PASEO      paseo binary (default "paseo")
 //   PASEO_X_COMMS_TIMEOUT_MS per paseo call timeout (default 120000)
 //   PASEO_X_COMMS_MESH_KEY    daemon signing key for the envelope's `auth` field
-//                                     (default ~/.paseo/paseo-x-comms/mesh-key.json)
+//                                     (default ~/.paseo/plugin-data/xpufx/paseo-x-comms/mesh-key.json)
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
@@ -37,7 +37,7 @@ import { redactDaemonTarget } from "./daemon-target.mjs";
 const VERSION = "0.3.0";
 import { z } from "zod";
 
-const REMOTES_DIR = join(homedir(), ".paseo", "paseo-x-comms");
+const REMOTES_DIR = join(homedir(), ".paseo", "plugin-data", "xpufx", "paseo-x-comms");
 
 const REMOTES_FILE =
   process.env.PASEO_X_COMMS_REMOTES ||
@@ -645,7 +645,7 @@ async function callPaseo(tool, args, { signal, daemon = null, agentId = null } =
 // TypeScript and carries its own copy of the rules.
 
 // Alongside the registry, not off a separate constant: in production that is
-// ~/.paseo/paseo-x-comms, the same directory server/defer-queue.ts writes, and
+// ~/.paseo/plugin-data/xpufx/paseo-x-comms, the same directory server/defer-queue.ts writes, and
 // deriving it means the PASEO_X_COMMS_REMOTES override moves the queue with it
 // so tests never touch the operator's real one.
 const DEFER_DIR = join(dirname(REMOTES_FILE), "pending");

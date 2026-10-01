@@ -23,7 +23,7 @@ const FAKE = join(HERE, "fixtures", "fake-paseo.mjs");
 const EXTENSIONS = join(HERE, "fixtures", "extensions");
 
 // Extensions are loaded from disk on server start; tests must never read the
-// operator's real ~/.paseo/paseo-x-comms/extensions tree. Default to an empty
+// operator's real ~/.paseo/plugin-data/xpufx/paseo-x-comms/extensions tree. Default to an empty
 // temp dir and point individual tests at the fixture dirs.
 const NO_EXTENSIONS = mkdtempSync(join(tmpdir(), "paseo-x-comms-no-ext-"));
 

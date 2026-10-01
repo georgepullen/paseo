@@ -33,7 +33,7 @@ A single-file, dependency-light Node ≥18 stdio MCP server. It is a **client** 
 Paseo daemons: it never runs a daemon, and it only talks to agents.
 
 * **Pre-0.8 Legacy**: Used `execFile("paseo", [...])` CLI shellouts and read/wrote
-  `~/.paseo/paseo-x-comms/registry.json`.
+  `~/.paseo/plugin-data/xpufx/paseo-x-comms/registry.json`.
 * **Post-0.8 / 0.10 Modern**: Connects directly via `@getpaseo/client` `DaemonClient`.
   For relay offers (`#offer=...`), it wraps the connection in `DaemonClientRelayE2eeTransport`
   (`@getpaseo/relay/e2ee`) for authenticated, end-to-end encrypted messaging without CLI overhead.
@@ -363,7 +363,7 @@ not an attributable delivery.
 
 ### C7 · Registry I/O
 
-`~/.paseo/paseo-x-comms/registry.json`, a flat `{ name: "<opaque --host>" }`
+`~/.paseo/plugin-data/xpufx/paseo-x-comms/registry.json`, a flat `{ name: "<opaque --host>" }`
 object, overridable with `PASEO_X_COMMS_REMOTES`.
 
 * A missing file is `{}`, not an error.
@@ -458,7 +458,7 @@ fails the suite instead of letting the copy go stale.
 > any installed Paseo plugin. There is no sandbox, no permission prompt, and no
 > isolation boundary. Only drop in extensions you would run yourself.
 
-Dir: `~/.paseo/paseo-x-comms/extensions`, overridable with
+Dir: `~/.paseo/plugin-data/xpufx/paseo-x-comms/extensions`, overridable with
 `PASEO_X_COMMS_EXTENSIONS`. `*.mjs` only, loaded in filename order at startup,
 each expected to export `register(api)` as default or named.
 
@@ -604,11 +604,11 @@ an `isError`, and the plugin server's outbox is what holds it on the other route
 
 | Env var | Default | Purpose |
 |---|---|---|
-| `PASEO_X_COMMS_REMOTES` | `~/.paseo/paseo-x-comms/registry.json` | registry file path; the defer queue directory is derived from it, so it moves with it |
-| `PASEO_X_COMMS_MESH_KEY` | `~/.paseo/paseo-x-comms/mesh-key.json` | this daemon's signing key for `xComms.auth`; the plugin passes it by absolute path |
+| `PASEO_X_COMMS_REMOTES` | `~/.paseo/plugin-data/xpufx/paseo-x-comms/registry.json` | registry file path; the defer queue directory is derived from it, so it moves with it |
+| `PASEO_X_COMMS_MESH_KEY` | `~/.paseo/plugin-data/xpufx/paseo-x-comms/mesh-key.json` | this daemon's signing key for `xComms.auth`; the plugin passes it by absolute path |
 | `PASEO_X_COMMS_PASEO` | `paseo` | the `paseo` binary |
 | `PASEO_X_COMMS_TIMEOUT_MS` | `120000` | per-`paseo`-call timeout |
-| `PASEO_X_COMMS_EXTENSIONS` | `~/.paseo/paseo-x-comms/extensions` | extension dir (trusted, unsandboxed) |
+| `PASEO_X_COMMS_EXTENSIONS` | `~/.paseo/plugin-data/xpufx/paseo-x-comms/extensions` | extension dir (trusted, unsandboxed) |
 | `PASEO_HOSTS_FILE` | `~/.paseo/hosts.json` | configured-hosts file, read-only |
 
 `PASEO_X_COMMS_MCP_SERVER` is **not** read here — it is a plugin-side override for

@@ -75,7 +75,7 @@ required.
 2. On **this** host, write the registry file with a name for that daemon
    (see `paseo-x-comms.example.json` for the format):
 
-   `~/.paseo/paseo-x-comms/registry.json`:
+   `~/.paseo/plugin-data/xpufx/paseo-x-comms/registry.json`:
 
    ```json
    { "hsi": "https://app.paseo.sh/#offer=<b64>" }
@@ -159,7 +159,7 @@ the claim checkable.
   so is the prose body — this authenticates *who sent this*, not *what they said*.
   Editing any attribution field invalidates the signature.
 - **Who signs.** Each daemon holds an ed25519 keypair, generated on first use and
-  stored `0600` in `~/.paseo/paseo-x-comms/mesh-key.json`. `keyId` is the
+  stored `0600` in `~/.paseo/plugin-data/xpufx/paseo-x-comms/mesh-key.json`. `keyId` is the
   fingerprint of the signing public key.
 - **Who checks.** The receiving daemon fetches the peer's public key over the
   **existing** authenticated peer link (relay E2EE, with the handshake serverId
@@ -237,7 +237,7 @@ ports and `unix://` also work but are not documented in the CLI help.)
 > `.mjs` files you would run yourself.
 
 Drop `*.mjs` files into the extension dir (default
-`~/.paseo/paseo-x-comms/extensions`, override with `PASEO_X_COMMS_EXTENSIONS`).
+`~/.paseo/plugin-data/xpufx/paseo-x-comms/extensions`, override with `PASEO_X_COMMS_EXTENSIONS`).
 Each exports `register(api)` (default or named) and is loaded in filename
 order at startup. Extensions can add filters and register their own tools on
 the same MCP server:
@@ -269,13 +269,13 @@ export default function register(api) {
 
 ## Security
 
-The registry (default `~/.paseo/paseo-x-comms/registry.json`) holds live
+The registry (default `~/.paseo/plugin-data/xpufx/paseo-x-comms/registry.json`) holds live
 pairing offers (serverId, daemon public keys, relay endpoints): it is
 **credentials**. Never publish it. Configure it as a plain JSON file yourself
 (see the example); do not paste offers into agent contexts and do not share
 the file.
 
-`~/.paseo/paseo-x-comms/mesh-key.json` is this daemon's x-comms **private**
+`~/.paseo/plugin-data/xpufx/paseo-x-comms/mesh-key.json` is this daemon's x-comms **private**
 signing key (see [Envelope authentication](#envelope-authentication)). It is
 written `0600`, never travels, and is not something to paste into an agent
 context. Losing it only means this daemon's envelopes stop verifying under its
@@ -286,11 +286,11 @@ file.
 
 | Env var | Default | Purpose |
 |---------|---------|---------|
-| `PASEO_X_COMMS_REMOTES` | `~/.paseo/paseo-x-comms/registry.json` | registry file path |
+| `PASEO_X_COMMS_REMOTES` | `~/.paseo/plugin-data/xpufx/paseo-x-comms/registry.json` | registry file path |
 | `PASEO_X_COMMS_PASEO` | `paseo` | paseo binary |
 | `PASEO_X_COMMS_TIMEOUT_MS` | `120000` | per paseo call timeout |
-| `PASEO_X_COMMS_EXTENSIONS` | `~/.paseo/paseo-x-comms/extensions` | extension dir (trusted, unsandboxed) |
-| `PASEO_X_COMMS_MESH_KEY` | `~/.paseo/paseo-x-comms/mesh-key.json` | daemon signing key for `xComms.auth` |
+| `PASEO_X_COMMS_EXTENSIONS` | `~/.paseo/plugin-data/xpufx/paseo-x-comms/extensions` | extension dir (trusted, unsandboxed) |
+| `PASEO_X_COMMS_MESH_KEY` | `~/.paseo/plugin-data/xpufx/paseo-x-comms/mesh-key.json` | daemon signing key for `xComms.auth` |
 
 ## Registering with clients
 

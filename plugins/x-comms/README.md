@@ -72,7 +72,7 @@ paseo plugin update x-comms
 
 ### Configure daemons
 
-The registry is at `~/.paseo/paseo-x-comms/registry.json`:
+The registry is at `~/.paseo/plugin-data/xpufx/paseo-x-comms/registry.json`:
 
 ```json
 {
@@ -236,7 +236,7 @@ npm run typecheck   # tsc --noEmit
 npm test            # node --test across mcp, server, and client suites (hermetic protocol tests plus presence, injection, settings, snapshot, and conversation suites)
 ```
 
-No live daemons, no real `~/.paseo/paseo-x-comms/registry.json` touched in tests (`PASEO_X_COMMS_REMOTES` / `PASEO_X_COMMS_PASEO` overrides).
+No live daemons, no real `~/.paseo/plugin-data/xpufx/paseo-x-comms/registry.json` touched in tests (`PASEO_X_COMMS_REMOTES` / `PASEO_X_COMMS_PASEO` overrides).
 
 ## License
 

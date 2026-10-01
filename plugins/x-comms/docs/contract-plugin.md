@@ -182,7 +182,7 @@ Details:
   `session/new` with JSON-RPC `-32602` and breaks every newborn Antigravity
   agent (#243). Pinned by a test that asserts the real pattern, not the constant.
 * **Server path** is *not* the checkout path. `syncStableServer()` copies the
-  bundled artifact to `~/.paseo/paseo-x-comms/bin/paseo-x-comms.bundled.mjs`,
+  bundled artifact to `~/.paseo/plugin-data/xpufx/paseo-x-comms/bin/paseo-x-comms.bundled.mjs`,
   refreshing on content change, and injects that. Plugin checkouts are
   content-addressed and replaced on every update, so a checkout path baked into a
   saved agent config rots.
@@ -276,7 +276,7 @@ lifecycle first.
 ### 3.2 The defer queue
 
 `server/defer-queue.ts`. One file per item under
-`~/.paseo/paseo-x-comms/pending/`, so two long-lived processes (this plugin
+`~/.paseo/plugin-data/xpufx/paseo-x-comms/pending/`, so two long-lived processes (this plugin
 server and one injected MCP server per agent) can both write without a lock.
 
 | Property | Value | Why |
@@ -311,7 +311,7 @@ sendable, the **transport** failed.
 
 | Property | Value |
 |---|---|
-| Store | `~/.paseo/paseo-x-comms/outbox.json` |
+| Store | `~/.paseo/plugin-data/xpufx/paseo-x-comms/outbox.json` |
 | Backoff | `5s · 2^(attempts-1)`, capped at `60s` |
 | Sweep | every `15s`, `runImmediately: true` on plugin load |
 | Immediate retry | when a peer's reachability flips `false → true` via `daemon.health` or `snapshot.refresh`. The first observation is not a reconnect. |
@@ -421,7 +421,7 @@ client stamps its own envelopes and holds no key.
 ### 5.3 Timeline reconcile and attribution
 
 `snapshot.refresh` scans every local agent's timeline for envelopes, verifies
-each one, and folds the survivors into `~/.paseo/paseo-x-comms/conversations.json`
+each one, and folds the survivors into `~/.paseo/plugin-data/xpufx/paseo-x-comms/conversations.json`
 — a plain-data thread snapshot with unread counts, for cross-plugin readers
 (`top`, `mcp-tools`).
 
@@ -503,7 +503,7 @@ timeline can hand-write the tag and claim any `sender.agentId` (#594).
   `invalid`, and only `verified` may be used for attribution. A verifier that has
   no key for a `keyId` returns `null`, which is an `invalid` verdict, not a pass.
 * **Key.** ed25519, generated on first use, stored `0600` at
-  `~/.paseo/paseo-x-comms/mesh-key.json`, written atomically. `keyId` is
+  `~/.paseo/plugin-data/xpufx/paseo-x-comms/mesh-key.json`, written atomically. `keyId` is
   `xck1:` + base64url of the DER SubjectPublicKeyInfo — a fingerprint of the key
   **bytes**, so re-wrapping the same key in different PEM armour cannot change its
   identity. A stored key whose fingerprint disagrees with its own bytes is
@@ -559,7 +559,7 @@ return is picked up next pass.
 
 ### 6.4 On-disk state
 
-Everything under `~/.paseo/paseo-x-comms/`, each file created with a
+Everything under `~/.paseo/plugin-data/xpufx/paseo-x-comms/`, each file created with a
 forward-only one-time migration from the old `~/.paseo` root location.
 
 | File | Contents |

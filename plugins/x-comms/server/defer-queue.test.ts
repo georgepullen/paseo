@@ -85,8 +85,8 @@ describe("defer queue target identity", () => {
     assert.equal(deferDepth(dir, IDLE), 1);
   });
 
-  it("lives in the x-comms state dir the MCP server also reads", () => {
-    assert.match(deferQueueDir(), /paseo-x-comms[/\\]pending$/);
+  it("lives in the plugin-scoped storage dir the MCP server also reads", () => {
+    assert.match(deferQueueDir(), /plugin-data[/\\]xpufx[/\\]paseo-x-comms[/\\]pending$/);
   });
 });
 

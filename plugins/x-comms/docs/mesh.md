@@ -48,7 +48,7 @@ Implemented:
   (`shared/envelope.ts`, `AUTH_FIELDS`). `direction` and the prose body are
   excluded — this proves who sent, not what they said.
 - Each daemon holds a keypair, generated on first use, `0600`, in
-  `~/.paseo/paseo-x-comms/mesh-key.json` (`server/mesh-identity.ts`).
+  `~/.paseo/plugin-data/xpufx/paseo-x-comms/mesh-key.json` (`server/mesh-identity.ts`).
 - Peers exchange public keys over the Layer 0 channel via the `mesh.key` RPC
   (`server/peer-channel.ts`) and **pin** the first `keyId` they see per peer. A
   changed `keyId` for a pinned peer is refused, which is what stops key

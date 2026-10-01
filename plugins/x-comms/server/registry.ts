@@ -1,12 +1,14 @@
-import { readFileSync, writeFileSync, existsSync, renameSync, mkdirSync, watch, type FSWatcher } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, renameSync, mkdirSync, rmSync, readdirSync, watch, type FSWatcher } from "node:fs";
 export { directHostMismatch } from "../shared/registry.ts";
 import { homedir } from "node:os";
 import { join, dirname, basename } from "node:path";
+import { PluginStorage } from "./vendor/paseo-plugin-helper/index";
 
-// All plugin state lives under a single namespaced subdir of paseo's home
-// (~/.paseo/paseo-x-comms/) rather than littering ~/.paseo root.
+// All plugin state lives under the plugin-scoped storage root
+// (~/.paseo/plugin-data/xpufx/paseo-x-comms/) via PluginStorage.
+// A fresh instance per call keeps stateDir() honest under test HOME sandboxing.
 export function stateDir(): string {
-  return join(homedir(), ".paseo", "paseo-x-comms");
+  return new PluginStorage("paseo-x-comms", "registry.json").pluginDir;
 }
 
 export const REGISTRY_DEFAULT = join(stateDir(), "registry.json");
@@ -19,6 +21,50 @@ export function migrateFromRoot(oldName: string, newPath: string): void {
   mkdirSync(stateDir(), { recursive: true });
   renameSync(oldPath, newPath);
 }
+
+// Old state dir before the plugin-scoped storage migration (#841).
+const OLD_STATE_DIR = join(homedir(), ".paseo", "paseo-x-comms");
+
+// One-time migration: move state from the old ~/.paseo/paseo-x-comms/ directory
+// into the plugin-scoped storage root. Deterministic and forward-only.
+export function migrateStateFromOldDir(): void {
+  if (!existsSync(OLD_STATE_DIR)) return;
+  const newStateDir = stateDir();
+  mkdirSync(newStateDir, { recursive: true });
+
+  for (const name of ["registry.json", "snapshot.json"]) {
+    const oldPath = join(OLD_STATE_DIR, name);
+    const newPath = join(newStateDir, name);
+    if (existsSync(oldPath) && !existsSync(newPath)) {
+      renameSync(oldPath, newPath);
+    }
+  }
+
+  for (const name of ["pending", "bin", "extensions"]) {
+    const oldPath = join(OLD_STATE_DIR, name);
+    const newPath = join(newStateDir, name);
+    if (existsSync(oldPath) && !existsSync(newPath)) {
+      renameSync(oldPath, newPath);
+    }
+  }
+
+  // Delete stale mesh-key.json (left by the mesh-removal ticket #840)
+  for (const dir of [OLD_STATE_DIR, newStateDir]) {
+    const meshKeyPath = join(dir, "mesh-key.json");
+    if (existsSync(meshKeyPath)) {
+      rmSync(meshKeyPath, { force: true });
+    }
+  }
+
+  // Remove the old dir if empty
+  try {
+    if (readdirSync(OLD_STATE_DIR).length === 0) {
+      rmSync(OLD_STATE_DIR, { recursive: true, force: true });
+    }
+  } catch {}
+}
+
+migrateStateFromOldDir();
 
 export interface RegistryDaemon {
   name: string;

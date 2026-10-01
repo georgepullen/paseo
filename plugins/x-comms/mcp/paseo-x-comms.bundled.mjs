@@ -36562,7 +36562,7 @@ function redactDaemonTarget(value) {
 
 // mcp/paseo-x-comms.mjs
 var VERSION = "0.3.0";
-var REMOTES_DIR = join(homedir(), ".paseo", "paseo-x-comms");
+var REMOTES_DIR = join(homedir(), ".paseo", "plugin-data", "xpufx", "paseo-x-comms");
 var REMOTES_FILE = process.env.PASEO_X_COMMS_REMOTES || join(REMOTES_DIR, "registry.json");
 var HOSTS_FILE = process.env.PASEO_HOSTS_FILE || join(homedir(), ".paseo", "hosts.json");
 var PASEO = process.env.PASEO_X_COMMS_PASEO || "paseo";

@@ -186,8 +186,8 @@ describe("mcp injection", () => {
 
   it("resolves the stable path under the state dir bin", () => {
     assert.equal(
-      stableServerPath("/fake/home/.paseo/paseo-x-comms"),
-      join("/fake/home/.paseo/paseo-x-comms", "bin", "paseo-x-comms.bundled.mjs"),
+      stableServerPath("/fake/home/.paseo/plugin-data/xpufx/paseo-x-comms"),
+      join("/fake/home/.paseo/plugin-data/xpufx/paseo-x-comms", "bin", "paseo-x-comms.bundled.mjs"),
     );
   });
 
@@ -214,7 +214,7 @@ describe("mcp injection", () => {
       const [script] = config.args ?? [];
       assert.ok(script, "injected config must carry the server script");
       assert.ok(!script.includes("/checkout/"), `injected path must not rot on update: ${script}`);
-      assert.equal(script, join(home, ".paseo", "paseo-x-comms", "bin", "paseo-x-comms.bundled.mjs"));
+      assert.equal(script, join(home, ".paseo", "plugin-data", "xpufx", "paseo-x-comms", "bin", "paseo-x-comms.bundled.mjs"));
       assert.ok(existsSync(script), "stable server must exist after sync");
     });
   });
