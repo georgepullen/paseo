@@ -1,6 +1,14 @@
 import { ReactNode, ComponentType } from 'react';
-import { S as SettingsContract } from './settings-CP1gv9q3.js';
-import { o as HostSurfaceProps, P as PluginCleanup } from './host-Dk97D-ul.js';
+import { S as SettingsContract } from './settings-BNRcFeSP.cjs';
+import { o as HostSurfaceProps, P as PluginCleanup } from './host-whQ9H8yb.cjs';
+
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 
 interface HelperSettingsCardProps {
     children: ReactNode;

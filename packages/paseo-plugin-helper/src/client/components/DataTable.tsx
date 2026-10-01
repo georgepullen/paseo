@@ -1,3 +1,10 @@
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 import React, { type ReactNode } from "react";
 import { StyleSheet, Text, View, type StyleProp, type ViewStyle } from "react-native";
 import { usePluginTheme } from "../theme/provider.js";
@@ -22,6 +29,11 @@ export interface DataTableProps<T> {
 /**
  * Responsive data table that automatically reflows between a traditional table
  * on desktop and structured card list on mobile / compact viewports.
+ *
+ * @deprecated Deprecated bespoke UI kit (paseo#847): frozen, bug fixes only.
+ * Migrate to `paseo-plugin-helper/ui` + host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
  */
 export function DataTable<T>({
   data,

@@ -1,8 +1,15 @@
 import { StyleProp, ViewStyle, TextStyle } from 'react-native';
-import { g as PluginTheme, P as PlatformType, R as ResponsiveLayout, T as ThemeColors, S as StatusVariant } from './custom-pills-C98QP7Cg.cjs';
+import { g as PluginTheme, P as PlatformType, R as ResponsiveLayout, T as ThemeColors, S as StatusVariant } from './custom-pills-C98QP7Cg.js';
 import React__default, { ReactNode } from 'react';
-import { d as HostLayout } from './host-Dk97D-ul.cjs';
+import { d as HostLayout } from './host-whQ9H8yb.js';
 
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 type RadiusStyle = "sharp" | "rounded" | "pill";
 type DensityStyle = "compact" | "comfortable" | "spacious";
 type SurfaceStyle = "flat" | "tinted" | "elevated";
@@ -46,6 +53,14 @@ interface VisualFlair {
 }
 declare const defaultFlair: VisualFlair;
 declare function resolveRadius(radius: RadiusStyle, size?: "xs" | "sm" | "md" | "lg" | "pill"): number;
+
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 
 /**
  * Standard spacing scale (pt/px) shared by every helper surface.
@@ -121,6 +136,14 @@ declare const defaultLightTheme: PluginTheme;
 declare function getDefaultTheme(scheme?: string): PluginTheme;
 
 /**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
+
+/**
  * Paseo 0.8 host theme variables. On web hosts the live theme is exposed as
  * CSS custom properties on the document root; this map binds each variable
  * to the semantic ThemeColors slot it feeds.
@@ -155,6 +178,14 @@ declare function readHostThemeVariables(): HostThemeVariables;
  * inside useMemo.
  */
 declare function mergeThemeColors(defaults: ThemeColors, hostVariables: Partial<ThemeColors>, injected: ThemeColors, accentOverride?: string): ThemeColors;
+
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 
 interface PluginThemeContextValue {
     theme: PluginTheme;
@@ -191,6 +222,14 @@ interface PluginThemeProviderProps {
 declare function PluginThemeProvider({ theme, layout, flair: userFlair, children, }: PluginThemeProviderProps): React__default.JSX.Element;
 declare function usePluginTheme(): PluginThemeContextValue;
 
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
+
 type AttentionBeaconMode = "radar" | "ring" | "glow" | "badge" | "bounce" | "pulse";
 type AttentionBeaconTone = "warning" | "accent" | "danger";
 interface AttentionBeaconProps {
@@ -210,7 +249,21 @@ interface AttentionBeaconProps {
 }
 declare function normalizeBeaconMode(mode?: AttentionBeaconMode): "radar" | "glow" | "badge" | "bounce" | "pulse";
 declare function resolveBeaconToneColor(colors: ThemeColors, tone?: AttentionBeaconTone, customColor?: string): string;
+/**
+ * @deprecated Deprecated bespoke UI kit (paseo#847): frozen, bug fixes only.
+ * Migrate to `paseo-plugin-helper/ui` + host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 declare function AttentionBeacon({ children, mode, tone, color, active, style, haloStyle, badgeStyle, accessibilityLabel, testID, badgeIcon, duration, easing, }: AttentionBeaconProps): React__default.JSX.Element;
+
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 
 type ButtonVariant = "primary" | "secondary" | "danger" | "ghost";
 type ButtonSize = "sm" | "md" | "lg";
@@ -233,7 +286,21 @@ interface ButtonProps {
     accessibilityRole?: "button" | "link";
     attention?: ButtonAttention;
 }
+/**
+ * @deprecated Deprecated bespoke UI kit (paseo#847): frozen, bug fixes only.
+ * Migrate to `paseo-plugin-helper/ui` + host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 declare function Button({ label, children, variant, size, icon, iconPosition, onPress, disabled, loading, style, textStyle, accessibilityLabel, accessibilityRole, attention, }: ButtonProps): React__default.JSX.Element;
+
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 
 type BadgeStyle = "tinted" | "outline" | "solid";
 type BadgeSize = "sm" | "md";
@@ -258,7 +325,21 @@ interface BadgeProps {
      */
     highlightFuzzyFallback?: boolean;
 }
+/**
+ * @deprecated Deprecated bespoke UI kit (paseo#847): frozen, bug fixes only.
+ * Migrate to `paseo-plugin-helper/ui` + host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 declare function Badge({ label, variant, styleVariant, size, icon, dot, style, textStyle, highlightQuery, highlightFuzzyFallback, }: BadgeProps): React__default.JSX.Element;
+
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 
 type ThemeInput = PluginTheme | PluginThemeContextValue | ThemeColors | {
     colors: ThemeColors;

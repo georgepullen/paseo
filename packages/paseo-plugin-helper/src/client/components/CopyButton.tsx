@@ -1,3 +1,10 @@
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 import React, { useEffect, useRef, useState } from "react";
 import {
   Pressable,
@@ -65,6 +72,12 @@ export interface CopyButtonProps {
  * and panel content copies nothing (xpufx-org/paseo#278). This bypasses that
  * gate with the helper's host `copyText` / `copyToClipboard` path and shows
  * Check/"Copied!" feedback, matching CodeBlock's pattern.
+ */
+/**
+ * @deprecated Deprecated bespoke UI kit (paseo#847): frozen, bug fixes only.
+ * Migrate to `paseo-plugin-helper/ui` + host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
  */
 export function CopyButton({
   text,

@@ -3,6 +3,14 @@ import { ScrollViewProps, ScrollView, FlatListProps, FlatList, TextInputProps, T
 import { PluginComposerPillContribution, PluginButtonRegistration } from '@getpaseo/plugin/client';
 
 /**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
+
+/**
  * Structural host types for Paseo client integration.
  *
  * These interfaces describe the shapes `paseo-plugin-helper/client` needs

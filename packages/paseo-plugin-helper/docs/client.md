@@ -1,5 +1,15 @@
 # Client Module (`paseo-plugin-helper/client`)
 
+> [!WARNING]
+> **DEPRECATED — frozen, bug fixes only (paseo#847).**
+> The `client/` bespoke UI kit is deprecated. No new features will be added;
+> existing consumers keep working, but all **new** plugin UI must be built on
+> the `ui/` adapter layer (`paseo-plugin-helper/ui`) composed with host SDK primitives
+> (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+> See the [migration guide](./client-migration.md) for the `client/` → `ui/` +
+> host SDK path. This module is scheduled for removal once plugin migrations
+> (phases 3–5 of #847) land.
+
 The `client` module provides React Native UI primitives, layout containers, and lifecycle registration engines designed to integrate natively into Paseo's mobile and desktop environments.
 
 It guarantees zero Node built-in imports, ensuring compliance with Paseo's client plugin compiler.

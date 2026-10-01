@@ -1,3 +1,10 @@
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 import React, { useState } from "react";
 import {
   View,
@@ -45,6 +52,12 @@ export interface TruncatedTextProps {
 /**
  * Renders long strings (paths, UUIDs, hashes) shortened with smart truncation,
  * while preserving the full untruncated string for one-click clipboard copying.
+ */
+/**
+ * @deprecated Deprecated bespoke UI kit (paseo#847): frozen, bug fixes only.
+ * Migrate to `paseo-plugin-helper/ui` + host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
  */
 export function TruncatedText({
   text,

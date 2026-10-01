@@ -12,6 +12,15 @@
 >
 > **Compatibility**: one published build runs on **Paseo >= 0.8.0**. `paseo-plugin-helper/client` imports zero Paseo SDK modules and instead receives `Icon`, `Modal`, `useRpc`, and `useToast` via a single `initClientHelpers()` call in the plugin client entry (see `docs/client.md`). `server`, `shared`, `mcp`, and `testing` carry no SDK imports at all.
 
+> [!WARNING]
+> **`client/` UI kit deprecated (paseo#847) — frozen, bug fixes only.** The bespoke
+> UI components, theme/flair system, and layout primitives under
+> `paseo-plugin-helper/client` are deprecated. New plugin UI must be built on
+> the `ui/` adapter layer (`paseo-plugin-helper/ui`) composed with host SDK
+> primitives (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+> See the [migration guide](docs/client-migration.md). The headless hooks and
+> lifecycle engines in `client/` remain supported until their extraction.
+
 ---
 
 ## Features
@@ -47,7 +56,8 @@ To guarantee compliance with Paseo's bundler and compiler rules (no Node builtin
 
 | Subpath | Target Platform | Description | Docs |
 | :--- | :--- | :--- | :--- |
-| `paseo-plugin-helper/client` | React Native | UI components, visual flair provider, pill engine, panels, React Query hooks | [docs/client.md](docs/client.md) |
+| `paseo-plugin-helper/client` | React Native | **Deprecated (frozen)** — UI components, visual flair provider, pill engine, panels, React Query hooks | [docs/client.md](docs/client.md) |
+| `paseo-plugin-helper/ui` | React Native | Host-delegating UI adapters (`HostModalContent`, `HostScroll`, `HostModalSection`, settings renderer) | [docs/client-migration.md](docs/client-migration.md) |
 | `paseo-plugin-helper/server` | Node.js 20+ | `createPluginLogger`, `resolvePluginVersion`, `stampVersion`, `getSystemMetrics`, `PluginStorage`, `safeSpawn`, `redactSecrets` | [docs/server.md](docs/server.md) |
 | `paseo-plugin-helper/mcp` | Node.js 20+ | Zero-dependency stdio `McpClient`, ring buffer, process tree killer | [docs/mcp.md](docs/mcp.md) |
 | `paseo-plugin-helper/cli` | Node.js 20+ | `auditProject` programmatic scanner and reporting | [docs/cli.md](docs/cli.md) |

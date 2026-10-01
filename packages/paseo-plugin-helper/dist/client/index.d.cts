@@ -1,15 +1,15 @@
-import { D as DensityStyle, S as SurfaceStyle, o as BadgeSize, p as ButtonProps, q as SpacingValue, V as VisualFlair } from '../recipes-W6u9grqv.cjs';
-export { A as AttentionBeacon, s as AttentionBeaconMode, u as AttentionBeaconProps, v as AttentionBeaconTone, w as Badge, x as BadgeProps, B as BadgeRecipeOptions, a as BadgeRecipeResult, y as BadgeStyle, z as Button, E as ButtonAttention, b as ButtonRecipeOptions, c as ButtonRecipeResult, F as ButtonSize, G as ButtonVariant, C as CardRecipeOptions, d as CardRecipeResult, H as ElevationLevel, J as ElevationStyle, K as FALLBACK_ACCENT_FOREGROUND, L as HeadingTransform, M as HostFontVariables, N as HostThemeVariables, I as InputRecipeOptions, e as InputRecipeResult, P as PASEO_HOST_CSS_VARIABLES, O as PaseoHostCssVariable, Q as PluginThemeContextValue, R as PluginThemeProvider, U as PluginThemeProviderProps, W as RadiusStyle, X as SpacingKey, T as TabItemRecipeOptions, f as TabItemRecipeResult, g as TabStripRecipeOptions, h as TabStripRecipeResult, i as ThemeInput, Y as TypographyScale, Z as TypographyToken, j as badgeRecipe, k as buttonRecipe, l as cardRecipe, _ as defaultDarkTheme, $ as defaultFlair, a0 as defaultLightTheme, a1 as elevationForPlatform, a2 as getDefaultTheme, m as inputRecipe, a3 as mergeThemeColors, a4 as normalizeBeaconMode, a5 as readHostThemeVariables, a6 as resolveBeaconToneColor, a7 as resolveButtonAttentionMode, a8 as resolveButtonAttentionTone, a9 as resolveElevation, aa as resolveRadius, ab as resolveSpacing, r as resolveThemeColors, ac as resolveTypography, ad as spacing, t as tabItemRecipe, n as tabStripRecipe, ae as useAppearanceScheme, af as usePluginTheme } from '../recipes-W6u9grqv.cjs';
+import { D as DensityStyle, S as SurfaceStyle, o as BadgeSize, p as ButtonProps, q as SpacingValue, V as VisualFlair } from '../recipes-jis8UdC3.cjs';
+export { A as AttentionBeacon, s as AttentionBeaconMode, u as AttentionBeaconProps, v as AttentionBeaconTone, w as Badge, x as BadgeProps, B as BadgeRecipeOptions, a as BadgeRecipeResult, y as BadgeStyle, z as Button, E as ButtonAttention, b as ButtonRecipeOptions, c as ButtonRecipeResult, F as ButtonSize, G as ButtonVariant, C as CardRecipeOptions, d as CardRecipeResult, H as ElevationLevel, J as ElevationStyle, K as FALLBACK_ACCENT_FOREGROUND, L as HeadingTransform, M as HostFontVariables, N as HostThemeVariables, I as InputRecipeOptions, e as InputRecipeResult, P as PASEO_HOST_CSS_VARIABLES, O as PaseoHostCssVariable, Q as PluginThemeContextValue, R as PluginThemeProvider, U as PluginThemeProviderProps, W as RadiusStyle, X as SpacingKey, T as TabItemRecipeOptions, f as TabItemRecipeResult, g as TabStripRecipeOptions, h as TabStripRecipeResult, i as ThemeInput, Y as TypographyScale, Z as TypographyToken, j as badgeRecipe, k as buttonRecipe, l as cardRecipe, _ as defaultDarkTheme, $ as defaultFlair, a0 as defaultLightTheme, a1 as elevationForPlatform, a2 as getDefaultTheme, m as inputRecipe, a3 as mergeThemeColors, a4 as normalizeBeaconMode, a5 as readHostThemeVariables, a6 as resolveBeaconToneColor, a7 as resolveButtonAttentionMode, a8 as resolveButtonAttentionTone, a9 as resolveElevation, aa as resolveRadius, ab as resolveSpacing, r as resolveThemeColors, ac as resolveTypography, ad as spacing, t as tabItemRecipe, n as tabStripRecipe, ae as useAppearanceScheme, af as usePluginTheme } from '../recipes-jis8UdC3.cjs';
 import { S as StatusVariant, T as ThemeColors, P as PlatformType, R as ResponsiveLayout, d as CustomPillState } from '../custom-pills-C98QP7Cg.cjs';
 import React__default, { ReactNode, Ref, ComponentType } from 'react';
 import { StyleProp, ViewStyle, TextStyle, GestureResponderEvent, AccessibilityRole, KeyboardTypeOptions, ImageSourcePropType, ScrollView, ImageStyle } from 'react-native';
 import { M as MetricThresholds, f as TruncatePathOptions, a as ForgeMarkInput, F as ForgeKind } from '../forge-CtVqWZsy.cjs';
 export { R as ResolvedForgeMark, g as forgeKindFromHost, m as isForgeKind, n as normalizeForgeHost, r as resolveForgeMark } from '../forge-CtVqWZsy.cjs';
-import { p as HostPillProps, q as ComposerPillRegistrar, P as PluginCleanup, o as HostSurfaceProps, r as HostAgentPanelProps, t as HostWorkspacePanelProps, h as HostToast, u as HostIconProps } from '../host-Dk97D-ul.cjs';
-export { C as ClientHostDeps, H as HostAgentRef, a as HostAgentUpdate, b as HostAgentsApi, c as HostCopyText, v as HostFlatList, w as HostIcon, d as HostLayout, x as HostModal, y as HostModalContentProps, z as HostModalProps, e as HostRpcContract, A as HostScrollView, B as HostTextInput, f as HostTheme, g as HostThemeColors, i as HostUseRpc, j as HostUseToast, k as getClientHost, l as getOptionalClientHost, m as initClientHelpers, n as isClientHostInitialized, s as selectHostScrollView } from '../host-Dk97D-ul.cjs';
-export { C as CommandCenterCapabilities, a as CommandCenterContext, b as CommandCenterItemContribution, c as CommandCenterItemRegistrar, r as registerCommandCenterItem } from '../command-center-B-hlI3Jy.cjs';
-export { R as REFRESH_INTERVALS, a as RefreshRate, b as RpcMutationOptions, c as RpcQueryOptions, U as UseAutoRefreshQueryOptions, d as UsePluginSettingsOptions, e as UsePluginSettingsResult, f as UseSharedPluginSettingsOptions, n as normalizeSnapshotScope, s as shallowEqualRecord, g as sharedSnapshotKey, h as shouldEmitSnapshotUpdate, u as useAutoRefreshQuery, i as usePluginSettings, j as useRpcMutation, k as useRpcQuery, l as useSharedPluginSettings, m as useSuiteSettings } from '../shared-settings-CFiLb5XU.cjs';
-export { H as HelperSettingsCardProps, a as HelperSettingsField, b as HelperSettingsFieldKind, c as HelperSettingsFieldOverrides, d as HelperSettingsInputProps, e as HelperSettingsRowBaseProps, f as HelperSettingsScreenContribution, g as HelperSettingsScreenRegistrar, h as HelperSettingsSectionProps, i as HelperSettingsSelectComponent, j as HelperSettingsSelectProps, k as HelperSettingsSwitchProps, l as HelperSettingsUiBundle, R as RegisterHelperSettingsScreenOptions, m as contractSchemaToFields, r as registerHelperSettingsScreen } from '../settings-screen-Ds1117n-.cjs';
+import { p as HostPillProps, q as ComposerPillRegistrar, P as PluginCleanup, o as HostSurfaceProps, r as HostAgentPanelProps, t as HostWorkspacePanelProps, h as HostToast, u as HostIconProps } from '../host-whQ9H8yb.cjs';
+export { C as ClientHostDeps, H as HostAgentRef, a as HostAgentUpdate, b as HostAgentsApi, c as HostCopyText, v as HostFlatList, w as HostIcon, d as HostLayout, x as HostModal, y as HostModalContentProps, z as HostModalProps, e as HostRpcContract, A as HostScrollView, B as HostTextInput, f as HostTheme, g as HostThemeColors, i as HostUseRpc, j as HostUseToast, k as getClientHost, l as getOptionalClientHost, m as initClientHelpers, n as isClientHostInitialized, s as selectHostScrollView } from '../host-whQ9H8yb.cjs';
+export { C as CommandCenterCapabilities, a as CommandCenterContext, b as CommandCenterItemContribution, c as CommandCenterItemRegistrar, r as registerCommandCenterItem } from '../command-center-Dxbsp3XS.cjs';
+export { R as REFRESH_INTERVALS, a as RefreshRate, b as RpcMutationOptions, c as RpcQueryOptions, U as UseAutoRefreshQueryOptions, d as UsePluginSettingsOptions, e as UsePluginSettingsResult, f as UseSharedPluginSettingsOptions, n as normalizeSnapshotScope, s as shallowEqualRecord, g as sharedSnapshotKey, h as shouldEmitSnapshotUpdate, u as useAutoRefreshQuery, i as usePluginSettings, j as useRpcMutation, k as useRpcQuery, l as useSharedPluginSettings, m as useSuiteSettings } from '../shared-settings-CzLoW6Ww.cjs';
+export { H as HelperSettingsCardProps, a as HelperSettingsField, b as HelperSettingsFieldKind, c as HelperSettingsFieldOverrides, d as HelperSettingsInputProps, e as HelperSettingsRowBaseProps, f as HelperSettingsScreenContribution, g as HelperSettingsScreenRegistrar, h as HelperSettingsSectionProps, i as HelperSettingsSelectComponent, j as HelperSettingsSelectProps, k as HelperSettingsSwitchProps, l as HelperSettingsUiBundle, R as RegisterHelperSettingsScreenOptions, m as contractSchemaToFields, r as registerHelperSettingsScreen } from '../settings-screen-aW3wnXjZ.cjs';
 import { e as AgentEnvelope, M as IssueComment, n as ForgeAccessState, v as ForgeLabel } from '../tickets-XtAIJTZF.cjs';
 import 'zod';
 import '../settings-BNRcFeSP.cjs';
@@ -17,6 +17,14 @@ import '../rpc-D27pph91.cjs';
 import '@getpaseo/plugin/client';
 import '@tanstack/query-core';
 import '@tanstack/react-query';
+
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 
 /**
  * Converts a hex color and opacity (0.0 to 1.0) into an 8-character hex or rgba string.
@@ -42,6 +50,14 @@ declare function getVariantPalette(variant: StatusVariant, colors: ThemeColors, 
     text: string;
     border: string;
 };
+
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 
 /**
  * Container width (px) at or below which a surface steps down to the compact
@@ -185,6 +201,14 @@ interface UseResponsiveResult {
  */
 declare function useResponsive(): UseResponsiveResult;
 
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
+
 interface InlineButtonProps {
     label: string;
     onPress?: () => void | Promise<void>;
@@ -196,7 +220,21 @@ interface InlineButtonProps {
     textStyle?: StyleProp<TextStyle>;
 }
 /** Compact text/link action for inline cards and timeline content. */
+/**
+ * @deprecated Deprecated bespoke UI kit (paseo#847): frozen, bug fixes only.
+ * Migrate to `paseo-plugin-helper/ui` + host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 declare function InlineButton({ label, onPress, icon, disabled, accessibilityLabel, accessibilityRole, style, textStyle, }: InlineButtonProps): React__default.JSX.Element;
+
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 
 interface InteractiveRowProps {
     /** Arbitrary row content — status dots, badges, text, metric readouts. */
@@ -243,7 +281,21 @@ interface InteractiveRowProps {
  * Content is arbitrary, so a status dot, badges, and metric readouts compose
  * inside without wrapping each in its own control.
  */
+/**
+ * @deprecated Deprecated bespoke UI kit (paseo#847): frozen, bug fixes only.
+ * Migrate to `paseo-plugin-helper/ui` + host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 declare function InteractiveRow({ children, onPress, title, disabled, accessibilityRole, accessibilityLabel, accessibilityHint, testID, style, hoverStyle, hoverTint, hoverTintOpacity, pressedOpacity, hoveredOpacity, opacity, disabledOpacity, hitSlop, onHoverChange, }: InteractiveRowProps): React__default.JSX.Element;
+
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 
 interface StatusDotProps {
     variant?: StatusVariant;
@@ -251,7 +303,21 @@ interface StatusDotProps {
     pulse?: boolean;
     style?: StyleProp<ViewStyle>;
 }
+/**
+ * @deprecated Deprecated bespoke UI kit (paseo#847): frozen, bug fixes only.
+ * Migrate to `paseo-plugin-helper/ui` + host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 declare function StatusDot({ variant, size, pulse, style }: StatusDotProps): React__default.JSX.Element;
+
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 
 interface CardProps {
     children: ReactNode;
@@ -277,10 +343,24 @@ interface CardHeaderProps {
     highlightQuery?: string;
 }
 declare function CardHeader({ title, subtitle, value, badge, action, icon, style, titleStyle, subtitleStyle, highlightQuery, }: CardHeaderProps): React__default.JSX.Element;
+/**
+ * @deprecated Deprecated bespoke UI kit (paseo#847): frozen, bug fixes only.
+ * Migrate to `paseo-plugin-helper/ui` + host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 declare function Card({ children, variant, style, noPadding }: CardProps): React__default.JSX.Element;
 declare namespace Card {
     var Header: typeof CardHeader;
 }
+
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 
 interface TabItem {
     id: string;
@@ -300,7 +380,21 @@ interface TabsProps {
     mode?: "auto" | "fit" | "scroll";
     style?: StyleProp<ViewStyle>;
 }
+/**
+ * @deprecated Deprecated bespoke UI kit (paseo#847): frozen, bug fixes only.
+ * Migrate to `paseo-plugin-helper/ui` + host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 declare function Tabs({ tabs, activeTab, onTabChange, mode, style, }: TabsProps): React__default.JSX.Element;
+
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 
 interface CodeBlockProps {
     code: string;
@@ -311,7 +405,21 @@ interface CodeBlockProps {
     style?: StyleProp<ViewStyle>;
     textStyle?: StyleProp<TextStyle>;
 }
+/**
+ * @deprecated Deprecated bespoke UI kit (paseo#847): frozen, bug fixes only.
+ * Migrate to `paseo-plugin-helper/ui` + host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 declare function CodeBlock({ code, language, title, maxHeight, copyable, style, textStyle, }: CodeBlockProps): React__default.JSX.Element;
+
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 
 type CopyButtonSize = "sm" | "md";
 type CopyButtonVariant = "ghost" | "secondary";
@@ -360,7 +468,21 @@ interface CopyButtonProps {
  * gate with the helper's host `copyText` / `copyToClipboard` path and shows
  * Check/"Copied!" feedback, matching CodeBlock's pattern.
  */
+/**
+ * @deprecated Deprecated bespoke UI kit (paseo#847): frozen, bug fixes only.
+ * Migrate to `paseo-plugin-helper/ui` + host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 declare function CopyButton({ text, getText, label, copiedLabel, icon, size, variant, accessibilityLabel, toastMessage, feedbackDurationMs, disabled, style, textStyle, }: CopyButtonProps): React__default.ReactElement | null;
+
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 
 interface SearchInputProps {
     value: string;
@@ -383,7 +505,21 @@ interface SearchInputProps {
 /**
  * Standardized search input with search icon, clear button, and theme support.
  */
+/**
+ * @deprecated Deprecated bespoke UI kit (paseo#847): frozen, bug fixes only.
+ * Migrate to `paseo-plugin-helper/ui` + host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 declare function SearchInput({ value, onChangeText, placeholder, onClear, height, style, inputStyle, testID, }: SearchInputProps): React__default.JSX.Element;
+
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 
 interface TextInputProps {
     value: string;
@@ -404,7 +540,21 @@ interface TextInputProps {
     inputStyle?: StyleProp<TextStyle>;
     onSubmitEditing?: () => void;
 }
+/**
+ * @deprecated Deprecated bespoke UI kit (paseo#847): frozen, bug fixes only.
+ * Migrate to `paseo-plugin-helper/ui` + host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 declare function TextInput({ value, onChangeText, label, placeholder, helperText, errorText, secureTextEntry, keyboardType, autoCapitalize, autoCorrect, disabled, mono, multiline, numberOfLines, style, inputStyle, onSubmitEditing, }: TextInputProps): React__default.JSX.Element;
+
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 
 interface SelectOption {
     label: string;
@@ -429,7 +579,21 @@ interface SelectProps {
  * `overflow: "hidden"` (Card/Tabs/Modal), and always paints above later
  * siblings regardless of local stacking context.
  */
+/**
+ * @deprecated Deprecated bespoke UI kit (paseo#847): frozen, bug fixes only.
+ * Migrate to `paseo-plugin-helper/ui` + host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 declare function Select({ value, options, onValueChange, label, size, placeholder, disabled, style, }: SelectProps): React__default.JSX.Element;
+
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 
 interface ToggleProps {
     value: boolean;
@@ -440,7 +604,21 @@ interface ToggleProps {
     style?: StyleProp<ViewStyle>;
     labelStyle?: StyleProp<TextStyle>;
 }
+/**
+ * @deprecated Deprecated bespoke UI kit (paseo#847): frozen, bug fixes only.
+ * Migrate to `paseo-plugin-helper/ui` + host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 declare function Toggle({ value, onValueChange, label, description, disabled, style, labelStyle, }: ToggleProps): React__default.JSX.Element;
+
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 
 interface CollapsibleProps {
     title?: string | React__default.ReactNode;
@@ -480,7 +658,21 @@ declare function resolveCollapsibleSurface(colors: ThemeColors, alpha: (color: s
  * pressed/unpressed header delta.
  */
 declare function resolveCollapsibleHeaderBackground(colors: ThemeColors, pressed: boolean): string;
+/**
+ * @deprecated Deprecated bespoke UI kit (paseo#847): frozen, bug fixes only.
+ * Migrate to `paseo-plugin-helper/ui` + host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 declare function Collapsible({ title, subtitle, children, initiallyExpanded, isExpanded: controlledExpanded, onToggle, badge, headerRight, summary, icon, style, headerStyle, contentStyle, variant, }: CollapsibleProps): React__default.JSX.Element;
+
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 
 interface ProgressBarProps {
     value: number;
@@ -492,7 +684,21 @@ interface ProgressBarProps {
     height?: number;
     style?: StyleProp<ViewStyle>;
 }
+/**
+ * @deprecated Deprecated bespoke UI kit (paseo#847): frozen, bug fixes only.
+ * Migrate to `paseo-plugin-helper/ui` + host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 declare function ProgressBar({ value, color, autoStatusColor, thresholds, label, showValueText, height, style, }: ProgressBarProps): React__default.JSX.Element;
+
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 
 interface MetricGaugeProps {
     value: number;
@@ -510,7 +716,21 @@ interface MetricGaugeProps {
  * Clean circular metric gauge.
  * Displays a proportional percentage ring with automated threshold coloring and center slot.
  */
+/**
+ * @deprecated Deprecated bespoke UI kit (paseo#847): frozen, bug fixes only.
+ * Migrate to `paseo-plugin-helper/ui` + host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 declare function MetricGauge({ value, size, strokeWidth, thresholds, color, autoStatusColor, label, showPercent, centerSlot, style, }: MetricGaugeProps): React__default.JSX.Element;
+
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 
 interface DataColumn<T> {
     key: string;
@@ -530,8 +750,21 @@ interface DataTableProps<T> {
 /**
  * Responsive data table that automatically reflows between a traditional table
  * on desktop and structured card list on mobile / compact viewports.
+ *
+ * @deprecated Deprecated bespoke UI kit (paseo#847): frozen, bug fixes only.
+ * Migrate to `paseo-plugin-helper/ui` + host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
  */
 declare function DataTable<T>({ data, columns, keyExtractor, emptyState, style, }: DataTableProps<T>): React__default.JSX.Element | null;
+
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 
 type KeyValueTruncateMode = "end" | "middle" | "path";
 interface KeyValueProps {
@@ -557,6 +790,12 @@ interface KeyValueProps {
     labelStyle?: StyleProp<TextStyle>;
     valueStyle?: StyleProp<TextStyle>;
 }
+/**
+ * @deprecated Deprecated bespoke UI kit (paseo#847): frozen, bug fixes only.
+ * Migrate to `paseo-plugin-helper/ui` + host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 declare function KeyValue({ label, value, subValue, mono, copyable, truncate: truncateProp, truncateMaxLength, truncatePathOptions, layout, stackOnCompact, style, labelStyle, valueStyle, }: KeyValueProps): React__default.JSX.Element;
 interface KeyValueGroupProps {
     children: ReactNode;
@@ -580,6 +819,14 @@ interface KeyValueGroupProps {
 }
 declare function KeyValueGroup({ children, columns, gap, collapse, minColumnWidth, style, }: KeyValueGroupProps): React__default.JSX.Element;
 
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
+
 interface EmptyStateProps {
     icon?: string | ReactNode;
     title: string;
@@ -589,7 +836,21 @@ interface EmptyStateProps {
     onAction?: () => void;
     style?: StyleProp<ViewStyle>;
 }
+/**
+ * @deprecated Deprecated bespoke UI kit (paseo#847): frozen, bug fixes only.
+ * Migrate to `paseo-plugin-helper/ui` + host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 declare function EmptyState({ icon, title, description, action, actionLabel, onAction, style, }: EmptyStateProps): React__default.JSX.Element;
+
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 
 interface ResponsiveProps {
     /**
@@ -624,7 +885,21 @@ interface ResponsiveProps {
  * />
  * ```
  */
+/**
+ * @deprecated Deprecated bespoke UI kit (paseo#847): frozen, bug fixes only.
+ * Migrate to `paseo-plugin-helper/ui` + host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 declare function Responsive({ desktop, mobile, compact, wide, children }: ResponsiveProps): React__default.JSX.Element;
+
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 
 interface AboutLink {
     label: string;
@@ -708,7 +983,21 @@ interface AboutSectionProps {
  * - One-click "Copy Diagnostics" button formatting system info for GitHub issue triage.
  * - Pre-styled external links with native browser launch via React Native `Linking`.
  */
+/**
+ * @deprecated Deprecated bespoke UI kit (paseo#847): frozen, bug fixes only.
+ * Migrate to `paseo-plugin-helper/ui` + host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 declare function AboutSection({ name, description, version, author, logo, repository, issues, homepage, license, links, extraItems, showDiagnosticsCopy, style, density, }: AboutSectionProps): React__default.JSX.Element;
+
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 
 type TruncateMode = "end" | "middle" | "path";
 interface TruncatedTextProps {
@@ -735,7 +1024,21 @@ interface TruncatedTextProps {
  * Renders long strings (paths, UUIDs, hashes) shortened with smart truncation,
  * while preserving the full untruncated string for one-click clipboard copying.
  */
+/**
+ * @deprecated Deprecated bespoke UI kit (paseo#847): frozen, bug fixes only.
+ * Migrate to `paseo-plugin-helper/ui` + host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 declare function TruncatedText({ text, maxLength, mode, pathOptions, copyable, mono, toastMessage, style, textStyle, }: TruncatedTextProps): React__default.JSX.Element;
+
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 
 interface CommandBoxProps {
     /** argv array — program is rendered bold, args muted */
@@ -748,7 +1051,21 @@ interface CommandBoxProps {
     copyLabel?: string;
 }
 declare function formatCommandLine(argv: string[]): string;
+/**
+ * @deprecated Deprecated bespoke UI kit (paseo#847): frozen, bug fixes only.
+ * Migrate to `paseo-plugin-helper/ui` + host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 declare function CommandBox({ argv, command, style, textStyle, copyLabel, }: CommandBoxProps): React__default.ReactElement | null;
+
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 
 interface SectionHeaderProps {
     title: string;
@@ -759,7 +1076,21 @@ interface SectionHeaderProps {
     style?: StyleProp<ViewStyle>;
     textStyle?: StyleProp<TextStyle>;
 }
+/**
+ * @deprecated Deprecated bespoke UI kit (paseo#847): frozen, bug fixes only.
+ * Migrate to `paseo-plugin-helper/ui` + host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 declare function SectionHeader({ title, count, badgeVariant, style, textStyle, }: SectionHeaderProps): React__default.ReactElement | null;
+
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 
 interface HighlightedTextProps {
     /** Source text rendered as-is when no query is active. */
@@ -793,7 +1124,21 @@ interface HighlightedTextProps {
  * marks the whole text when even a token misses, so a fuzzy result is not left
  * silently unmarked. Renders the plain text when the query is empty or absent.
  */
+/**
+ * @deprecated Deprecated bespoke UI kit (paseo#847): frozen, bug fixes only.
+ * Migrate to `paseo-plugin-helper/ui` + host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 declare function HighlightedText({ text, query, style, highlightStyle, numberOfLines, selectable, fuzzyFallback, }: HighlightedTextProps): React__default.JSX.Element;
+
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 
 type ModalBodySize = "default" | "large";
 interface ModalBodyProps {
@@ -903,6 +1248,14 @@ declare const ModalBodyScrollOwnerContext: React__default.Context<ModalBodyScrol
  */
 declare function ModalBody({ children, style, contentContainerStyle, header, headerStyle, headerMode, maxContentWidth, scrollMode, debugTag, extraBottomInset, refreshing, onRefresh, stickToEnd, scrollRef, }: ModalBodyProps): React__default.JSX.Element;
 
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
+
 interface ModalContentProps extends Omit<ModalBodyProps, "scrollMode"> {
     children: ReactNode;
     /**
@@ -937,6 +1290,14 @@ interface ModalContentProps extends Omit<ModalBodyProps, "scrollMode"> {
  */
 declare function ModalContent({ children, scrollable, ...bodyProps }: ModalContentProps): React__default.JSX.Element;
 
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
+
 interface ActionBarProps {
     children: ReactNode;
     align?: "flex-start" | "flex-end" | "center" | "space-between";
@@ -948,6 +1309,14 @@ interface ActionBarProps {
  * Automatically wraps or stacks on compact/mobile layouts.
  */
 declare function ActionBar({ children, align, direction, style, }: ActionBarProps): React__default.JSX.Element;
+
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 
 interface FormRowProps {
     label: string;
@@ -966,6 +1335,14 @@ interface FormRowProps {
 }
 declare function FormRow({ label, description, children, layout, style, }: FormRowProps): React__default.JSX.Element;
 
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
+
 interface RowProps {
     children?: ReactNode;
     /** Gap between children: a spacing token or raw px. Defaults to the theme gap. */
@@ -983,6 +1360,14 @@ interface RowProps {
  */
 declare function Row({ children, gap, wrap, align, justify, style, testID }: RowProps): React__default.JSX.Element;
 
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
+
 interface StackProps {
     children?: ReactNode;
     /** Gap between children: a spacing token or raw px. Defaults to the theme gap. */
@@ -999,6 +1384,14 @@ interface StackProps {
 declare function Stack({ children, gap, align, justify, style, testID }: StackProps): React__default.JSX.Element;
 /** Explicit vertical-stack alias; identical to {@link Stack}. */
 declare const VStack: typeof Stack;
+
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 
 interface GridProps {
     children?: ReactNode;
@@ -1021,6 +1414,14 @@ interface GridProps {
  * one-per-line or collapsing to a single column.
  */
 declare function Grid({ children, columns, minColumnWidth, gap, style, testID }: GridProps): React__default.JSX.Element;
+
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 
 interface RenderModalProps<TPayload = any> extends HostPillProps {
     close: () => void;
@@ -1174,6 +1575,14 @@ interface RegisterComposerPillOptions<TPayload = any> {
 declare function registerComposerPill<TPayload = any>(client: ComposerPillRegistrar, options: RegisterComposerPillOptions<TPayload>): PluginCleanup;
 
 /**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
+
+/**
  * Structural registrar interface satisfied by both Paseo v0.7 PluginContext
  * and Paseo v0.8 PluginClientContext.
  */
@@ -1233,6 +1642,14 @@ declare const DEFAULT_SIDEBAR_MAX_CONTENT_WIDTH = 1280;
 declare function registerSidebarSurface(plugin: SidebarSurfaceRegistrar, options: RegisterSidebarSurfaceOptions): () => void;
 
 /**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
+
+/**
  * Structural registrar interface satisfied by both Paseo v0.7 PluginContext
  * and Paseo v0.8 PluginClientContext.
  */
@@ -1265,6 +1682,14 @@ declare function registerWorkspacePanel(plugin: WorkspacePanelRegistrar, options
  * Works with both Paseo v0.7 PluginContext and Paseo v0.8 PluginClientContext.
  */
 declare function registerAgentPanel(plugin: WorkspacePanelRegistrar, options: RegisterAgentPanelOptions): void;
+
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 
 interface CopyToClipboardOptions {
     toast?: HostToast;
@@ -1302,12 +1727,27 @@ declare function clipboardTierOrder(env: ClipboardEnvironment): ClipboardTier[];
  */
 declare function copyToClipboard(text: string, options?: CopyToClipboardOptions): Promise<boolean>;
 
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 type HapticFeedbackType = "light" | "medium" | "heavy" | "success" | "warning" | "error";
 /**
  * Cross-platform haptic feedback helper for Paseo plugins.
  * Supports web vibration API and graceful fallback when vibration is unavailable.
  */
 declare function triggerHaptic(type?: HapticFeedbackType): boolean;
+
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 
 interface CustomPillBodyProps {
     state: CustomPillState;
@@ -1355,7 +1795,23 @@ interface RegisterCustomPillsOptions {
  */
 declare function registerCustomPills(client: ComposerPillRegistrar, options: RegisterCustomPillsOptions): PluginCleanup;
 
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
+
 declare function Icon(props: HostIconProps): React__default.JSX.Element;
+
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 
 /** Inline SVG data URI for a custom mark, tinted with the resolved color. */
 declare function forgeMarkSource(kind: ForgeKind, color: string): {
@@ -1378,6 +1834,14 @@ interface ForgeIconProps extends ForgeMarkInput {
  * closest Lucide glyph so forges stay distinct.
  */
 declare function ForgeIcon({ host, kind, size, color, style, accessibilityLabel, }: ForgeIconProps): React__default.JSX.Element;
+
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
 
 declare function MarkdownLite({ body, query, }: {
     body: string;

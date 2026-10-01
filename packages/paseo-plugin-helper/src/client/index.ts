@@ -1,3 +1,15 @@
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847).
+ *
+ * FROZEN — no new features, bug fixes only. Do not add components, props,
+ * theme tokens, or helpers to this entry. The kit is superseded by the
+ * `ui/` adapter layer (`paseo-plugin-helper/ui`) composed with host SDK
+ * primitives (`@getpaseo/plugin/client/react-native`,
+ * `@getpaseo/plugin/client/ui`). Existing consumers keep working, but all
+ * new plugin UI must be built on `ui/` + host primitives.
+ *
+ * Migration guide: `docs/client-migration.md`.
+ */
 export * from "./theme/index.js";
 export * from "./styles/index.js";
 export * from "./components/index.js";
