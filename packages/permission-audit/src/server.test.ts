@@ -216,7 +216,7 @@ describe("event capture and pairing", () => {
     const { store, logger } = setup();
     logger.handleRequested({
       request: { id: "r_opencode", kind: "tool", name: "bash", input: { command: "git status" } },
-      agent: { id: "a_opencode", model: "space-bunny", provider: "pufaysokt" },
+      agent: { id: "a_opencode", model: "space-bunny", provider: "test-provider" },
     });
     expect(store.query({ decision: "pending" }).total).toBe(1);
 

@@ -13,7 +13,7 @@ describe("workspace-lookup deterministic resolution (#793)", () => {
     {
       projectId: "prj_uppidi",
       displayName: "uppidi",
-      projectKey: "remote:forge.mrs.aager.de:222/xpufx/uppidi",
+      projectKey: "remote:forge.example.com:222/xpufx/uppidi",
       rootPath: "/home/user/code/uppidi",
     },
   ];

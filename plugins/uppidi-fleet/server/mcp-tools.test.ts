@@ -31,6 +31,7 @@ describe("fleet MCP tools and handlers", () => {
       stateDir: join(tmpDir, "state"),
       port: 0,
     });
+    (router as any).fetchAgentMap = async () => new Map();
     router.enrollRepo("test-org/repo-a");
     router.enrollRepo("test-org/repo-b");
     setActiveHookRouter(router);

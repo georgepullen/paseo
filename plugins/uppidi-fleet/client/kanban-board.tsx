@@ -200,29 +200,24 @@ export function KanbanCard({
     onDragEnd?.(e);
   };
 
-  const webDragProps: Record<string, any> = isWeb
-    ? {
-        draggable: true,
-        onDragStart: handleDragStart,
-        onDragEnd: handleDragEnd,
-      }
-    : {};
+  const cardStyle: Record<string, any> = {
+    backgroundColor: colors.surface0 ?? "#18181b",
+    borderColor: colors.border ?? "#3f3f46",
+    borderWidth: 1,
+    borderRadius: 8,
+    padding: 10,
+    gap: 8,
+    opacity: draggingActive ? 0.6 : 1,
+    ...(isWeb ? { cursor: "grab" } : {}),
+  };
 
-  return (
-    <View
-      testID={`kanban-card-${issue.number}`}
-      {...webDragProps}
-      style={{
-        backgroundColor: colors.surface0 ?? "#18181b",
-        borderColor: colors.border ?? "#3f3f46",
-        borderWidth: 1,
-        borderRadius: 8,
-        padding: 10,
-        gap: 8,
-        opacity: draggingActive ? 0.6 : 1,
-        ...(isWeb ? ({ cursor: "grab" } as any) : {}),
-      }}
-    >
+  // React Native Web strips non-allowlisted DOM props (draggable, onDragStart,
+  // onDragEnd, ...) from <View>, so the drag source must be a native element
+  // on web or the browser never initiates the drag. See #807.
+  const webCardTestProps = { testID: `kanban-card-${issue.number}` } as any;
+
+  const cardContent = (
+    <>
       {/* Top row: Issue number, repo, attention */}
       <View
         style={{
@@ -311,6 +306,30 @@ export function KanbanCard({
           />
         ))}
       </View>
+    </>
+  );
+
+  if (isWeb) {
+    return (
+      <div
+        {...webCardTestProps}
+        data-testid={`kanban-card-${issue.number}`}
+        draggable
+        onDragStart={handleDragStart}
+        onDragEnd={handleDragEnd}
+        style={{ display: "flex", flexDirection: "column", ...cardStyle }}
+      >
+        {cardContent}
+      </div>
+    );
+  }
+
+  return (
+    <View
+      testID={`kanban-card-${issue.number}`}
+      style={cardStyle}
+    >
+      {cardContent}
     </View>
   );
 }
@@ -555,57 +574,125 @@ export function UppidiFleetKanbanBoard({
           const colIssues = issuesByColumn[col.id];
           const isOver = dragOverColumn === col.id;
 
-          const webColumnProps: Record<string, any> = isWeb
-            ? {
-                onDragOver: (e: any) => handleColumnDragOver(e, col.id),
-                onDragEnter: (e: any) => handleColumnDragEnter(e, col.id),
-                onDragLeave: (e: any) => handleColumnDragLeave(e, col.id),
-                onDrop: (e: any) => handleColumnDrop(e, col.id),
-              }
-            : {};
+          const columnStyle: Record<string, any> = {
+            width: 290,
+            minWidth: 260,
+            backgroundColor: isOver
+              ? (colors.surface2 ?? "#333338")
+              : (colors.surface1 ?? "#27272a"),
+            borderColor: isOver
+              ? (colors.accent ?? "#38bdf8")
+              : (colors.border ?? "#3f3f46"),
+            borderWidth: isOver ? 2 : 1,
+            borderStyle: isOver ? "dashed" : "solid",
+            borderRadius: 8,
+            flexDirection: "column",
+            flexShrink: 0,
+            padding: isOver ? 9 : 10,
+          };
+
+          const dropHandlers = {
+            onDragOver: (e: any) => handleColumnDragOver(e, col.id),
+            onDragEnter: (e: any) => handleColumnDragEnter(e, col.id),
+            onDragLeave: (e: any) => handleColumnDragLeave(e, col.id),
+            onDrop: (e: any) => handleColumnDrop(e, col.id),
+          };
+
+          const columnHeader = (
+            <View
+              style={{
+                flexDirection: "row",
+                justifyContent: "space-between",
+                alignItems: "center",
+                paddingBottom: 8,
+                marginBottom: 8,
+                borderBottomWidth: 1,
+                borderBottomColor: colors.border ?? "#3f3f46",
+              }}
+            >
+              <Row align="center" gap="xs">
+                <StatusDot variant={col.tone === "accent" ? "info" : col.tone} />
+                <Text style={{ color: colors.foreground ?? "#f4f4f5", fontWeight: "600", fontSize: 13 }}>
+                  {col.title}
+                </Text>
+              </Row>
+              <Badge label={String(colIssues.length)} variant="neutral" size="sm" />
+            </View>
+          );
+
+          const columnCards = colIssues.length === 0 ? (
+            <View
+              style={{
+                padding: 24,
+                alignItems: "center",
+                justifyContent: "center",
+              }}
+            >
+              <Text
+                style={{
+                  color: colors.foregroundMuted ?? "#a1a1aa",
+                  ...typography.caption,
+                  fontSize: 12,
+                }}
+              >
+                No issues in this column
+              </Text>
+            </View>
+          ) : (
+            colIssues.map((issue) => (
+              <KanbanCard
+                key={issue.number}
+                issue={issue}
+                columnId={col.id}
+                onSelect={onSelectIssue}
+                onTransition={handleTransition}
+                isTransitioning={transitioningIssueId === issue.number}
+              />
+            ))
+          );
+
+          // React Native Web strips non-allowlisted DOM props (onDragOver,
+          // onDrop, ...) from <View>/<ScrollView>, so drop zones must be
+          // native elements on web or drops never fire. See #807.
+          if (isWeb) {
+            const webColumnTestProps = { testID: `kanban-column-${col.id}` } as any;
+            const webBodyTestProps = { testID: `kanban-column-body-${col.id}` } as any;
+            return (
+              <div
+                key={col.id}
+                {...webColumnTestProps}
+                data-testid={`kanban-column-${col.id}`}
+                {...dropHandlers}
+                style={{ display: "flex", ...columnStyle }}
+              >
+                {columnHeader}
+                <div
+                  {...webBodyTestProps}
+                  data-testid={`kanban-column-body-${col.id}`}
+                  {...dropHandlers}
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    flex: 1,
+                    maxHeight: 600,
+                    overflowY: "auto",
+                    gap: 8,
+                    paddingBottom: 8,
+                  }}
+                >
+                  {columnCards}
+                </div>
+              </div>
+            );
+          }
 
           return (
             <View
               key={col.id}
               testID={`kanban-column-${col.id}`}
-              {...webColumnProps}
-              style={{
-                width: 290,
-                minWidth: 260,
-                backgroundColor: isOver
-                  ? (colors.surface2 ?? "#333338")
-                  : (colors.surface1 ?? "#27272a"),
-                borderColor: isOver
-                  ? (colors.accent ?? "#38bdf8")
-                  : (colors.border ?? "#3f3f46"),
-                borderWidth: isOver ? 2 : 1,
-                borderStyle: isOver ? "dashed" : "solid",
-                borderRadius: 8,
-                flexDirection: "column",
-                flexShrink: 0,
-                padding: isOver ? 9 : 10,
-              }}
+              style={columnStyle}
             >
-              {/* Column Header */}
-              <View
-                style={{
-                  flexDirection: "row",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                  paddingBottom: 8,
-                  marginBottom: 8,
-                  borderBottomWidth: 1,
-                  borderBottomColor: colors.border ?? "#3f3f46",
-                }}
-              >
-                <Row align="center" gap="xs">
-                  <StatusDot variant={col.tone === "accent" ? "info" : col.tone} />
-                  <Text style={{ color: colors.foreground ?? "#f4f4f5", fontWeight: "600", fontSize: 13 }}>
-                    {col.title}
-                  </Text>
-                </Row>
-                <Badge label={String(colIssues.length)} variant="neutral" size="sm" />
-              </View>
+              {columnHeader}
 
               {/* Column Body: Vertically scrollable within column */}
               <ScrollView
@@ -613,38 +700,8 @@ export function UppidiFleetKanbanBoard({
                 style={{ flex: 1, maxHeight: 600 }}
                 contentContainerStyle={{ gap: 8, paddingBottom: 8 }}
                 testID={`kanban-column-body-${col.id}`}
-                {...webColumnProps}
               >
-                {colIssues.length === 0 ? (
-                  <View
-                    style={{
-                      padding: 24,
-                      alignItems: "center",
-                      justifyContent: "center",
-                    }}
-                  >
-                    <Text
-                      style={{
-                        color: colors.foregroundMuted ?? "#a1a1aa",
-                        ...typography.caption,
-                        fontSize: 12,
-                      }}
-                    >
-                      No issues in this column
-                    </Text>
-                  </View>
-                ) : (
-                  colIssues.map((issue) => (
-                    <KanbanCard
-                      key={issue.number}
-                      issue={issue}
-                      columnId={col.id}
-                      onSelect={onSelectIssue}
-                      onTransition={handleTransition}
-                      isTransitioning={transitioningIssueId === issue.number}
-                    />
-                  ))
-                )}
+                {columnCards}
               </ScrollView>
             </View>
           );

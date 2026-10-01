@@ -737,5 +737,106 @@ describe("UppidiFleetKanbanBoard (#755)", () => {
       assert.equal((transitionedIssue as UppidiIssue).number, 755);
       assert.equal(targetColumn, "review");
     });
+
+    // #807 regression: React Native Web strips draggable/onDrag*/onDrop props
+    // from <View>/<ScrollView>, so the drag source and drop zones must render
+    // as native host elements on web or the browser never fires DnD events.
+    it("renders drag source and drop zones as native DOM elements on web (#807)", () => {
+      let renderer: any;
+      TestRenderer.act(() => {
+        renderer = TestRenderer.create(
+          React.createElement(UppidiFleetKanbanBoard, { issues: sampleIssues }),
+        );
+      });
+
+      const tree = renderer.toJSON() as RenderedNode;
+      const card = findByTestId(tree, "kanban-card-755")[0];
+      assert.ok(card, "card must exist");
+      assert.equal(card.type, "div", "card must be a native div so draggable reaches the DOM");
+      assert.equal(card.props?.draggable, true, "card div must be draggable");
+      assert.equal(typeof card.props?.onDragStart, "function");
+      assert.equal(typeof card.props?.onDragEnd, "function");
+
+      for (const colId of ["backlog", "in_progress", "review", "done"]) {
+        const col = findByTestId(tree, `kanban-column-${colId}`)[0];
+        assert.ok(col, `column ${colId} must exist`);
+        assert.equal(col.type, "div", `column ${colId} must be a native div so onDrop reaches the DOM`);
+        assert.equal(typeof col.props?.onDragOver, "function");
+        assert.equal(typeof col.props?.onDrop, "function");
+
+        const body = findByTestId(tree, `kanban-column-body-${colId}`)[0];
+        assert.ok(body, `column body ${colId} must exist`);
+        assert.equal(body.type, "div", `column body ${colId} must be a native div`);
+        assert.equal(typeof body.props?.onDragOver, "function");
+        assert.equal(typeof body.props?.onDrop, "function");
+      }
+    });
+
+    // #807 regression: full dragstart->dragover->drop flow with real React DOM
+    // synthetic event shape (dataTransfer directly on the event, no
+    // nativeEvent wrapper). #809 only tested nativeEvent-shaped events.
+    it("transitions issue via DOM-shaped dragstart/dragover/drop events (#807)", async () => {
+      let transitionedIssue: UppidiIssue | null = null;
+      let targetColumn: string | null = null;
+
+      let renderer: any;
+      TestRenderer.act(() => {
+        renderer = TestRenderer.create(
+          React.createElement(UppidiFleetKanbanBoard, {
+            issues: sampleIssues,
+            onTransitionIssue: (issue: UppidiIssue, target: any) => {
+              transitionedIssue = issue;
+              targetColumn = target;
+            },
+          }),
+        );
+      });
+
+      const tree = renderer.toJSON() as RenderedNode;
+      const card = findByTestId(tree, "kanban-card-755")[0];
+      assert.equal(card.type, "div");
+
+      const store: Record<string, string> = {};
+      const dataTransfer = {
+        setData: (format: string, data: string) => {
+          store[format] = data;
+        },
+        getData: (format: string) => store[format] ?? "",
+        effectAllowed: "",
+        dropEffect: "",
+      };
+
+      TestRenderer.act(() => {
+        card.props?.onDragStart?.({ dataTransfer });
+      });
+      assert.equal(store["text/plain"], "755");
+      assert.ok(JSON.parse(store["application/json"]));
+      assert.equal(dataTransfer.effectAllowed, "move");
+
+      const reviewCol = findByTestId(tree, "kanban-column-review")[0];
+      let prevented = false;
+      TestRenderer.act(() => {
+        reviewCol.props?.onDragOver?.({
+          preventDefault: () => {
+            prevented = true;
+          },
+          dataTransfer,
+        });
+      });
+      assert.equal(prevented, true, "dragover must preventDefault to allow drop");
+      assert.equal(dataTransfer.dropEffect, "move");
+
+      await TestRenderer.act(async () => {
+        await reviewCol.props?.onDrop?.({
+          preventDefault: () => {},
+          stopPropagation: () => {},
+          dataTransfer,
+        });
+      });
+
+      assert.ok(transitionedIssue, "drop must dispatch transition");
+      assert.equal((transitionedIssue as UppidiIssue).number, 755);
+      assert.equal(targetColumn, "review");
+    });
   });
 });
