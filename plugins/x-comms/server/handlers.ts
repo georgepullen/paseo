@@ -279,15 +279,15 @@ export interface ConversationSendInput {
    */
   notifyOnFinish?: boolean;
   /**
-   * `prompt` already carries its envelope and signature, and is delivered
-   * verbatim — never re-stamped, which would move `sentAt` and invalidate the
-   * #594 signature.
+   * `prompt` already carries its envelope, and is delivered verbatim — never
+   * re-stamped, which would move `sentAt` and change what the recipient sees as
+   * the sender.
    *
    * Only the Desktop configured-host route sets this. It stamps its own envelope
-   * because it has no mesh key, and it is a local trusted caller: it could
-   * already put arbitrary bytes in front of a configured host before this
-   * existed, so this widens no capability. The agent-facing MCP route omits it
-   * and keeps having the server stamp, which is what makes that path signed.
+   * because it runs outside the plugin server, and it is a local trusted caller:
+   * it could already put arbitrary bytes in front of a configured host before
+   * this existed, so this widens no capability. The agent-facing MCP route omits
+   * it and keeps having the server stamp.
    */
   stamped?: boolean;
 }
@@ -346,10 +346,10 @@ async function tryDeliverLocalNative(
  * Send text that already carries its envelope, verbatim, over
  * `paseo send --host`.
  *
- * Re-stamping is never an option here: it would move `sentAt` and invalidate the
- * signature from #594. The Desktop client stamps its own envelope (it has no
- * mesh key) and hands over finished bytes, so this is the only route that can
- * deliver them intact.
+ * Re-stamping is never an option here: it would move `sentAt` and change what
+ * the recipient sees as the sender. The Desktop client stamps its own envelope
+ * (it runs outside the plugin server) and hands over finished bytes, so this is
+ * the only route that can deliver them intact.
  *
  * Both the dispatch-now path and the drain use this, so a message takes the same
  * route whether it went out immediately or waited for the target's turn. The
@@ -765,7 +765,7 @@ export async function handleSnapshotRefresh(_input?: unknown, context?: PluginHa
   rememberPaseo(context?.paseo);
   const snapshot = await refreshSnapshot();
   for (const entry of snapshot.daemons) notePeerReachability(entry.name, entry.reachable);
-  if (context?.paseo) await reconcileInbound(context.paseo, await peerAuthVerifier());
+  if (context?.paseo) await reconcileInbound(context.paseo);
   return { updatedAt: snapshot.updatedAt };
 }
 
@@ -954,16 +954,11 @@ import {
   type PresenceBirth,
 } from "./presence";
 import {
-  fetchPeerMeshKey,
   invokePeerRpc,
-  isLinkAuthenticated,
   localServerId,
   resolvePeerTarget,
   type PeerTarget,
 } from "./peer-channel";
-import { meshPublicKey, verifierFor } from "./mesh-identity.ts";
-import { pinnedKeys, readMeshKeys, recordPeerKey, writeMeshKeys } from "./mesh-keys.ts";
-import type { EnvelopeAuthVerifier } from "../shared/envelope.ts";
 import {
   detachLocalAgent,
   prunePeer,
@@ -1019,15 +1014,12 @@ function recordOutboundSend(args: {
 /**
  * Reconcile inbound envelopes from local timelines into the snapshot.
  * Best-effort: timeline failures never fail the calling RPC.
- *
- * `verify` decides whether a claimed sender is authenticated; anything that does
- * not verify is dropped rather than turned into a thread (#594).
  */
-async function reconcileInbound(paseo: TimelineScanner, verify: EnvelopeAuthVerifier): Promise<void> {
+async function reconcileInbound(paseo: TimelineScanner): Promise<void> {
   try {
     const timelines = await scanLocalTimelines(paseo);
     const snapshot = readConversationsSnapshot();
-    writeConversationsSnapshot(reconcileTimelines(snapshot, timelines, peerAliasFor, verify));
+    writeConversationsSnapshot(reconcileTimelines(snapshot, timelines, peerAliasFor));
   } catch (cause) {
     log.error(`conversations: timeline reconcile failed: ${cause instanceof Error ? cause.message : String(cause)}`);
   }
@@ -1058,97 +1050,6 @@ function validPeerTargets(): PeerTarget[] {
   }
   return targets;
 }
-
-/**
- * How long a completed pin pass is trusted before we dial peers again. A
- * snapshot refresh is a user-visible RPC, and dialling every relay peer on each
- * one would put an 8s connect timeout per unreachable peer in front of the UI.
- * Keys are pinned permanently, so this only bounds *discovery* of a newly paired
- * peer — never a re-fetch of a known one.
- */
-const MESH_KEY_REFRESH_MS = 5 * 60 * 1000;
-
-/** Whole-pass deadline, so a fleet of dead peers cannot stall a refresh. */
-const MESH_KEY_PASS_DEADLINE_MS = 5000;
-
-let lastMeshKeyPassAt = 0;
-let meshKeyPassInFlight: Promise<void> | null = null;
-
-/**
- * Pull each peer's x-comms verify key over the authenticated link and pin it.
- * The key is what makes an inbound envelope's `sender` block checkable instead
- * of merely asserted (#594).
- *
- * Rate-limited and deadline-bounded: a slow or unreachable peer must not hold up
- * a timeline reconcile, and whatever it does not return is picked up next pass.
- */
-async function pinPeerMeshKeys(): Promise<void> {
-  if (Date.now() - lastMeshKeyPassAt < MESH_KEY_REFRESH_MS) return;
-  // Concurrent refreshes share one pass rather than each dialling the fleet.
-  if (meshKeyPassInFlight) return meshKeyPassInFlight;
-  lastMeshKeyPassAt = Date.now();
-  meshKeyPassInFlight = (async () => {
-    const pass = (async () => {
-      for (const target of validPeerTargets()) {
-        if (!isLinkAuthenticated(target)) continue;
-        try {
-          const key = await fetchPeerMeshKey(target);
-          if (!key) continue;
-          const state = readMeshKeys();
-          const outcome = recordPeerKey(state, key);
-          if (!outcome.pinned) {
-            log.error(
-              `auth: refusing mesh key for '${target.name}': ${outcome.reason} — its envelopes stay unattributable`,
-            );
-            continue;
-          }
-          if (!outcome.changed) continue;
-          writeMeshKeys(state);
-          log.info(`auth: pinned mesh key ${key.keyId} for '${target.name}' (${key.serverId})`);
-        } catch (cause) {
-          log.error(
-            `auth: could not fetch a mesh key from '${target.name}': ${cause instanceof Error ? cause.message : String(cause)}`,
-          );
-        }
-      }
-    })();
-    // Resolves either way: a missed pass is recoverable, a rejected promise here
-    // would reject every reconcile that shares it.
-    await Promise.race([pass, withTimeout(Promise.resolve(), MESH_KEY_PASS_DEADLINE_MS, "mesh key pass").catch(() => {})]);
-  })().finally(() => {
-    meshKeyPassInFlight = null;
-  });
-  return meshKeyPassInFlight;
-}
-
-/**
- * The envelope signature checker used on every inbound attribution. Backed by
- * the pinned peer keys; an envelope from a peer we have no key for verifies as
- * nothing, which is the intended conservative answer.
- */
-export async function peerAuthVerifier(): Promise<EnvelopeAuthVerifier> {
-  await pinPeerMeshKeys();
-  return verifierFor(pinnedKeys(readMeshKeys()));
-}
-
-/**
- * Hand this daemon's x-comms verify key to an authenticated peer, so it can
- * check the envelopes we stamp. The `serverId` in the response is the link's own
- * verified identity — the caller overwrites whatever this process believes, so a
- * buggy or spoofed local id cannot launder a key onto the wrong peer.
- */
-export async function handleMeshKeyGet() {
-  const key = meshPublicKey();
-  let serverId: string | null = null;
-  try {
-    serverId = await localServerId();
-  } catch {
-    // Unreadable identity: the peer cannot pin a key to a serverId, so it will
-    // treat the key as unusable. Better than publishing an unownable one.
-  }
-  return { serverId, keyId: key.keyId, publicKeyPem: key.publicKeyPem };
-}
-
 
 export async function handlePresenceAnnounce(input: { messageId: string; entries: PresenceBirth[] }) {
   const known = knownPeerServerIds();
@@ -1582,7 +1483,8 @@ export function queueDeliveryNotice(
  * Deliver a queued item. A notice is a local send. A message goes out over the
  * route its original send would have taken, except when the text is already
  * stamped by the MCP server's path — that text must be sent verbatim, because
- * re-stamping would move `sentAt` and invalidate the signature from #594.
+ * re-stamping would move `sentAt` and change what the recipient sees as the
+ * sender.
  */
 async function deliverDeferEntry(entry: DeferEntry): Promise<void> {
   if (entry.kind === "notice") {

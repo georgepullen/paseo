@@ -11,7 +11,6 @@ import {
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import { serverPath } from "./server-status.ts";
 import { stateDir } from "./registry.ts";
-import { MESH_KEY_FILE } from "./mesh-identity.ts";
 import { registerRecipientInstructions } from "./recipient-instructions.ts";
 
 const log = createPluginLogger("paseo-x-comms", { subsystem: "injection" });
@@ -48,24 +47,11 @@ export function injectionServerName(readId: () => string | null = readLocalServe
   return `${INJECTION_KEY_PREFIX}${id}`;
 }
 
-/**
- * The signing key the MCP server uses to authenticate the envelopes it stamps
- * (#594). Passed by absolute path because the injected server is spawned by the
- * agent runtime, not by this process, so it cannot inherit our environment — and
- * the key must never be something an agent session can set for itself.
- */
-export const MESH_KEY_ENV = "PASEO_X_COMMS_MESH_KEY";
-
-export function meshKeyPath(dir: string = stateDir()): string {
-  return join(dir, MESH_KEY_FILE);
-}
-
 export function injectionServerConfig(): McpStdioInjectionConfig {
   return {
     type: "stdio",
     command: resolveNodeCommand(process.execPath),
     args: [syncStableServer()],
-    env: { [MESH_KEY_ENV]: meshKeyPath() },
   };
 }
 

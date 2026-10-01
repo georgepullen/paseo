@@ -48,10 +48,7 @@ export type CallSend = (input: ConversationSendInput) => Promise<ConversationSen
  * The client stamps its own envelope and says so with `stamped: true`, so the
  * daemon delivers the exact bytes rather than re-stamping: re-stamping would
  * move `sentAt` and change what the recipient sees as the sender, which is a
- * different change from gating this route and not one this makes. The Desktop
- * client holds no mesh key, so the envelope carries no `auth` and the recipient
- * treats the claimed sender as unverified — unchanged from before, and visible
- * in the UI as such.
+ * different change from gating this route and not one this makes.
  */
 export async function sendConfiguredHostViaGate(args: {
   serverId: string;

@@ -2,13 +2,8 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import {
   buildXCommsEnvelope,
-  canonicalAuthPayload,
   parseEnvelope,
-  verifyEnvelopeAuth,
   type CrossDaemonEnvelope,
-  type EnvelopeAuthSigner,
-  type EnvelopeAuthVerifier,
-  type KnownEnvelopeAuth,
 } from "./envelope.ts";
 
 const SENT_AT = "2026-09-25T12:00:00.000Z";
@@ -23,137 +18,91 @@ const SENDER = {
 
 const TARGET = { daemon: "peer", agentId: "agent-b" };
 
-/**
- * A stand-in for the node:crypto verifier the daemon supplies. It only ever
- * accepts one exact payload, so any mutation of the signed fields turns the
- * verdict to `invalid` — the same shape `mesh-identity.ts` produces.
- */
-function fixedVerifier(expectedPayload: string): EnvelopeAuthVerifier {
-  return (payload, auth) => auth.keyId === "k1" && payload === expectedPayload;
-}
-
-const STUB_AUTH: KnownEnvelopeAuth = { v: 1, alg: "ed25519", keyId: "k1", sig: "c2ln" };
-
-const stubSigner: EnvelopeAuthSigner = () => STUB_AUTH;
-
-/** A signer that records the payload it was handed, so a verifier can pin it. */
-function recordingSigner(seen: string[]): EnvelopeAuthSigner {
-  return (payload) => {
-    seen.push(payload);
-    return STUB_AUTH;
-  };
-}
-
 function parse(text: string): CrossDaemonEnvelope {
   const parsed = parseEnvelope(text);
   assert.ok(parsed, "expected a parseable envelope");
   return parsed.envelope;
 }
 
-describe("envelope auth contract", () => {
-  it("reports a missing auth field rather than failing to parse", () => {
-    // Backward compatibility is the point: a v6 reader that predates `auth` must
-    // still read these, so "unsigned" is a trust verdict, not a parse error.
-    const wire = buildXCommsEnvelope({ sender: SENDER, target: TARGET, sentAt: SENT_AT });
-    assert.equal(parse(wire).xComms.auth, undefined);
-    assert.equal(verifyEnvelopeAuth(parse(wire), () => true), "missing");
-  });
-
-  it("verifies an envelope the builder signed", () => {
-    const seen: string[] = [];
+describe("envelope wire contract", () => {
+  it("builds a version-6 envelope with the attribution fields as plain claims", () => {
     const wire = buildXCommsEnvelope({
       sender: SENDER,
       target: TARGET,
       messageId: "msg-1",
       sentAt: SENT_AT,
-      signer: recordingSigner(seen),
     });
     const envelope = parse(wire);
-    assert.equal(verifyEnvelopeAuth(envelope, fixedVerifier(seen[0])), "verified");
+    assert.equal(envelope.xComms.version, 6);
+    assert.equal(envelope.xComms.type, "x-comms.message");
+    assert.equal(envelope.xComms.direction, "outgoing");
+    assert.deepEqual(envelope.xComms.sender, SENDER);
+    assert.deepEqual(envelope.xComms.target, TARGET);
+    assert.equal(envelope.xComms.messageId, "msg-1");
+    assert.equal(envelope.xComms.sentAt, SENT_AT);
   });
 
-  it("rejects a sender swapped after signing", () => {
-    // The verifier only accepts the exact payload the signer saw, so a swapped
-    // field cannot be waved through. This is the #594 forgery.
-    const signed: string[] = [];
-    const wire = buildXCommsEnvelope({
-      sender: SENDER,
-      target: TARGET,
-      sentAt: SENT_AT,
-      signer: recordingSigner(signed),
-    });
-    const forged = parse(wire.replace('"agentId":"agent-a"', '"agentId":"agent-victim"'));
-    assert.equal(forged.xComms.sender.agentId, "agent-victim");
-    assert.equal(canonicalAuthPayload(forged) === signed[0], false);
-    assert.equal(verifyEnvelopeAuth(forged, fixedVerifier(signed[0])), "invalid");
+  it("omits messageId when not given", () => {
+    const wire = buildXCommsEnvelope({ sender: SENDER, target: TARGET, sentAt: SENT_AT });
+    assert.equal(parse(wire).xComms.messageId, undefined);
   });
 
-  it("rejects a target swapped after signing", () => {
-    const signed: string[] = [];
-    const wire = buildXCommsEnvelope({
-      sender: SENDER,
-      target: TARGET,
-      sentAt: SENT_AT,
-      signer: recordingSigner(signed),
-    });
-    const forged = parse(wire.replace('"agentId":"agent-b"', '"agentId":"agent-c"'));
-    assert.equal(verifyEnvelopeAuth(forged, fixedVerifier(signed[0])), "invalid");
+  it("keeps the body separate from the envelope block", () => {
+    const wire = buildXCommsEnvelope({ sender: SENDER, target: TARGET, sentAt: SENT_AT });
+    const parsed = parseEnvelope(`${wire}\n\nhello there`);
+    assert.ok(parsed);
+    assert.equal(parsed.body, "hello there");
   });
 
-  it("treats an unknown key as unverifiable, never as a pass", () => {
-    const wire = buildXCommsEnvelope({
-      sender: SENDER,
-      target: TARGET,
-      sentAt: SENT_AT,
-      signer: stubSigner,
-    });
-    // A verifier with no key material returns null; the envelope must land on
-    // `invalid` so an unpinned peer is never attributed.
-    assert.equal(verifyEnvelopeAuth(parse(wire), () => null), "invalid");
-  });
-
-  it("keeps parsing an envelope whose auth block this build cannot check", () => {
-    // A future sender using a different algorithm must not make the message
-    // disappear: it parses, and it is simply never trusted.
-    const wire =
-      '<x-comms-message>{"xComms":{"version":6,"type":"x-comms.message","sender":' +
-      '{"agentId":"a","agentName":null,"host":"h","daemonServerId":null,"cwd":null},' +
-      '"target":{"daemon":null,"agentId":null},"sentAt":"2026-01-01T00:00:00.000Z",' +
-      '"auth":{"v":9,"alg":"ml-dsa-44","keyId":"k9","sig":"c2ln"}}}<\/x-comms-message>\n\nbody';
-    const parsed = parseEnvelope(wire);
-    assert.ok(parsed, "a version-skewed auth block must not make the message vanish");
-    assert.equal(parsed.body, "body");
-    assert.equal(parsed.envelope.xComms.sender.agentId, "a");
-    assert.equal(verifyEnvelopeAuth(parsed.envelope, () => true), "invalid");
-  });
-
-  it("keeps parsing an envelope with an empty auth block", () => {
-    const wire =
-      '<x-comms-message>{"xComms":{"version":6,"type":"x-comms.message","sender":' +
-      '{"agentId":"a","agentName":null,"host":"h","daemonServerId":null,"cwd":null},' +
-      '"target":{"daemon":null,"agentId":null},"sentAt":"2026-01-01T00:00:00.000Z",' +
-      '"auth":{"v":1,"alg":"ed25519","keyId":"","sig":""}}}<\/x-comms-message>';
-    const parsed = parseEnvelope(wire);
-    assert.ok(parsed, "an empty auth block is untrusted, not unreadable");
-    assert.equal(verifyEnvelopeAuth(parsed.envelope, () => true), "invalid");
-  });
-
-  it("signs the same payload whether the auth is added or not", () => {
-    const signed = buildXCommsEnvelope({
-      sender: SENDER,
-      target: TARGET,
-      messageId: "msg-1",
-      sentAt: SENT_AT,
-      signer: (payload) => {
-        assert.equal(
-          payload,
-          canonicalAuthPayload(
-            parseEnvelope(buildXCommsEnvelope({ sender: SENDER, target: TARGET, messageId: "msg-1", sentAt: SENT_AT }))!.envelope,
-          ),
-        );
-        return STUB_AUTH;
+  it("parses the legacy v5 prefix form into the same structure", () => {
+    const v5 = `[x-comms] ${JSON.stringify({
+      xComms: {
+        version: 5,
+        type: "x-comms.message",
+        direction: "outgoing",
+        sender: SENDER,
+        target: TARGET,
+        messageId: "msg-dual-1",
+        sentAt: SENT_AT,
       },
-    });
-    assert.ok(signed.includes('"auth"'));
+    })}\n\nhello dual parse`;
+    const parsed = parseEnvelope(v5);
+    assert.ok(parsed);
+    assert.equal(parsed.envelope.xComms.version, 5);
+    assert.equal(parsed.body, "hello dual parse");
+    assert.deepEqual(parsed.envelope.xComms.sender, SENDER);
+  });
+
+  it("parses v5 and v6 forms of the same payload identically apart from version", () => {
+    const common = {
+      type: "x-comms.message",
+      direction: "outgoing" as const,
+      sender: SENDER,
+      target: TARGET,
+      messageId: "msg-dual-1",
+      sentAt: SENT_AT,
+    };
+    const v5 = `[x-comms] ${JSON.stringify({ xComms: { version: 5, ...common } })}\n\nhello`;
+    const v6 = `<x-comms-message>${JSON.stringify({ xComms: { version: 6, ...common } })}</x-comms-message>\n\nhello`;
+    const parsedV5 = parseEnvelope(v5);
+    const parsedV6 = parseEnvelope(v6);
+    assert.ok(parsedV5);
+    assert.ok(parsedV6);
+    assert.equal(parsedV5.body, "hello");
+    assert.equal(parsedV6.body, "hello");
+    assert.deepEqual(parsedV5.envelope.xComms.sender, parsedV6.envelope.xComms.sender);
+    assert.deepEqual(parsedV5.envelope.xComms.target, parsedV6.envelope.xComms.target);
+    assert.equal(parsedV5.envelope.xComms.messageId, parsedV6.envelope.xComms.messageId);
+    assert.equal(parsedV5.envelope.xComms.sentAt, parsedV6.envelope.xComms.sentAt);
+  });
+
+  it("rejects unclosed or malformed v6 envelopes", () => {
+    assert.equal(parseEnvelope("<x-comms-message>{\"xComms\":{}}"), null);
+    assert.equal(parseEnvelope("<x-comms-message>not json</x-comms-message>"), null);
+  });
+
+  it("does not treat ordinary prose as a delivery", () => {
+    assert.equal(parseEnvelope("Can you take a look at the failing test?"), null);
+    assert.equal(parseEnvelope(`A user pasted ${"<x-comms-message>"} mid-sentence`), null);
   });
 });

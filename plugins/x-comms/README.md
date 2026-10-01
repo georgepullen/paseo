@@ -20,9 +20,9 @@ This repo ships two things:
 Two documents record **what each surface actually does now**, derived from the
 code rather than from the design, one per shipped surface:
 
-* **[docs/contract-plugin.md](docs/contract-plugin.md)** — the plugin: 20 server
+* **[docs/contract-plugin.md](docs/contract-plugin.md)** — the plugin: 19 server
   RPCs, 4 `agent.*` daemon events, 2 `agent.create` injection hooks, 9 client
-  surface contributions, and the shared wire substrate (envelope, `auth`, busy
+  surface contributions, and the shared wire substrate (envelope, busy
   gate, defer queue, outbox).
 * **[docs/contract-mcp.md](docs/contract-mcp.md)** — the MCP server: 11 tools and
   14 further capabilities, each with inputs, outputs, failure modes, and whether
@@ -98,11 +98,11 @@ Every `x_comms_send` prepends an envelope block:
 <x-comms-message>{"xComms":{"version":6,"type":"x-comms.message","sender":{…},"target":{…},"messageId":"…","sentAt":"…","direction":"outgoing"}}</x-comms-message>
 ```
 
-`sender` (agentId, agentName, host, daemonServerId, cwd) + `target` (daemon, agentId) + `messageId` + `sentAt` + `auth` (the sending daemon's signature over those fields — see [mcp/README.md#envelope-authentication](mcp/README.md#envelope-authentication)). Without a valid `auth` the claimed sender is an unverified claim and the plugin refuses to attribute it (#594). Desktop discovers configured hosts only from Paseo's mounted host runtime and sends to the selected `(serverId, agentId)` with a fresh client; it never pairs hosts or creates agents. Headless agents continue to use the native `paseo send --host` path without Desktop running. Prompt text stays prose after the envelope. Recipients parse the envelope and reply via `x_comms_send` to `sender.agentId` on the sender's daemon. Full envelope + permission loop documented in [mcp/README.md#message-envelope](mcp/README.md#message-envelope) and [mcp/README.md#behavior-notes](mcp/README.md#behavior-notes).
+`sender` (agentId, agentName, host, daemonServerId, cwd) + `target` (daemon, agentId) + `messageId` + `sentAt`. The `sender` fields are plain, unverified claims — a return address for replies, not an authenticated identity. All Paseo daemons belong to one user, so there is no cross-user boundary for a signature to protect (#840). Desktop discovers configured hosts only from Paseo's mounted host runtime and sends to the selected `(serverId, agentId)` with a fresh client; it never pairs hosts or creates agents. Headless agents continue to use the native `paseo send --host` path without Desktop running. Prompt text stays prose after the envelope. Recipients parse the envelope and reply via `x_comms_send` to `sender.agentId` on the sender's daemon. Full envelope + permission loop documented in [mcp/README.md#message-envelope](mcp/README.md#message-envelope) and [mcp/README.md#behavior-notes](mcp/README.md#behavior-notes).
 
 #### Recipient skill (envelope handling)
 
-Injecting the tools alone leaves a delivery indistinguishable from chat, so the recipient answers the prose and never attributes the sender (#379). The plugin therefore injects **standing recipient instructions** at the same `agent.create` gate as the tools (`server/recipient-instructions.ts`): detect a `<x-comms-message>` (v6) or `[x-comms]` (v5) turn, check that it carries an `auth` signature, parse `sender`/`target`/`messageId`/`direction`, attribute the peer sender, and reply through `x_comms_send` to `sender.agentId` on `sender.daemonServerId`. The same contract ships as a skill at [`skills/recipient-envelope/SKILL.md`](skills/recipient-envelope/SKILL.md) for manual installation into `.agents/skills/`. `server/recipient-instructions.test.ts` pins the instructions' content and the injection wiring; `instruction-surfaces.test.ts` pins the two against the MCP server's own `instructions` string, so the three cannot drift into disagreeing about a rule again (#709).
+Injecting the tools alone leaves a delivery indistinguishable from chat, so the recipient answers the prose and never attributes the sender (#379). The plugin therefore injects **standing recipient instructions** at the same `agent.create` gate as the tools (`server/recipient-instructions.ts`): detect a `<x-comms-message>` (v6) or `[x-comms]` (v5) turn, parse `sender`/`target`/`messageId`/`direction`, attribute the peer sender, and reply through `x_comms_send` to `sender.agentId` on `sender.daemonServerId`. The same contract ships as a skill at [`skills/recipient-envelope/SKILL.md`](skills/recipient-envelope/SKILL.md) for manual installation into `.agents/skills/`. `server/recipient-instructions.test.ts` pins the instructions' content and the injection wiring; `instruction-surfaces.test.ts` pins the two against the MCP server's own `instructions` string, so the three cannot drift into disagreeing about a rule again (#709).
 
 Tools (via the embedded server) are `x_comms_list_daemons`, `x_comms_add_daemon`, `x_comms_remove_daemon`, `x_comms_list_agents`, `x_comms_inspect`, `x_comms_send`, `x_comms_logs`, `x_comms_wait`, `x_comms_list_permissions`, `x_comms_allow_permission`, `x_comms_deny_permission` — see [mcp/README.md#tools](mcp/README.md#tools) for the reference. The plugin's conversation/panel UI wraps `send`/`logs`/`wait`/permissions for interactive use.
 
@@ -190,8 +190,6 @@ and what to use if you need a real guarantee are in
 │   ├── presence.ts           # Presence announce/retract/list
 │   ├── defer-queue.ts        # Bounded per-target queue for busy targets (+ bounds, claim/notice rules)
 │   ├── busy.ts               # Lifecycle classification + verdict cache over turn events and probes
-│   ├── mesh-identity.ts      # Daemon ed25519 signing key + envelope sign/verify
-│   ├── mesh-keys.ts          # Pinned peer verify keys (substitution-resistant)
 │   ├── injection.ts          # MCP + recipient-instruction injection for agents
 │   ├── recipient-instructions.ts # Standing envelope-handling instructions
 │   ├── snapshot.ts / conversations-snapshot.ts
@@ -207,7 +205,7 @@ and what to use if you need a real guarantee are in
 │   ├── contract-drift.md     # Documented-vs-actual asymmetry ledger
 │   └── mesh.md               # Presence, injection, and visibility layers
 ├── shared/
-│   ├── envelope.ts           # Wire envelope schema (<x-comms-message> parsing, v5 fallback), auth schema + canonical signed payload
+│   ├── envelope.ts           # Wire envelope schema (<x-comms-message> parsing, v5 fallback)
 │   ├── registry.ts           # RPC definitions (zod)
 │   └── conversations-snapshot.ts
 ├── mcp/

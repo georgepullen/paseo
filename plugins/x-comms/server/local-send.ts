@@ -1,7 +1,6 @@
 import { hostname } from "node:os";
 import type { PaseoApi } from "@getpaseo/client";
 import { localServerId } from "./peer-channel";
-import { meshSigner } from "./mesh-identity.ts";
 
 /**
  * Native send for targets that live on THIS daemon.
@@ -22,8 +21,6 @@ import {
   ENVELOPE_OPEN,
   ENVELOPE_CLOSE,
   META_PREFIX,
-  canonicalAuthPayload,
-  type EnvelopeAuthSigner,
 } from "../shared/envelope.ts";
 
 export { ENVELOPE_OPEN, ENVELOPE_CLOSE };
@@ -65,16 +62,14 @@ export interface LocalSendInput {
  * Build the `<x-comms-message>{…}</x-comms-message>` envelope exactly as the MCP server's
  * version-6 stamp does. Pure so the contract is testable without a daemon.
  *
- * `signer` comes from the daemon's own mesh key and is what makes the `sender`
- * block checkable by the receiver (#594). Callers on the trusted send path always
- * pass it; the parameter is optional only so the wire shape stays testable.
+ * The `sender` block is a plain, unverified claim: it records a return address
+ * for replies, not an authenticated identity.
  */
 export function buildSenderEnvelope(args: {
   sender: SenderIdentity;
   target: { daemon: string | null; agentId: string | null };
   messageId?: string;
   sentAt: string;
-  signer?: EnvelopeAuthSigner;
 }): string {
   const xComms = {
     version: 6,
@@ -94,11 +89,7 @@ export function buildSenderEnvelope(args: {
     ...(args.messageId ? { messageId: args.messageId } : {}),
     sentAt: args.sentAt,
   };
-  // Sign over the pre-auth object; `auth` is never part of its own signature.
-  const auth = args.signer ? args.signer(canonicalAuthPayload({ xComms })) : undefined;
-  return `${ENVELOPE_OPEN}${JSON.stringify({
-    xComms: { ...xComms, ...(auth ? { auth } : {}) },
-  })}${ENVELOPE_CLOSE}`;
+  return `${ENVELOPE_OPEN}${JSON.stringify({ xComms })}${ENVELOPE_CLOSE}`;
 }
 
 /** True when a resolved target serverId is this daemon's own serverId. */
@@ -169,7 +160,6 @@ export async function sendLocalNative(paseo: PaseoApi, input: LocalSendInput): P
     target: { daemon: input.targetDaemon, agentId: input.agentId },
     messageId: input.messageId,
     sentAt: new Date().toISOString(),
-    signer: meshSigner(),
   })}\n\n${input.prompt}`;
   await paseo.agents.ref(input.agentId).send(stamped, { messageId: input.messageId });
 }

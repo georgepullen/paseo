@@ -13,7 +13,6 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
 import { setTimeout as sleep } from "node:timers/promises";
-import { createPublicKey, generateKeyPairSync, verify as cryptoVerify } from "node:crypto";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 
@@ -344,31 +343,6 @@ test("send stamps a structured sender-meta envelope and reaches the remote agent
   }
 });
 
-// Envelope authentication (xpufx-org/paseo#594). A daemon key is written to a
-// temp mesh-key.json so the server has something to sign with; the verifier here
-// re-derives the fingerprint the same way the plugin does.
-function tempMeshKeyPath() {
-  return join(mkdtempSync(join(tmpdir(), "paseo-x-comms-nokey-")), "mesh-key.json");
-}
-
-function tempMeshKey() {
-  const dir = mkdtempSync(join(tmpdir(), "paseo-x-comms-key-"));
-  const pair = generateKeyPairSync("ed25519");
-  const publicKeyPem = pair.publicKey.export({ type: "spki", format: "pem" });
-  const der = createPublicKey(publicKeyPem).export({ type: "spki", format: "der" });
-  const file = join(dir, "mesh-key.json");
-  writeFileSync(
-    file,
-    JSON.stringify({
-      keyId: `xck1:${Buffer.from(der).toString("base64url")}`,
-      publicKeyPem,
-      privateKeyPem: pair.privateKey.export({ type: "pkcs8", format: "pem" }),
-      createdAt: new Date().toISOString(),
-    }),
-  );
-  return file;
-}
-
 test("an agent cannot name its own sender: fromAgentId is ignored in a session", async () => {
   const { client, transport } = await startClient({}, tempRemotes({ hsi: RELAY_URL }));
   try {
@@ -416,79 +390,6 @@ test("the plugin server may still send on a local agent's behalf", async () => {
     const meta = metaOf(sent.promptHead);
     assert.equal(meta.xComms.sender.agentId, "agent-panel");
     assert.equal(meta.xComms.sender.agentName, "Panel Agent");
-  } finally {
-    await client.close();
-  }
-});
-
-test("a signed envelope verifies against the sending daemon's pinned key", async () => {
-  const keyFile = tempMeshKey();
-  const { client, transport } = await startClient(
-    { PASEO_X_COMMS_MESH_KEY: keyFile },
-    tempRemotes({ hsi: RELAY_URL }),
-  );
-  try {
-    const res = await client.callTool({
-      name: `${PREFIX}send`,
-      arguments: { daemon: "hsi", agentId: "agent-9", prompt: "hello", messageId: "msg-signed-1" },
-    });
-    const sent = JSON.parse(textOf(res));
-    const meta = metaOf(sent.promptHead);
-    const auth = meta.xComms.auth;
-    assert.ok(auth, "a daemon with a mesh key must sign the envelope");
-    assert.equal(auth.v, 1);
-    assert.equal(auth.alg, "ed25519");
-
-    const stored = JSON.parse(readFileSync(keyFile, "utf8"));
-    assert.equal(auth.keyId, stored.keyId, "keyId must be the sender's own fingerprint");
-    const payload = [
-      "x-comms/envelope-auth/v1",
-      String(meta.xComms.version),
-      meta.xComms.type,
-      meta.xComms.sender.agentId,
-      meta.xComms.sender.agentName,
-      meta.xComms.sender.host,
-      meta.xComms.sender.daemonServerId,
-      meta.xComms.sender.cwd,
-      meta.xComms.target.daemon,
-      meta.xComms.target.agentId,
-      meta.xComms.messageId,
-      meta.xComms.sentAt,
-    ].join("\n");
-    assert.equal(
-      cryptoVerify(null, Buffer.from(payload, "utf8"), createPublicKey(stored.publicKeyPem), Buffer.from(auth.sig, "base64url")),
-      true,
-      "the signature must cover the canonical attribution payload",
-    );
-
-    // Rewriting the claimed sender must break it: this is the actual forgery.
-    const forged = { ...meta, sender: { ...meta.xComms.sender, agentId: "agent-victim" } };
-    const forgedPayload = payload.replace("agent-test-1", "agent-victim");
-    assert.notEqual(forgedPayload, payload);
-    assert.equal(
-      cryptoVerify(null, Buffer.from(forgedPayload, "utf8"), createPublicKey(stored.publicKeyPem), Buffer.from(auth.sig, "base64url")),
-      false,
-      "a rewritten sender must not verify",
-    );
-  } finally {
-    await client.close();
-  }
-});
-
-test("sends stay unsigned when no mesh key is available", async () => {
-  const { client, transport } = await startClient(
-    { PASEO_X_COMMS_MESH_KEY: tempMeshKeyPath() },
-    tempRemotes({ hsi: RELAY_URL }),
-  );
-  try {
-    const res = await client.callTool({
-      name: `${PREFIX}send`,
-      arguments: { daemon: "hsi", agentId: "agent-9", prompt: "hello" },
-    });
-    const sent = JSON.parse(textOf(res));
-    // Unsigned is a degraded, never-trusted delivery — the send must still work
-    // rather than fail closed, or a standalone install would stop messaging.
-    assert.equal(metaOf(sent.promptHead).xComms.auth, undefined);
   } finally {
     await client.close();
   }
@@ -1062,12 +963,9 @@ test("a busy target is not preempted: the send is queued, not dispatched", async
   }
 });
 
-test("the queued copy is the exact stamped bytes, signature and all", async () => {
+test("the queued copy is the exact stamped bytes", async () => {
   const remotesFile = tempRemotes({ hsi: RELAY_URL });
-  const { client } = await startClient(
-    { FAKE_PASEO_STATUS: "running", PASEO_X_COMMS_MESH_KEY: tempMeshKey() },
-    remotesFile,
-  );
+  const { client } = await startClient({ FAKE_PASEO_STATUS: "running" }, remotesFile);
   try {
     await client.callTool({
       name: `${PREFIX}send`,
@@ -1079,7 +977,6 @@ test("the queued copy is the exact stamped bytes, signature and all", async () =
     assert.equal(entry.stamped, true, "stamping happens before the queue, so the bytes are final");
     assert.match(entry.prompt, /^<x-comms-message>/, "carries the envelope");
     assert.match(entry.prompt, /hi$/, "carries the prose");
-    assert.equal(metaOf(entry.prompt).xComms.auth.alg, "ed25519", "the signature survives the wait (#594)");
   } finally {
     await client.close();
   }

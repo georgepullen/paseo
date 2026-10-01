@@ -8,7 +8,7 @@ import {
   DEFER_MAX_DEPTH_PER_TARGET,
 } from "./server/defer-queue.ts";
 import { RECIPIENT_INSTRUCTIONS } from "./server/recipient-instructions.ts";
-import { AUTH_FIELDS, EnvelopeSchema } from "./shared/envelope.ts";
+import { EnvelopeSchema } from "./shared/envelope.ts";
 
 /**
  * The x-comms guidance that reaches an agent, on all three surfaces, in one
@@ -94,11 +94,8 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 /**
  * The MCP server's `INSTRUCTIONS` literal, lifted out of the source module.
  *
- * The template holds no backtick; its one interpolation —
- * `${AUTH_FIELDS.join(", ")}` (#715) — contains neither a backtick nor a `` `; ``
- * of its own, so the first `` `; `` after the opening delimiter still closes the
- * literal. The extracted text therefore shows the interpolation verbatim, which
- * is what the #715 binding below matches. The anchors asserted here exist so a
+ * The template holds no backtick, so the first `` `; `` after the opening
+ * delimiter still closes the literal. The anchors asserted here exist so a
  * failed extraction fails loudly instead of handing the assertions an empty
  * string.
  */
@@ -112,10 +109,6 @@ function readMcpInstructions(): string {
   const instructions = source.slice(start + open.length, end);
   assert.match(instructions, /x_comms_send/, "extracted the wrong span out of the MCP module");
   return instructions;
-}
-
-function readMcpSource(): string {
-  return readFileSync(join(HERE, "mcp", "paseo-x-comms.mjs"), "utf8");
 }
 
 function readSkill(): string {
@@ -230,153 +223,6 @@ describe("the surfaces cover the same ground, not just the same rule", () => {
       }
     });
   }
-});
-
-/**
- * #715: the signed field set, read from `AUTH_FIELDS`, is what every surface
- * must state.
- *
- * The bug was prose that said the signature covers
- * "the sender/target/messageId/sentAt fields" — a hand-copied 4-field list
- * standing in for the 11-field `AUTH_FIELDS`. The copy was wrong the day it was
- * written and could only drift further, because nothing tied it to the list
- * the signature actually covers.
- *
- * The fix is interpolation, not a copy: RECIPIENT_INSTRUCTIONS and the MCP
- * INSTRUCTIONS both build the sentence from the field list itself, so drift is
- * structurally impossible there. That strength is a testing weakness — a
- * surface that cannot drift also cannot be caught drifting — so the checks
- * below assert what can still be broken:
- *
- *   - the MCP module's JS mirror of AUTH_FIELDS, which cannot be imported
- *     (standalone server, no TypeScript), against the canonical list —
- *     order-sensitive, because payload bytes depend on order;
- *   - the two surfaces' interpolation bindings, since readMcpInstructions()
- *     reads source text and sees `${AUTH_FIELDS.join(", ")}` verbatim rather
- *     than the rendered list; the mirror parity keeps that reference honest;
- *   - SKILL.md, which is prose and stays hand-written, against the canonical
- *     set — by expanding its own globs, not by pinning a second copy;
- *   - the retired claim itself: no surface may state the four-field slash
- *     list, the exact sentence #715 was filed over, whatever else it says.
- */
-
-const MCP_AUTH_FIELDS_MIRROR = /const AUTH_FIELDS = \[\n((?:  "[^"]+",?\n)+)\];/.exec(
-  readMcpSource(),
-)?.[1];
-
-describe("the MCP JS mirror matches canonical AUTH_FIELDS (#715)", () => {
-  it("exists, so this test extracts a real array and always compares fresh data", () => {
-    assert.ok(MCP_AUTH_FIELDS_MIRROR, "mcp/paseo-x-comms.mjs no longer declares AUTH_FIELDS");
-  });
-
-  it("equals shared/envelope.ts AUTH_FIELDS, in order", () => {
-    // Order is part of the contract: canonicalAuthPayload signs one line per
-    // field in this order, so a reorder changes every signed payload and a
-    // mixed producer/consumer pair then fails verification.
-    assert.ok(MCP_AUTH_FIELDS_MIRROR);
-    // Each line is a plain double-quoted string literal, so the quoted spans
-    // are the entries; no JSON parsing, so a trailing comma or an innocuous
-    // reformat cannot crash this — a shape change fails the anchor above.
-    const entries = [...MCP_AUTH_FIELDS_MIRROR.matchAll(/"([^"]+)"/g)].map((m) => m[1]);
-    assert.deepEqual(entries, [...AUTH_FIELDS]);
-  });
-});
-
-describe("the two interpolated surfaces bind the field list, not a hand-copied set (#715)", () => {
-  it("RECIPIENT_INSTRUCTIONS interpolates shared/envelope.ts AUTH_FIELDS", () => {
-    const source = readFileSync(join(HERE, "server", "recipient-instructions.ts"), "utf8");
-    assert.match(
-      source,
-      /signature over \$\{AUTH_FIELDS\.join\(", "\)\}/u,
-      "the sentence was re-hand-copied; it must come from the canonical list via interpolation",
-    );
-    assert.ok(
-      source.includes('import { AUTH_FIELDS } from "../shared/envelope.ts";'),
-      "the interpolation's AUTH_FIELDS import is gone",
-    );
-  });
-
-  it("RECIPIENT_INSTRUCTIONS renders the canonical list, so a re-copied set diverges loudly", () => {
-    // The evaluated string is what lands in an agent's system prompt. It is
-    // built from AUTH_FIELDS, so this cannot fail on a canonical rename — the
-    // prose re-renders. It fails the moment the sentence stops being built
-    // from the list and a hand-copied set goes stale against it.
-    assert.ok(
-      RECIPIENT_INSTRUCTIONS.includes(AUTH_FIELDS.join(", ")),
-      "the rendered instructions no longer state the AUTH_FIELDS set in canonical order",
-    );
-  });
-
-  it("MCP INSTRUCTIONS interpolates its local mirror, kept honest by the parity test", () => {
-    // Matched against the extracted INSTRUCTIONS span, not the whole module,
-    // so the binding lives in the string that actually ships to clients. The
-    // binding refers to the module's own AUTH_FIELDS mirror; the mirror test
-    // above pins that mirror to the canonical source of truth.
-    assert.match(
-      readMcpInstructions(),
-      /signature over \$\{AUTH_FIELDS\.join\(", "\)\}/u,
-      "the sentence was re-hand-copied; it must come from the module's AUTH_FIELDS via interpolation",
-    );
-  });
-});
-
-describe("no surface re-ships the retired four-field claim (#715)", () => {
-  // The exact drift #715 was filed over: a slash list naming two blocks and
-  // two top-level fields as the signed set. Any surface carrying it again is
-  // wrong regardless of how the rest of it is worded.
-  for (const surface of SURFACES) {
-    it(`${surface.name} does not claim only sender/target/messageId/sentAt are signed`, () => {
-      assert.doesNotMatch(
-        surface.text,
-        /sender\/target\/messageId\/sentAt/,
-        `${surface.name} states a four-field signed set; the signature covers AUTH_FIELDS (#715)`,
-      );
-    });
-  }
-});
-
-describe("SKILL.md states the same signed field set as canonical AUTH_FIELDS (#715)", () => {
-  const skill = readSkill();
-
-  /**
-   * The skill is the one surface that cannot interpolate, so it is also the one
-   * that can drift. Its Verify section groups the set as "`version`, `type`,
-   * all `sender.*` and `target.*` fields, `messageId`, and `sentAt`"; that
-   * phrasing is accepted as-is rather than rewritten to spell out 11 names.
-   * The binding extracts the sentence's backticked tokens, expands its
-   * `sender.*`/`target.*` globs against AUTH_FIELDS, and requires the expanded
-   * set to equal the canonical list — so a rewritten or stale sentence fails
-   * even though each field name also appears elsewhere in the file: the Parse
-   * table mentions version, type, messageId, and sentAt no matter what the
-   * Verify section says, which is why matching those names anywhere would pin
-   * nothing.
-   */
-  const statedSet = /made over\s+(.+?)\s*\(not over/s.exec(skill)?.[1];
-
-  it("carries a signed-set statement between 'made over' and '(not over'", () => {
-    assert.ok(
-      statedSet,
-      "SKILL.md no longer states what the signature covers between 'made over' and '(not over'",
-    );
-  });
-
-  it("states the canonical set, its globs expanded against AUTH_FIELDS", () => {
-    assert.ok(statedSet);
-    const tokens = [...statedSet.matchAll(/`([^`]+)`/g)].map(([, token]) => token);
-    const expanded = new Set(tokens.filter((token) => !token.endsWith(".*")));
-    for (const glob of tokens.filter((token) => token.endsWith(".*"))) {
-      const prefix = glob.slice(0, -1); // `sender.*` -> `sender.`
-      for (const field of AUTH_FIELDS) {
-        if (field.startsWith(prefix)) expanded.add(field);
-      }
-    }
-    assert.deepEqual(
-      [...expanded].sort(),
-      [...AUTH_FIELDS].sort(),
-      "SKILL.md's stated signed set, globs expanded against AUTH_FIELDS, no longer equals " +
-        "AUTH_FIELDS — the skill's sentence and the canonical list have drifted (#715)",
-    );
-  });
 });
 
 /**
