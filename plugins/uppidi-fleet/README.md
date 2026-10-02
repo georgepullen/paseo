@@ -14,13 +14,35 @@ boards, and router health — in one place.
 > components and occasional intervention by humans. All features may not work
 > 100% reliably.
 
-| Uppidi Fleet Cockpit |
-| :---: |
-| <a href="https://raw.githubusercontent.com/xpufx/paseo/main/plugins/uppidi-fleet/screenshots/uppidi-fleet-wide.jpg"><img src="https://raw.githubusercontent.com/xpufx/paseo/main/plugins/uppidi-fleet/screenshots/uppidi-fleet-wide.jpg" alt="Uppidi Fleet Cockpit — the full surface: agent tree, board, queues and router health" width="100%" /></a> |
-
-| Agents & Fleet | Work Queue | Next-gen Cockpit | Settings |
-| :---: | :---: | :---: | :---: |
-| <a href="https://raw.githubusercontent.com/xpufx/paseo/main/plugins/uppidi-fleet/screenshots/uppidi-fleet-agents-fleet.jpg"><img src="https://raw.githubusercontent.com/xpufx/paseo/main/plugins/uppidi-fleet/screenshots/uppidi-fleet-agents-fleet.jpg" alt="Agents & Fleet — the hierarchical agent tree with deterministic state badges" width="100%" /></a> | <a href="https://raw.githubusercontent.com/xpufx/paseo/main/plugins/uppidi-fleet/screenshots/uppidi-fleet-work-queue.jpg"><img src="https://raw.githubusercontent.com/xpufx/paseo/main/plugins/uppidi-fleet/screenshots/uppidi-fleet-work-queue.jpg" alt="Work Queue — open issues, Fleet Needs Attention board and filter presets" width="100%" /></a> | <a href="https://raw.githubusercontent.com/xpufx/paseo/main/plugins/uppidi-fleet/screenshots/uppidi-fleet-nextgen.jpg"><img src="https://raw.githubusercontent.com/xpufx/paseo/main/plugins/uppidi-fleet/screenshots/uppidi-fleet-nextgen.jpg" alt="Next-gen Cockpit — the redesigned fleet surface" width="100%" /></a> | <a href="https://raw.githubusercontent.com/xpufx/paseo/main/plugins/uppidi-fleet/screenshots/uppidi-fleet-settings.jpg"><img src="https://raw.githubusercontent.com/xpufx/paseo/main/plugins/uppidi-fleet/screenshots/uppidi-fleet-settings.jpg" alt="Settings — hook service control, listen host and port" width="100%" /></a> |
+<table>
+  <tr>
+    <td colspan="3">
+      <a href="https://raw.githubusercontent.com/xpufx/paseo/main/plugins/uppidi-fleet/screenshots/fleet-main.png"><img src="https://raw.githubusercontent.com/xpufx/paseo/main/plugins/uppidi-fleet/screenshots/fleet-main.png" alt="Uppidi Fleet Cockpit — the full surface: agent tree, board, queues and router health" width="100%" /></a>
+    </td>
+  </tr>
+  <tr>
+    <td>
+      <a href="https://raw.githubusercontent.com/xpufx/paseo/main/plugins/uppidi-fleet/screenshots/fleet-kanban.png"><img src="https://raw.githubusercontent.com/xpufx/paseo/main/plugins/uppidi-fleet/screenshots/fleet-kanban.png" alt="Kanban board — drag-and-drop issue columns" width="100%" /></a>
+    </td>
+    <td>
+      <a href="https://raw.githubusercontent.com/xpufx/paseo/main/plugins/uppidi-fleet/screenshots/fleet-forge-issues.png"><img src="https://raw.githubusercontent.com/xpufx/paseo/main/plugins/uppidi-fleet/screenshots/fleet-forge-issues.png" alt="Forge issues — the board as source of truth" width="100%" /></a>
+    </td>
+    <td>
+      <a href="https://raw.githubusercontent.com/xpufx/paseo/main/plugins/uppidi-fleet/screenshots/fleet-work-queue.png"><img src="https://raw.githubusercontent.com/xpufx/paseo/main/plugins/uppidi-fleet/screenshots/fleet-work-queue.png" alt="Work Queue — open issues, Fleet Needs Attention board and filter presets" width="100%" /></a>
+    </td>
+  </tr>
+  <tr>
+    <td>
+      <a href="https://raw.githubusercontent.com/xpufx/paseo/main/plugins/uppidi-fleet/screenshots/fleet-frontdesk-chat.png"><img src="https://raw.githubusercontent.com/xpufx/paseo/main/plugins/uppidi-fleet/screenshots/fleet-frontdesk-chat.png" alt="Front Desk chat — operator-facing liaison" width="100%" /></a>
+    </td>
+    <td>
+      <a href="https://raw.githubusercontent.com/xpufx/paseo/main/plugins/uppidi-fleet/screenshots/fleet-settings.png"><img src="https://raw.githubusercontent.com/xpufx/paseo/main/plugins/uppidi-fleet/screenshots/fleet-settings.png" alt="Settings — hook service control, listen host and port" width="100%" /></a>
+    </td>
+    <td>
+      <a href="https://raw.githubusercontent.com/xpufx/paseo/main/plugins/uppidi-fleet/screenshots/fleet-tooling.png"><img src="https://raw.githubusercontent.com/xpufx/paseo/main/plugins/uppidi-fleet/screenshots/fleet-tooling.png" alt="Tooling — agent tool configuration" width="100%" /></a>
+    </td>
+  </tr>
+</table>
 
 This README is written for a **third party** who has never used the system and
 wants to stand one up for their own forge, repositories, models, and team
