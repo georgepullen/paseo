@@ -19,6 +19,7 @@ import type {
 } from "../shared/contracts.js";
 import { extractPermissionScope } from "../shared/contracts.js";
 import { getUppidiFleetSettingsStorage } from "./settings.js";
+import { forgejoApiGet, forgejoApiRequest, forgejoToken, resolveForgejoHost } from "./forgejo-api.js";
 import { appendRollupReceipt } from "./metrics.js";
 import { createDefaultIssuesCheckIo, runIssuesCheck, type IssuesCheckIo } from "./issues-check.js";
 import { resolveWorkspaceForRepo, type ResolvedWorkspace } from "./workspace-lookup.js";
@@ -142,6 +143,16 @@ export interface HookRouterOptions {
   paseoDir?: string;
   isTestMode?: boolean;
   allowCliSpawn?: boolean;
+  /** Enable in-process label triage (#847). Defaults off in test mode. */
+  labelTriageEnabled?: boolean;
+  /** Enable the in-process issue close guard (#847). Defaults off in test mode. */
+  closeGuardEnabled?: boolean;
+  /** Actor(s) whose issue closures are intercepted. Defaults to `xpufx`. */
+  closeGuardTargetActors?: string[];
+  /** Terminal labels that permit closure without reopening. */
+  closeGuardAcceptedLabels?: string[];
+  /** Shared agent account treated as automated. Defaults to `xpufx`. */
+  sharedActor?: string;
   spawnAgent?: (opts: {
     title: string;
     prompt: string;
@@ -371,6 +382,169 @@ export function sosStateOf(event: string, body: any): string | null {
     else if (action === "labeled") labels.add(changed);
   }
   return labels.size > 0 || SOS_STATE_LABELS.has(changed) ? [...labels].sort().join(",") : null;
+}
+
+// ---------------------------------------------------------------------------
+// Direct-action handlers (#847): in-process label triage and issue close guard.
+//
+// Ported from the platform reusable workflows
+// (.forgejo/workflows/reusable/label-triage.yml and issue-close-guard.yml). The
+// hook router already receives the triggering webhook, so these act on the
+// Forgejo API directly instead of waiting for a CI runner to pick up the event.
+// The pure decision functions below are the single source of truth for the skip
+// logic; the async handlers only perform I/O around them.
+// ---------------------------------------------------------------------------
+
+/** Shared Forgejo account every autonomous agent acts as. */
+export const SHARED_AGENT_ACTOR = "xpufx";
+
+/** The exclusive orchestrator attention signal. */
+export const ORCHESTRATOR_ATTENTION_LABEL = "attention/0-orchestrator";
+
+/** `flag/stop-work` is a hard circuit breaker, including for SOS. */
+export const LABEL_TRIAGE_STOP_WORK_LABEL = "flag/stop-work";
+
+/** SOS breaks through completed/ignored terminal states. */
+export const SOS_LABEL = "priority/0-SOS";
+
+/**
+ * Terminal labels that suppress triage: the ticket is done, deliberately
+ * abandoned, or explicitly ignored. `priority/0-SOS` overrides all but
+ * `flag/stop-work`, matching the board's emergency precedence.
+ */
+export const LABEL_TRIAGE_TERMINAL_LABELS: readonly string[] = [
+  "flag/wont-do",
+  "state/4-done",
+  "attention/3-ignore",
+  "attention/2-ignore",
+  "confirmed-done",
+];
+
+/** Terminal acceptance labels that permit closure without reopening. */
+export const CLOSE_GUARD_ACCEPTED_LABELS: readonly string[] = ["state/4-done", "confirmed-done"];
+
+/** Default close-guard target actor list. */
+export const DEFAULT_CLOSE_GUARD_TARGET_ACTORS: readonly string[] = ["xpufx"];
+
+/**
+ * The mandatory policy comment posted when the close guard reopens an issue.
+ * Kept byte-for-byte in sync with the reusable workflow so operators see the
+ * same directive regardless of which path enforced it.
+ */
+export const CLOSE_GUARD_POLICY_COMMENT = [
+  "> [!WARNING]",
+  "> **Automated Reopen**: Issue was closed by a targeted autonomous actor and has been reopened per repository governance policy.",
+  "",
+  "**Policy Directive**:",
+  "Autonomous agents and orchestrators must **never** close issues directly. Upon completing implementation and local verification, agents must transition tickets to `state/2-review` or `state/3-verify` with an envelope report and await operator verification. Only the human operator closes issues upon final review (`state/4-done` / `confirmed-done`).",
+].join("\n");
+
+export interface DirectActionDecision {
+  act: boolean;
+  reason: string;
+}
+
+export function normalizeLabelName(raw: unknown): string {
+  return String(raw ?? "").trim().toLowerCase();
+}
+
+/** Label names from an issue/pull_request payload or a fetched issue body. */
+export function labelNamesFromIssue(issue: any): string[] {
+  const labels = issue?.labels;
+  if (!Array.isArray(labels)) return [];
+  return labels
+    .map((l: any) => (typeof l === "string" ? l : l?.name))
+    .filter((n: unknown): n is string => typeof n === "string" && n.length > 0);
+}
+
+/**
+ * Forgejo omits `pull_request` entirely for real issues, so its presence as an
+ * object (or non-false value) is authoritative.
+ */
+export function isPullRequestSubject(subject: any): boolean {
+  return subject?.pull_request != null && subject.pull_request !== false;
+}
+
+/**
+ * Label triage decision (#847). Mirrors the reusable workflow order exactly:
+ * shared-actor skip, pull-request skip, stop-work circuit breaker, terminal
+ * state skip (unless SOS), then the already-orchestrator no-op.
+ */
+export function labelTriageDecision(input: {
+  actor: string;
+  labels: string[];
+  isPullRequest: boolean;
+  sharedActor?: string;
+}): DirectActionDecision {
+  const sharedActor = input.sharedActor ?? SHARED_AGENT_ACTOR;
+  if (input.actor === sharedActor) {
+    return { act: false, reason: `shared actor '${sharedActor}'` };
+  }
+  if (input.isPullRequest) {
+    return { act: false, reason: "pull request activity" };
+  }
+  const labels = new Set(input.labels.map(normalizeLabelName));
+  if (labels.has(normalizeLabelName(LABEL_TRIAGE_STOP_WORK_LABEL))) {
+    return { act: false, reason: `${LABEL_TRIAGE_STOP_WORK_LABEL} is set` };
+  }
+  if (!labels.has(normalizeLabelName(SOS_LABEL))) {
+    const terminal = LABEL_TRIAGE_TERMINAL_LABELS.find((l) => labels.has(normalizeLabelName(l)));
+    if (terminal) {
+      return { act: false, reason: `terminal label ${terminal} is set` };
+    }
+  }
+  if (labels.has(normalizeLabelName(ORCHESTRATOR_ATTENTION_LABEL))) {
+    return { act: false, reason: "already assigned to orchestrator" };
+  }
+  return { act: true, reason: "human activity requires orchestrator attention" };
+}
+
+/** Parse a comma-separated or array actor/label list into trimmed entries. */
+export function parseTargetActors(
+  raw: string | string[] | undefined,
+  fallback: readonly string[] = DEFAULT_CLOSE_GUARD_TARGET_ACTORS,
+): string[] {
+  const parts = Array.isArray(raw) ? raw : String(raw ?? "").split(",");
+  const entries = parts.map((p) => p.trim()).filter(Boolean);
+  return entries.length > 0 ? entries : [...fallback];
+}
+
+/**
+ * Close guard decision (#847). A targeted actor closing a non-terminal issue
+ * is intercepted; terminal acceptance labels allow a legitimate closure.
+ */
+export function closeGuardDecision(input: {
+  actor: string;
+  labels: string[];
+  isPullRequest: boolean;
+  targetActors?: string[];
+  acceptedLabels?: string[];
+}): DirectActionDecision {
+  const targetActors =
+    input.targetActors && input.targetActors.length > 0
+      ? input.targetActors
+      : [...DEFAULT_CLOSE_GUARD_TARGET_ACTORS];
+  if (!targetActors.includes(input.actor)) {
+    return { act: false, reason: `actor '${input.actor}' is not a target actor` };
+  }
+  if (input.isPullRequest) {
+    return { act: false, reason: "pull request activity" };
+  }
+  const accepted = new Set((input.acceptedLabels ?? CLOSE_GUARD_ACCEPTED_LABELS).map(normalizeLabelName));
+  const match = input.labels.map(normalizeLabelName).find((l) => accepted.has(l));
+  if (match) {
+    return { act: false, reason: `terminal acceptance label ${match} is set` };
+  }
+  return { act: true, reason: "targeted actor closed a non-terminal issue" };
+}
+
+export interface DirectActionResult {
+  acted: boolean;
+  reason: string;
+  appliedLabel?: string;
+  reopened?: boolean;
+  commented?: boolean;
+  notified?: boolean;
 }
 
 export function eventKind(event: string, body: any): string {
@@ -1531,6 +1705,12 @@ export class HookRouter {
   public readonly options?: HookRouterOptions;
   public readonly isTestMode: boolean;
   private inFlightEnsure = new Map<string, Promise<EnsureOrchestratorResult>>();
+  /** Direct-action guards (#847). */
+  public readonly labelTriageEnabled: boolean;
+  public readonly closeGuardEnabled: boolean;
+  private readonly closeGuardTargetActors: string[];
+  private readonly closeGuardAcceptedLabels: string[];
+  private readonly sharedAgentActor: string;
 
   constructor(server?: PluginServerContext | null, options?: HookRouterOptions) {
     this.server = server ?? null;
@@ -1551,6 +1731,17 @@ export class HookRouter {
         ? options.isTestMode
         : (process.env.NODE_ENV === "test" && !process.env.FORGE_HOOK_CONFIG && !options?.configPath);
     this.isTestMode = Boolean(options?.isTestMode ?? (process.env.NODE_ENV === "test" || isTestMode));
+
+    // Direct-action guards (#847) are opt-in under test so existing webhook
+    // fixtures never touch the network; production enables them by default.
+    this.labelTriageEnabled = options?.labelTriageEnabled ?? !this.isTestMode;
+    this.closeGuardEnabled = options?.closeGuardEnabled ?? !this.isTestMode;
+    this.closeGuardTargetActors = parseTargetActors(options?.closeGuardTargetActors);
+    this.closeGuardAcceptedLabels =
+      options?.closeGuardAcceptedLabels && options.closeGuardAcceptedLabels.length > 0
+        ? options.closeGuardAcceptedLabels.map(normalizeLabelName)
+        : [...CLOSE_GUARD_ACCEPTED_LABELS];
+    this.sharedAgentActor = options?.sharedActor ?? SHARED_AGENT_ACTOR;
 
     this.configuredPort =
       options?.port !== undefined
@@ -1732,6 +1923,11 @@ export class HookRouter {
       .filter(Boolean);
     const msg = formatWebhookMessage(ev, body);
 
+    // Direct-action guards (#847) run off the critical path: the delivery is
+    // acknowledged immediately and the guard acts asynchronously. Both are
+    // disabled by default under test so fixtures never touch the network.
+    void this.runDirectActions(ev, body);
+
     const orch = isFd ? null : this.readOrchestrator(repoKey);
     if (!isFd && !bypass && ev === "issue_comment") {
       const stampedId = envelopeAgentId(body);
@@ -1763,6 +1959,231 @@ export class HookRouter {
       sosState,
     });
     return { key: repoKey, result, frontDesk: false, bypass };
+  }
+
+  // -------------------------------------------------------------------------
+  // Direct-action guards (#847)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Dispatch a webhook to the in-process guards. Never rejects: a guard failure
+   * must not affect webhook acknowledgement or queue routing.
+   */
+  public async runDirectActions(event: string, body: any): Promise<void> {
+    const ev = String(event ?? "").toLowerCase();
+    const action = String(body?.action ?? "").toLowerCase();
+    try {
+      if (ev === "issues" && action === "opened") {
+        await this.runLabelTriage(body);
+      } else if (ev === "issue_comment" && action === "created") {
+        await this.runLabelTriage(body);
+      } else if (ev === "issues" && action === "closed") {
+        await this.runCloseGuard(body);
+      }
+    } catch (err) {
+      this.log(
+        `[warn] direct-action handler failed for ${ev}:${action || "event"}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  /** Bare `owner/repo` from a webhook payload (API path form). */
+  private bareRepoFromPayload(body: any): string | null {
+    const repository = repositoryFromPayload(body);
+    const fullName = typeof repository?.full_name === "string" ? repository.full_name.trim() : "";
+    if (fullName.includes("/")) return fullName;
+    const key = keyFromPayload(body);
+    if (!key) return null;
+    const parts = key.split("/").filter(Boolean);
+    return parts.length >= 2 ? parts.slice(-2).join("/") : null;
+  }
+
+  private actorFromPayload(body: any): string {
+    const sender = senderFromPayload(body);
+    const login = sender?.login ?? sender?.username;
+    return typeof login === "string" ? login : "";
+  }
+
+  /**
+   * In-process port of the reusable label-triage workflow: ensure human issue
+   * activity is routed to `attention/0-orchestrator`.
+   */
+  public async runLabelTriage(body: any): Promise<DirectActionResult> {
+    if (!this.labelTriageEnabled) {
+      return { acted: false, reason: "label triage disabled" };
+    }
+    const actor = this.actorFromPayload(body);
+    if (actor === this.sharedAgentActor) {
+      return { acted: false, reason: `shared actor '${this.sharedAgentActor}'` };
+    }
+    const repo = this.bareRepoFromPayload(body);
+    const issueNumber = issueNumberOf(body);
+    if (!repo || issueNumber == null) {
+      return { acted: false, reason: "missing repo or issue number" };
+    }
+
+    const host = resolveForgejoHost();
+    const token = await this.resolveApiToken(host);
+    const issueRes = await forgejoApiGet<any>(`/api/v1/repos/${repo}/issues/${issueNumber}`, { host, token });
+    if (issueRes.outcome !== "ok") {
+      const detail = issueRes.error;
+      this.log(`[warn] label triage: could not read ${repo}#${issueNumber}: ${detail}`);
+      return { acted: false, reason: `issue fetch failed: ${detail}` };
+    }
+    const issue = issueRes.data;
+    const decision = labelTriageDecision({
+      actor,
+      labels: labelNamesFromIssue(issue),
+      isPullRequest: isPullRequestSubject(issue),
+      sharedActor: this.sharedAgentActor,
+    });
+    if (!decision.act) {
+      return { acted: false, reason: decision.reason };
+    }
+
+    const write = await forgejoApiRequest<any>(
+      "POST",
+      `/api/v1/repos/${repo}/issues/${issueNumber}/labels`,
+      { labels: [ORCHESTRATOR_ATTENTION_LABEL] },
+      { host, token },
+    );
+    if (write.outcome !== "ok") {
+      const detail = write.error;
+      this.log(`[warn] label triage: failed to apply ${ORCHESTRATOR_ATTENTION_LABEL} to ${repo}#${issueNumber}: ${detail}`);
+      return { acted: false, reason: `label apply failed: ${detail}` };
+    }
+    this.log(
+      `[info] label triage: applied ${ORCHESTRATOR_ATTENTION_LABEL} to ${repo}#${issueNumber} (actor '${actor}')`,
+    );
+    return { acted: true, reason: decision.reason, appliedLabel: ORCHESTRATOR_ATTENTION_LABEL };
+  }
+
+  /**
+   * In-process port of the reusable issue-close-guard workflow: reopen an issue
+   * closed by a targeted autonomous actor, post the policy comment, and notify
+   * the fleet through the normal hook-router queue.
+   */
+  public async runCloseGuard(body: any): Promise<DirectActionResult> {
+    if (!this.closeGuardEnabled) {
+      return { acted: false, reason: "close guard disabled" };
+    }
+    const actor = this.actorFromPayload(body);
+    if (!this.closeGuardTargetActors.includes(actor)) {
+      return { acted: false, reason: `actor '${actor}' is not a target actor` };
+    }
+    const repo = this.bareRepoFromPayload(body);
+    const issueNumber = issueNumberOf(body);
+    if (!repo || issueNumber == null) {
+      return { acted: false, reason: "missing repo or issue number" };
+    }
+
+    const host = resolveForgejoHost();
+    const token = await this.resolveApiToken(host);
+    const issueRes = await forgejoApiGet<any>(`/api/v1/repos/${repo}/issues/${issueNumber}`, { host, token });
+    if (issueRes.outcome !== "ok") {
+      const detail = issueRes.error;
+      this.log(`[warn] close guard: could not read ${repo}#${issueNumber}: ${detail}`);
+      return { acted: false, reason: `issue fetch failed: ${detail}` };
+    }
+    const issue = issueRes.data;
+    const decision = closeGuardDecision({
+      actor,
+      labels: labelNamesFromIssue(issue),
+      isPullRequest: isPullRequestSubject(issue),
+      targetActors: this.closeGuardTargetActors,
+      acceptedLabels: this.closeGuardAcceptedLabels,
+    });
+    if (!decision.act) {
+      return { acted: false, reason: decision.reason };
+    }
+
+    const reopen = await forgejoApiRequest<any>(
+      "PATCH",
+      `/api/v1/repos/${repo}/issues/${issueNumber}`,
+      { state: "open" },
+      { host, token },
+    );
+    if (reopen.outcome !== "ok") {
+      const detail = reopen.error;
+      this.log(`[warn] close guard: failed to reopen ${repo}#${issueNumber}: ${detail}`);
+      return { acted: false, reason: `reopen failed: ${detail}` };
+    }
+
+    const comment = await forgejoApiRequest<any>(
+      "POST",
+      `/api/v1/repos/${repo}/issues/${issueNumber}/comments`,
+      { body: CLOSE_GUARD_POLICY_COMMENT },
+      { host, token },
+    );
+    const commented = comment.outcome === "ok";
+    if (!commented) {
+      this.log(`[warn] close guard: policy comment failed for ${repo}#${issueNumber}: ${comment.error}`);
+    }
+
+    // Notification is strictly optional: a failure here must never fail the guard.
+    let notified = false;
+    try {
+      notified = await this.notifyReopened(repo, body, issue, actor);
+    } catch (err) {
+      this.log(
+        `[warn] close guard: notify failed for ${repo}#${issueNumber}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    this.log(`[info] close guard: reopened ${repo}#${issueNumber} closed by targeted actor '${actor}'`);
+    return { acted: true, reason: decision.reason, reopened: true, commented, notified };
+  }
+
+  private async resolveApiToken(host: string): Promise<string | null> {
+    try {
+      return await forgejoToken(host);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Route a synthesized `issues:reopened` event through the normal coalescing
+   * queue so the repo's orchestrator is notified. Best-effort only.
+   */
+  private async notifyReopened(repo: string, body: any, issue: any, actor: string): Promise<boolean> {
+    const repoKey = keyFromPayload(body);
+    if (!repoKey) return false;
+    const repository = repositoryFromPayload(body);
+    const issueNumber = issueNumberOf(body);
+    const htmlUrl =
+      (typeof issue?.html_url === "string" && issue.html_url.trim()) ||
+      (typeof body?.issue?.html_url === "string" ? body.issue.html_url : "");
+    const synthesized = {
+      action: "reopened",
+      repository: {
+        full_name: repo,
+        html_url: typeof repository?.html_url === "string" ? repository.html_url : "",
+        clone_url: typeof repository?.clone_url === "string" ? repository.clone_url : "",
+      },
+      issue: {
+        number: issueNumber,
+        title: typeof issue?.title === "string" ? issue.title : "",
+        html_url: htmlUrl,
+        state: "open",
+        labels: Array.isArray(issue?.labels) ? issue.labels : [],
+      },
+      sender: { login: actor },
+    };
+    const result = this.coalesceOrSend({
+      repoKey,
+      issue: issueNumber,
+      kind: "issues:reopened",
+      actor,
+      commentBody: "issues:reopened",
+      title: typeof issue?.title === "string" ? issue.title : "",
+      stateLabels: labelNamesFromIssue(issue),
+      url: htmlUrl,
+      msg: formatWebhookMessage("issues", synthesized),
+      bypass: false,
+      sosState: null,
+    });
+    return result !== "deduped" && result !== "sos-deduped";
   }
 
   public isRepoMuted(repoKey: string): boolean {

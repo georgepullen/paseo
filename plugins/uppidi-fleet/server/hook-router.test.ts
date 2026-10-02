@@ -53,10 +53,26 @@ import {
   assessChildWakeup,
   formatChildWakeupMessage,
   CHILD_WAKEUP_EVENTS,
+  labelTriageDecision,
+  closeGuardDecision,
+  parseTargetActors,
+  labelNamesFromIssue,
+  isPullRequestSubject,
+  normalizeLabelName,
+  SHARED_AGENT_ACTOR,
+  ORCHESTRATOR_ATTENTION_LABEL,
+  LABEL_TRIAGE_STOP_WORK_LABEL,
+  SOS_LABEL,
+  LABEL_TRIAGE_TERMINAL_LABELS,
+  CLOSE_GUARD_ACCEPTED_LABELS,
+  DEFAULT_CLOSE_GUARD_TARGET_ACTORS,
+  CLOSE_GUARD_POLICY_COMMENT,
   type CoalesceEvent,
   type WatchdogAgent,
   type WatchdogAgentDisk,
+  type HookRouterOptions,
 } from "./hook-router.js";
+import { setFetchForTest, setTokenResolverForTest } from "./forgejo-api.js";
 import { setMetricsFilePathForTest } from "./metrics.js";
 import type { IssuesCheckIo } from "./issues-check.js";
 
@@ -3825,3 +3841,442 @@ describe("test isolation & CLI agent execution safety (#814)", () => {
     assert.equal(resolved, null);
   });
 });
+
+describe("hook-router direct-action guards (#847)", () => {
+  const REPO = "xpufx-org/paseo";
+  const REPO_URL = "https://forge.mrs.uppidi.com/xpufx-org/paseo";
+  const REPO_KEY = "forge.mrs.uppidi.com/xpufx-org/paseo";
+
+  let tempDir: string;
+  let queueDir: string;
+  let stateDir: string;
+  let requests: Array<{ url: string; method: string; body: any }>;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "paseo-direct-actions-test-"));
+    queueDir = join(tempDir, "queues");
+    stateDir = join(tempDir, "state");
+    requests = [];
+    setTokenResolverForTest(async () => "test-token");
+  });
+
+  afterEach(() => {
+    setFetchForTest(null);
+    setTokenResolverForTest(null);
+    try {
+      rmSync(tempDir, { recursive: true, force: true });
+    } catch {}
+  });
+
+  type FetchReply = { status?: number; data?: any };
+  function installFetch(handler: (req: { url: string; method: string; body: any }) => FetchReply | undefined) {
+    setFetchForTest(async (input: string, init?: any) => {
+      const method = String(init?.method ?? "GET").toUpperCase();
+      const body = init?.body ? JSON.parse(init.body) : undefined;
+      const req = { url: input, method, body };
+      requests.push(req);
+      const reply = handler(req) ?? {};
+      const status = reply.status ?? 200;
+      return {
+        ok: status >= 200 && status < 300,
+        status,
+        statusText: "",
+        json: async () => reply.data ?? {},
+      };
+    });
+  }
+
+  function makeRouter(overrides: Partial<HookRouterOptions> = {}): HookRouter {
+    return new HookRouter(null, {
+      queueDir,
+      stateDir,
+      port: 0,
+      labelTriageEnabled: true,
+      closeGuardEnabled: true,
+      ...overrides,
+    });
+  }
+
+  function baseRepository() {
+    return { full_name: REPO, html_url: REPO_URL, clone_url: `${REPO_URL}.git` };
+  }
+
+  function issueBody(action: string, opts: {
+    actor: string;
+    number?: number;
+    labels?: any[];
+    pullRequest?: any;
+    state?: string;
+  }) {
+    const number = opts.number ?? 42;
+    return {
+      action,
+      repository: baseRepository(),
+      sender: { login: opts.actor },
+      issue: {
+        number,
+        title: "Test issue",
+        state: opts.state ?? "open",
+        html_url: `${REPO_URL}/issues/${number}`,
+        labels: opts.labels ?? [],
+        ...(opts.pullRequest !== undefined ? { pull_request: opts.pullRequest } : {}),
+      },
+    };
+  }
+
+  describe("labelTriageDecision", () => {
+    const human = { actor: "alice", labels: [] as string[], isPullRequest: false };
+
+    it("skips the shared agent actor", () => {
+      const d = labelTriageDecision({ ...human, actor: SHARED_AGENT_ACTOR });
+      assert.equal(d.act, false);
+      assert.match(d.reason, /shared actor/);
+    });
+
+    it("skips pull requests", () => {
+      const d = labelTriageDecision({ ...human, isPullRequest: true });
+      assert.equal(d.act, false);
+      assert.match(d.reason, /pull request/);
+    });
+
+    it("skips flag/stop-work even when SOS is present", () => {
+      const d = labelTriageDecision({
+        ...human,
+        labels: [LABEL_TRIAGE_STOP_WORK_LABEL, SOS_LABEL],
+      });
+      assert.equal(d.act, false);
+      assert.match(d.reason, /stop-work/);
+    });
+
+    it("skips terminal labels", () => {
+      for (const terminal of LABEL_TRIAGE_TERMINAL_LABELS) {
+        const d = labelTriageDecision({ ...human, labels: [terminal] });
+        assert.equal(d.act, false, `expected ${terminal} to suppress triage`);
+        assert.match(d.reason, /terminal label/);
+      }
+    });
+
+    it("lets priority/0-SOS break through terminal labels", () => {
+      const d = labelTriageDecision({ ...human, labels: ["state/4-done", SOS_LABEL] });
+      assert.equal(d.act, true);
+    });
+
+    it("skips when orchestrator attention is already set", () => {
+      const d = labelTriageDecision({ ...human, labels: [ORCHESTRATOR_ATTENTION_LABEL] });
+      assert.equal(d.act, false);
+      assert.match(d.reason, /already assigned/);
+    });
+
+    it("acts for a human on an ordinary issue", () => {
+      const d = labelTriageDecision({ ...human, labels: ["kind/bug", "state/1-wip"] });
+      assert.equal(d.act, true);
+    });
+
+    it("matches labels case-insensitively", () => {
+      const d = labelTriageDecision({ ...human, labels: ["STATE/4-DONE"] });
+      assert.equal(d.act, false);
+    });
+
+    it("honours a custom shared actor", () => {
+      const d = labelTriageDecision({ ...human, actor: "robot", sharedActor: "robot" });
+      assert.equal(d.act, false);
+    });
+  });
+
+  describe("closeGuardDecision", () => {
+    const target = { actor: "xpufx", labels: [] as string[], isPullRequest: false };
+
+    it("skips non-target actors", () => {
+      const d = closeGuardDecision({ ...target, actor: "alice" });
+      assert.equal(d.act, false);
+      assert.match(d.reason, /not a target actor/);
+    });
+
+    it("skips pull requests", () => {
+      const d = closeGuardDecision({ ...target, isPullRequest: true });
+      assert.equal(d.act, false);
+      assert.match(d.reason, /pull request/);
+    });
+
+    it("skips terminal acceptance labels", () => {
+      for (const label of CLOSE_GUARD_ACCEPTED_LABELS) {
+        const d = closeGuardDecision({ ...target, labels: [label] });
+        assert.equal(d.act, false, `expected ${label} to allow closure`);
+        assert.match(d.reason, /acceptance label/);
+      }
+    });
+
+    it("acts when a target actor closes a non-terminal issue", () => {
+      const d = closeGuardDecision({ ...target, labels: ["kind/bug"] });
+      assert.equal(d.act, true);
+    });
+
+    it("supports a custom target actor list", () => {
+      const d = closeGuardDecision({ ...target, actor: "bob", targetActors: ["bob", "carol"] });
+      assert.equal(d.act, true);
+      const skipped = closeGuardDecision({ ...target, actor: "dave", targetActors: ["bob", "carol"] });
+      assert.equal(skipped.act, false);
+    });
+
+    it("supports custom accepted labels", () => {
+      const d = closeGuardDecision({ ...target, labels: ["state/3-verify"], acceptedLabels: ["state/3-verify"] });
+      assert.equal(d.act, false);
+    });
+  });
+
+  describe("helpers", () => {
+    it("parses comma-separated target actors and trims whitespace", () => {
+      assert.deepEqual(parseTargetActors(" xpufx, bot ,  "), ["xpufx", "bot"]);
+      assert.deepEqual(parseTargetActors(""), [...DEFAULT_CLOSE_GUARD_TARGET_ACTORS]);
+      assert.deepEqual(parseTargetActors(undefined), [...DEFAULT_CLOSE_GUARD_TARGET_ACTORS]);
+      assert.deepEqual(parseTargetActors(["a", " b "]), ["a", "b"]);
+    });
+
+    it("extracts label names from string and object labels", () => {
+      assert.deepEqual(
+        labelNamesFromIssue({ labels: ["kind/bug", { name: "state/1-wip" }, { noName: true }] }),
+        ["kind/bug", "state/1-wip"],
+      );
+      assert.deepEqual(labelNamesFromIssue({}), []);
+    });
+
+    it("detects pull request subjects authoritatively", () => {
+      assert.equal(isPullRequestSubject({ pull_request: {} }), true);
+      assert.equal(isPullRequestSubject({ pull_request: null }), false);
+      assert.equal(isPullRequestSubject({ pull_request: false }), false);
+      assert.equal(isPullRequestSubject({}), false);
+    });
+
+    it("normalizes label names", () => {
+      assert.equal(normalizeLabelName("  STATE/4-DONE "), "state/4-done");
+    });
+  });
+
+  describe("runLabelTriage", () => {
+    it("applies attention/0-orchestrator for a human on issues:opened", async () => {
+      const router = makeRouter();
+      installFetch((req) => {
+        if (req.method === "GET" && req.url.endsWith("/issues/42")) {
+          return { data: { number: 42, title: "T", state: "open", labels: [{ name: "kind/bug" }] } };
+        }
+        if (req.method === "POST" && req.url.endsWith("/issues/42/labels")) {
+          return { data: [{ name: ORCHESTRATOR_ATTENTION_LABEL }] };
+        }
+        return { status: 404 };
+      });
+
+      const res = await router.runLabelTriage(issueBody("opened", { actor: "alice" }));
+      assert.equal(res.acted, true);
+      assert.equal(res.appliedLabel, ORCHESTRATOR_ATTENTION_LABEL);
+
+      const post = requests.find((r) => r.method === "POST");
+      assert.ok(post, "expected a label POST");
+      assert.equal(post!.url, `https://forge.mrs.uppidi.com/api/v1/repos/${REPO}/issues/42/labels`);
+      assert.deepEqual(post!.body, { labels: [ORCHESTRATOR_ATTENTION_LABEL] });
+    });
+
+    it("skips the shared actor without touching the API", async () => {
+      const router = makeRouter();
+      installFetch(() => ({ data: {} }));
+      const res = await router.runLabelTriage(issueBody("opened", { actor: SHARED_AGENT_ACTOR }));
+      assert.equal(res.acted, false);
+      assert.equal(requests.length, 0);
+    });
+
+    it("skips pull request activity", async () => {
+      const router = makeRouter();
+      installFetch(() => ({ data: { number: 42, labels: [], pull_request: { url: "x" } } }));
+      const res = await router.runLabelTriage(issueBody("opened", { actor: "alice", pullRequest: { url: "x" } }));
+      assert.equal(res.acted, false);
+      assert.equal(requests.filter((r) => r.method === "POST").length, 0);
+    });
+
+    it("skips terminal and stop-work states", async () => {
+      const router = makeRouter();
+      installFetch(() => ({ data: { number: 42, labels: [{ name: "flag/stop-work" }] } }));
+      const res = await router.runLabelTriage(issueBody("opened", { actor: "alice" }));
+      assert.equal(res.acted, false);
+      assert.equal(requests.filter((r) => r.method === "POST").length, 0);
+    });
+
+    it("reports an API failure without throwing", async () => {
+      const router = makeRouter();
+      installFetch((req) => (req.method === "GET" ? { status: 500 } : { status: 500 }));
+      const res = await router.runLabelTriage(issueBody("opened", { actor: "alice" }));
+      assert.equal(res.acted, false);
+      assert.match(res.reason, /issue fetch failed/);
+    });
+
+    it("is disabled by default in test mode", async () => {
+      const router = new HookRouter(null, { queueDir, stateDir, port: 0 });
+      installFetch(() => ({ data: {} }));
+      const res = await router.runLabelTriage(issueBody("opened", { actor: "alice" }));
+      assert.equal(res.acted, false);
+      assert.equal(res.reason, "label triage disabled");
+      assert.equal(requests.length, 0);
+    });
+  });
+
+  describe("runCloseGuard", () => {
+    it("reopens, comments, and notifies when a target actor closes a non-terminal issue", async () => {
+      const router = makeRouter();
+      installFetch((req) => {
+        if (req.method === "GET") {
+          return {
+            data: {
+              number: 7,
+              title: "Bug",
+              state: "closed",
+              labels: [{ name: "kind/bug" }],
+              html_url: `${REPO_URL}/issues/7`,
+            },
+          };
+        }
+        if (req.method === "PATCH") return { data: { number: 7, state: "open" } };
+        if (req.method === "POST" && req.url.endsWith("/comments")) return { data: { id: 1 } };
+        return { status: 404 };
+      });
+
+      const res = await router.runCloseGuard(issueBody("closed", { actor: "xpufx", number: 7, state: "closed" }));
+      assert.equal(res.acted, true);
+      assert.equal(res.reopened, true);
+      assert.equal(res.commented, true);
+      assert.equal(res.notified, true);
+
+      const patch = requests.find((r) => r.method === "PATCH");
+      assert.ok(patch);
+      assert.equal(patch!.url, `https://forge.mrs.uppidi.com/api/v1/repos/${REPO}/issues/7`);
+      assert.deepEqual(patch!.body, { state: "open" });
+
+      const comment = requests.find((r) => r.method === "POST" && r.url.endsWith("/comments"));
+      assert.ok(comment);
+      assert.equal(comment!.body.body, CLOSE_GUARD_POLICY_COMMENT);
+      assert.ok(comment!.body.body.includes("> [!WARNING]"));
+
+      // Notification is routed through the normal queue for the repo.
+      assert.equal(router.getQueue(REPO_KEY).length, 1);
+    });
+
+    it("skips non-target actors without touching the API", async () => {
+      const router = makeRouter();
+      installFetch(() => ({ data: {} }));
+      const res = await router.runCloseGuard(issueBody("closed", { actor: "alice" }));
+      assert.equal(res.acted, false);
+      assert.equal(requests.length, 0);
+    });
+
+    it("allows closure when a terminal acceptance label is present", async () => {
+      const router = makeRouter();
+      installFetch(() => ({ data: { number: 7, labels: [{ name: "state/4-done" }] } }));
+      const res = await router.runCloseGuard(issueBody("closed", { actor: "xpufx" }));
+      assert.equal(res.acted, false);
+      assert.equal(requests.filter((r) => r.method === "PATCH").length, 0);
+    });
+
+    it("still reopens when the policy comment fails", async () => {
+      const router = makeRouter();
+      installFetch((req) => {
+        if (req.method === "GET") return { data: { number: 7, title: "Bug", labels: [] } };
+        if (req.method === "PATCH") return { data: { number: 7, state: "open" } };
+        return { status: 500 };
+      });
+      const res = await router.runCloseGuard(issueBody("closed", { actor: "xpufx", number: 7 }));
+      assert.equal(res.acted, true);
+      assert.equal(res.reopened, true);
+      assert.equal(res.commented, false);
+    });
+
+    it("does not comment or notify when the reopen fails", async () => {
+      const router = makeRouter();
+      installFetch((req) => {
+        if (req.method === "GET") return { data: { number: 7, labels: [] } };
+        return { status: 500 };
+      });
+      const res = await router.runCloseGuard(issueBody("closed", { actor: "xpufx", number: 7 }));
+      assert.equal(res.acted, false);
+      assert.match(res.reason, /reopen failed/);
+      assert.equal(requests.filter((r) => r.method === "POST").length, 0);
+      assert.equal(router.getQueue(REPO_KEY).length, 0);
+    });
+
+    it("never fails the guard when notification throws", async () => {
+      const router = makeRouter();
+      installFetch((req) => {
+        if (req.method === "GET") return { data: { number: 7, title: "Bug", labels: [] } };
+        if (req.method === "PATCH") return { data: { number: 7, state: "open" } };
+        return { data: { id: 1 } };
+      });
+      (router as any).notifyReopened = async () => {
+        throw new Error("notify boom");
+      };
+      const res = await router.runCloseGuard(issueBody("closed", { actor: "xpufx", number: 7 }));
+      assert.equal(res.acted, true);
+      assert.equal(res.notified, false);
+    });
+
+    it("supports custom target actors", async () => {
+      const router = makeRouter({ closeGuardTargetActors: ["bot-actor"] });
+      installFetch((req) => {
+        if (req.method === "GET") return { data: { number: 7, title: "Bug", labels: [] } };
+        if (req.method === "PATCH") return { data: { number: 7, state: "open" } };
+        return { data: { id: 1 } };
+      });
+      const res = await router.runCloseGuard(issueBody("closed", { actor: "bot-actor", number: 7 }));
+      assert.equal(res.acted, true);
+    });
+
+    it("is disabled by default in test mode", async () => {
+      const router = new HookRouter(null, { queueDir, stateDir, port: 0 });
+      installFetch(() => ({ data: {} }));
+      const res = await router.runCloseGuard(issueBody("closed", { actor: "xpufx" }));
+      assert.equal(res.acted, false);
+      assert.equal(res.reason, "close guard disabled");
+      assert.equal(requests.length, 0);
+    });
+  });
+
+  describe("runDirectActions routing", () => {
+    it("dispatches opened and created events to triage and closed events to the guard", async () => {
+      const router = makeRouter();
+      const calls: string[] = [];
+      (router as any).runLabelTriage = async () => {
+        calls.push("triage");
+        return { acted: false, reason: "" };
+      };
+      (router as any).runCloseGuard = async () => {
+        calls.push("guard");
+        return { acted: false, reason: "" };
+      };
+
+      await router.runDirectActions("issues", { action: "opened" });
+      await router.runDirectActions("issue_comment", { action: "created" });
+      await router.runDirectActions("issues", { action: "closed" });
+      await router.runDirectActions("issues", { action: "labeled" });
+      await router.runDirectActions("pull_request", { action: "closed" });
+
+      assert.deepEqual(calls, ["triage", "triage", "guard"]);
+    });
+
+    it("never rejects when a guard throws", async () => {
+      const router = makeRouter();
+      (router as any).runLabelTriage = async () => {
+        throw new Error("boom");
+      };
+      await assert.doesNotReject(router.runDirectActions("issues", { action: "opened" }));
+    });
+
+    it("runs direct actions during webhook ingestion", async () => {
+      const router = makeRouter();
+      const seen: Array<{ event: string; action: string }> = [];
+      (router as any).runDirectActions = async (event: string, body: any) => {
+        seen.push({ event, action: body.action });
+      };
+
+      await router.ingestWebhook("issues", issueBody("closed", { actor: "xpufx" }));
+      await new Promise((resolve) => setImmediate(resolve));
+
+      assert.deepEqual(seen, [{ event: "issues", action: "closed" }]);
+    });
+  });
+});
+

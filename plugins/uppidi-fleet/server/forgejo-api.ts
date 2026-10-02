@@ -121,3 +121,60 @@ export async function forgejoApiGet<T>(
     };
   }
 }
+
+/**
+ * Single mutating call (POST/PATCH/PUT/DELETE) against the Forgejo API, using
+ * the same token resolver and injectable transport as `forgejoApiGet`. Shared
+ * by the hook router's direct-action handlers (#847), which apply labels,
+ * reopen issues, and post comments in-process.
+ */
+export async function forgejoApiRequest<T>(
+  method: "POST" | "PATCH" | "PUT" | "DELETE",
+  path: string,
+  body: unknown,
+  opts: { host: string; token: string | null; timeoutMs?: number }
+): Promise<ForgejoApiResult<T>> {
+  const headers: Record<string, string> = {
+    Accept: "application/json",
+    "Content-Type": "application/json",
+  };
+  if (opts.token) headers.Authorization = `token ${opts.token}`;
+  const url = `https://${opts.host}${path}`;
+
+  try {
+    const res = await fetchImpl(url, {
+      method,
+      headers,
+      body: JSON.stringify(body ?? {}),
+      signal: AbortSignal.timeout(opts.timeoutMs ?? FORGEJO_API_TIMEOUT_MS),
+    });
+    if (!res.ok) {
+      let detail = "";
+      try {
+        const errBody = await res.json();
+        if (errBody && typeof errBody.message === "string" && errBody.message.trim()) {
+          detail = errBody.message.trim();
+        }
+      } catch {
+        // Non-JSON error body — the status line alone is still worth reporting.
+      }
+      const parts = [`HTTP ${res.status}`];
+      if (res.statusText) parts.push(res.statusText);
+      if (detail) parts.push(detail);
+      return { outcome: "http-error", httpStatus: res.status, error: parts.join(" ") };
+    }
+    let data: T;
+    try {
+      data = (await res.json()) as T;
+    } catch {
+      // Some writes (e.g. 204 No Content) carry no body.
+      data = undefined as unknown as T;
+    }
+    return { outcome: "ok", httpStatus: res.status, data };
+  } catch (err) {
+    return {
+      outcome: "unreachable",
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
