@@ -3,22 +3,30 @@ import { Text, View } from "react-native";
 import { useAgent, type PluginTimelineItemProps } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import {
-  Badge,
-  Collapsible,
-  CopyButton,
-  PluginThemeProvider,
-  ProgressBar,
-  Row,
-  Stack,
-  usePluginSettings,
-} from "paseo-plugin-helper/client";
-import { formatBytes, formatUptime, truncatePath } from "paseo-plugin-helper/shared";
+  HostBadge,
+  HostCollapsible,
+  HostCopyButton,
+  HostProgressBar,
+  HostRow,
+  HostStack,
+  HostThemeProvider,
+  getStatusColor,
+} from "paseo-plugin-helper/ui";
+import { usePluginSettings } from "paseo-plugin-helper/client";
+import {
+  formatBytes,
+  formatUptime,
+  resolveMetricStatus,
+  truncatePath,
+} from "paseo-plugin-helper/shared";
 import { buildTelemetryCopyText } from "./telemetry-copy";
 import {
   isTimelineEnabled,
   isMcpSurfaceEnabled,
   topSettingsContract,
   TIMELINE_RENDERED_METRICS,
+  CPU_THRESHOLDS,
+  MEM_THRESHOLDS,
   type MetricId,
   type TopTimelineTelemetryData,
 } from "../shared/resources";
@@ -36,7 +44,7 @@ function Vital({
   children: React.ReactNode;
 }) {
   return (
-    <Row gap={4} align="center">
+    <HostRow gap={4} align="center">
       <Icon name={icon} size={12} color={color} />
       {/*
        * Color MUST be applied to the label as well as the icon. A <Text> with
@@ -47,7 +55,7 @@ function Vital({
       <Text numberOfLines={1} style={{ fontSize: 11, fontWeight: "500", color }}>
         {children}
       </Text>
-    </Row>
+    </HostRow>
   );
 }
 
@@ -111,17 +119,19 @@ export function TopTimelineTelemetryCard({
     }
   }, [data.outcomeKind, theme.colors]);
 
-  const cpuColor = useMemo(() => {
-    if (data.cpuPercent >= 85) return theme.colors.statusDanger;
-    if (data.cpuPercent >= 70) return theme.colors.statusWarning;
-    return theme.colors.foreground;
-  }, [data.cpuPercent, theme.colors]);
+  // CPU/RAM colors resolve through the shared canonical thresholds
+  // (shared/resources.ts) so the timeline card can never diverge from the
+  // pill and dashboard surfaces.
+  const cpuColor = useMemo(
+    () => getStatusColor(resolveMetricStatus(data.cpuPercent, CPU_THRESHOLDS), theme.colors),
+    [data.cpuPercent, theme.colors],
+  );
 
-  const memColor = useMemo(() => {
-    if (data.memPercent >= 90) return theme.colors.statusDanger;
-    if (data.memPercent >= 75) return theme.colors.statusWarning;
-    return theme.colors.foreground;
-  }, [data.memPercent, theme.colors]);
+  const memColor = useMemo(
+    () =>
+      getStatusColor(resolveMetricStatus(data.memPercent, MEM_THRESHOLDS), theme.colors),
+    [data.memPercent, theme.colors],
+  );
 
   const timeLabel = useMemo(() => {
     try {
@@ -167,25 +177,32 @@ export function TopTimelineTelemetryCard({
       : "";
 
   return (
-    <PluginThemeProvider theme={theme} layout={layout}>
-      <Collapsible
+    <HostThemeProvider theme={theme}>
+      <HostCollapsible
         variant="elevated"
         isExpanded={isExpanded}
         onToggle={setIsExpanded}
         style={data.outcomeKind === "failed" ? { borderColor: theme.colors.statusDanger } : undefined}
         title={
-          <Row gap={6} align="center">
+          <HostRow gap={6} align="center">
             <Icon name={outcomeConfig.icon} size={14} color={outcomeConfig.color} />
             <Text style={{ fontSize: 12, fontWeight: "600", color: theme.colors.foreground }}>
               {outcomeConfig.label}
             </Text>
             {data.durationMs != null ? (
-              <Badge label={`${(data.durationMs / 1000).toFixed(1)}s`} variant="neutral" />
+              <HostBadge label={`${(data.durationMs / 1000).toFixed(1)}s`} variant="neutral" />
             ) : null}
-          </Row>
+          </HostRow>
+        }
+        subtitle={
+          !isExpanded && data.outcomeKind === "canceled" ? (
+            <Text numberOfLines={2} style={{ fontSize: 11, color: theme.colors.statusDanger }}>
+              {canceledText}
+            </Text>
+          ) : undefined
         }
         headerRight={
-          <Row gap={6} align="center">
+          <HostRow gap={6} align="center">
             {timeLabel !== "" ? (
               <Text style={{ fontSize: 10, color: theme.colors.foregroundMuted }}>{timeLabel}</Text>
             ) : null}
@@ -206,25 +223,18 @@ export function TopTimelineTelemetryCard({
              * with the helper's own clipboard path. Empty labels keep the
              * header compact: the icon flips Copy -> Check on success.
              */}
-            <CopyButton
+            <HostCopyButton
               getText={getCopyText}
               label=""
               copiedLabel=""
               accessibilityLabel="Copy timeline card"
               toastMessage="timeline card"
             />
-          </Row>
-        }
-        summary={
-          !isExpanded && data.outcomeKind === "canceled" ? (
-            <Text numberOfLines={2} style={{ fontSize: 11, color: theme.colors.statusDanger }}>
-              {canceledText}
-            </Text>
-          ) : undefined
+          </HostRow>
         }
       >
-        <Stack gap={6}>
-          <Row wrap gap={8} align="center">
+        <HostStack gap={6}>
+          <HostRow wrap gap={8} align="center">
             {show("cpu_ram") && (
               <Vital icon="Cpu" color={cpuColor}>
                 CPU {data.cpuPercent}%
@@ -362,25 +372,25 @@ export function TopTimelineTelemetryCard({
                 {data.turnCount != null ? `${data.turnCount} turns` : "turns --"}
               </Vital>
             )}
-          </Row>
+          </HostRow>
 
           {show("tokens") && hasTokenDetails ? (
-            <Stack gap={8}>
-              <Row justify="space-between" align="center">
-                <Row gap={4} align="center">
+            <HostStack gap={8}>
+              <HostRow justify="between" align="center">
+                <HostRow gap={4} align="center">
                   <Icon name="Coins" size={12} color={theme.colors.foregroundMuted} />
                   <Text style={sectionTitleStyle(theme.colors)}>Tokens & Context</Text>
-                </Row>
+                </HostRow>
                 {costUsd != null && (
                   <Text style={{ fontSize: 10, fontWeight: "600", color: theme.colors.foreground }}>
                     ${costUsd < 0.01 ? costUsd.toFixed(4) : costUsd.toFixed(2)}
                   </Text>
                 )}
-              </Row>
+              </HostRow>
 
               {contextMaxTokens != null && contextMaxTokens > 0 ? (
-                <Stack gap={4}>
-                  <Row justify="space-between" align="center">
+                <HostStack gap={4}>
+                  <HostRow justify="between" align="center">
                     <Text style={{ fontSize: 10, color: theme.colors.foregroundMuted }}>
                       Context Window
                     </Text>
@@ -388,33 +398,33 @@ export function TopTimelineTelemetryCard({
                       {formatCompactTokens(contextUsedTokens ?? 0)} /{" "}
                       {formatCompactTokens(contextMaxTokens)} ({contextPercent}%)
                     </Text>
-                  </Row>
-                  <ProgressBar
+                  </HostRow>
+                  <HostProgressBar
                     value={contextPercent ?? 0}
                     thresholds={{ warning: 70, danger: 85 }}
                     height={6}
                   />
-                </Stack>
+                </HostStack>
               ) : contextUsedTokens != null ? (
                 <Text style={{ fontSize: 10, color: theme.colors.foreground }}>
                   {formatCompactTokens(contextUsedTokens)} tokens
                 </Text>
               ) : null}
 
-              <Row wrap gap={6} align="center">
+              <HostRow wrap gap={6} align="center">
                 {inputTokens != null && (
-                  <Badge label={`In: ${inputTokens.toLocaleString()}`} variant="neutral" />
+                  <HostBadge label={`In: ${inputTokens.toLocaleString()}`} variant="neutral" />
                 )}
                 {outputTokens != null && (
-                  <Badge label={`Out: ${outputTokens.toLocaleString()}`} variant="neutral" />
+                  <HostBadge label={`Out: ${outputTokens.toLocaleString()}`} variant="neutral" />
                 )}
                 {cachedTokens != null && (
-                  <Badge label={`Cache: ${cachedTokens.toLocaleString()}`} variant="neutral" />
+                  <HostBadge label={`Cache: ${cachedTokens.toLocaleString()}`} variant="neutral" />
                 )}
-              </Row>
-            </Stack>
+              </HostRow>
+            </HostStack>
           ) : show("tokens") ? (
-            <Row justify="space-between" align="center">
+            <HostRow justify="between" align="center">
               <Text style={sectionTitleStyle(theme.colors)}>Tokens & Context</Text>
               <Text
                 style={{
@@ -425,12 +435,12 @@ export function TopTimelineTelemetryCard({
               >
                 Not reported by provider
               </Text>
-            </Row>
+            </HostRow>
           ) : null}
 
-          <Stack gap={4}>
+          <HostStack gap={4}>
             <Text style={sectionTitleStyle(theme.colors)}>Turn Details</Text>
-            <Row wrap gap={12} align="center">
+            <HostRow wrap gap={12} align="center">
               <Vital icon="Cpu" color={theme.colors.foreground}>
                 {data.agentModel ?? "Unknown model"} ({data.agentProvider ?? "default"})
               </Vital>
@@ -445,8 +455,8 @@ export function TopTimelineTelemetryCard({
                   +{data.gitInsertions ?? 0} -{data.gitDeletions ?? 0}
                 </Vital>
               )}
-            </Row>
-          </Stack>
+            </HostRow>
+          </HostStack>
 
           {data.outcomeError && (
             <View
@@ -463,9 +473,9 @@ export function TopTimelineTelemetryCard({
               </Text>
             </View>
           )}
-        </Stack>
-      </Collapsible>
-    </PluginThemeProvider>
+        </HostStack>
+      </HostCollapsible>
+    </HostThemeProvider>
   );
 }
 

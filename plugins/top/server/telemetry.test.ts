@@ -512,8 +512,63 @@ test("every top pill variant shares one centered presentation model", () => {
     "main, per-metric, and custom pills must all register through registerTopPill",
   );
   assert.ok(
-    pillSource.includes('scrollMode="always"'),
-    "ResourceModal must explicitly specify scrollMode=\"always\" on ModalBody",
+    pillSource.includes("HostModalSection") && pillSource.includes("HostScroll"),
+    "ResourceModal must render HostModalSection + HostScroll (no ModalBody)",
+  );
+});
+
+test("no deprecated client/ UI-kit imports remain in the plugin", () => {
+  // Sanctioned `client/` imports per docs/client-migration.md: the host seam,
+  // headless hooks, lifecycle registrars, and pure helpers. Everything else in
+  // the deprecated bespoke UI kit must be gone.
+  const sanctioned = new Set([
+    "initClientHelpers",
+    "getClientHost",
+    "useRpcQuery",
+    "useRpcMutation",
+    "useAutoRefreshQuery",
+    "usePluginSettings",
+    "useSharedPluginSettings",
+    "registerComposerPill",
+    "registerSidebarSurface",
+    "registerWorkspacePanel",
+    "registerAgentPanel",
+    "registerCommandCenterItem",
+    "registerCustomPills",
+    "sharedSnapshotKey",
+    "normalizeSnapshotScope",
+    "shouldEmitSnapshotUpdate",
+    "copyToClipboard",
+    "triggerHaptic",
+    // Structural types for the host seam and lifecycle registrars.
+    "ComposerPillRegistrar",
+    "SidebarSurfaceRegistrar",
+    "PillLiveContext",
+    "RegisterComposerPillOptions",
+    "HostPillProps",
+    "RenderModalProps",
+    "UseAutoRefreshQueryOptions",
+  ]);
+  const clientDir = path.join(__dirname, "..", "client");
+  const sources = fs
+    .readdirSync(clientDir, { recursive: true })
+    .filter(
+      (entry): entry is string =>
+        typeof entry === "string" && /\.(ts|tsx)$/.test(entry) && !/\.test\.(ts|tsx)$/.test(entry),
+    )
+    .map((entry) => fs.readFileSync(path.join(clientDir, entry), "utf8"));
+  const forbidden = sources.flatMap((source) => {
+    const imports = [...source.matchAll(/import\s*\{([^}]*)\}\s*from "paseo-plugin-helper\/client"/g)];
+    return imports.flatMap((match) =>
+      [...match[1].matchAll(/([A-Za-z]+)/g)]
+        .map((m) => m[1])
+        .filter((name) => name !== "type" && !sanctioned.has(name)),
+    );
+  });
+  assert.deepEqual(
+    forbidden,
+    [],
+    `deprecated client/ UI-kit imports remain: ${[...new Set(forbidden)].join(", ")} — migrate to paseo-plugin-helper/ui + host SDK primitives`,
   );
 });
 

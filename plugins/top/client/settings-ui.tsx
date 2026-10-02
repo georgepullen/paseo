@@ -1,6 +1,11 @@
 import React from "react";
 import { Text } from "react-native";
-import { Button, Row, Stack, usePluginTheme } from "paseo-plugin-helper/client";
+import {
+  HostButton,
+  HostRow,
+  HostStack,
+  useHostTheme,
+} from "paseo-plugin-helper/ui";
 
 export interface ChipOption<T extends string | number> {
   id: T;
@@ -18,8 +23,8 @@ export interface ChoiceChipsProps<T extends string | number> {
 
 /**
  * Single-select chip row shared by every Top settings surface. Built from the
- * helper `Button`/`Row` primitives so the modal and the sidebar dashboard
- * cannot drift into two hand-rolled chip systems.
+ * `ui/` Host primitives so the modal and the sidebar dashboard cannot drift
+ * into two hand-rolled chip systems.
  */
 export function ChoiceChips<T extends string | number>({
   options,
@@ -27,13 +32,13 @@ export function ChoiceChips<T extends string | number>({
   onChange,
   showActiveDescription = false,
 }: ChoiceChipsProps<T>) {
-  const { colors } = usePluginTheme();
+  const { colors } = useHostTheme();
   const selected = options.find((option) => option.id === value);
   return (
-    <Stack gap={6}>
-      <Row wrap gap={6}>
+    <HostStack gap={6}>
+      <HostRow wrap gap={6}>
         {options.map((option) => (
-          <Button
+          <HostButton
             key={String(option.id)}
             label={option.label}
             size="sm"
@@ -41,10 +46,10 @@ export function ChoiceChips<T extends string | number>({
             onPress={() => onChange(option.id)}
           />
         ))}
-      </Row>
+      </HostRow>
       {showActiveDescription && selected?.description ? (
         <Text style={{ fontSize: 9, color: colors.foregroundMuted }}>{selected.description}</Text>
       ) : null}
-    </Stack>
+    </HostStack>
   );
 }

@@ -2,21 +2,22 @@ import React, { useState } from "react";
 import { Text, View } from "react-native";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import {
-  AboutSection,
-  Button,
-  Card,
-  KeyValue,
-  KeyValueGroup,
-  MetricGauge,
-  ModalBody,
-  Row,
-  Stack,
-  Tabs,
-  Toggle,
-  CardHeader,
-  usePluginSettings,
-  usePluginTheme,
-} from "paseo-plugin-helper/client";
+  HostAboutSection,
+  HostButton,
+  HostCard,
+  HostCardHeader,
+  HostGrid,
+  HostKeyValue,
+  HostLayoutProvider,
+  HostMetricGauge,
+  HostRow,
+  HostScroll,
+  HostStack,
+  HostTabs,
+  HostThemeProvider,
+  HostToggle,
+} from "paseo-plugin-helper/ui";
+import { usePluginSettings } from "paseo-plugin-helper/client";
 import { formatBytes, formatUptime } from "paseo-plugin-helper/shared";
 import { PermissionAuditView } from "permission-audit/client";
 import {
@@ -24,6 +25,10 @@ import {
   checkboxesFromTarget,
   targetFromCheckboxes,
   METRIC_DEFINITIONS,
+  CPU_THRESHOLDS,
+  MEM_THRESHOLDS,
+  SURFACE_TABS,
+  aboutExtraItems,
   type PillMode,
   type TopSettings,
 } from "../shared/resources";
@@ -35,24 +40,14 @@ import { FleetView } from "./multi-host-view";
 
 type SurfaceTab = "system" | "fleet" | "permissions" | "settings" | "about";
 
-const TABS = [
-  { id: "system", label: "Activity", shortLabel: "Activity", icon: "Activity" },
-  { id: "fleet", label: "Fleet", shortLabel: "Fleet", icon: "Server" },
-  { id: "permissions", label: "Permissions", shortLabel: "Permissions", icon: "ShieldCheck" },
-  { id: "settings", label: "Settings", shortLabel: "Settings", icon: "Sliders" },
-  { id: "about", label: "About", shortLabel: "About", icon: "Info" },
-];
-
 const TIMELINE_CADENCE_OPTIONS = Array.from({ length: 11 }, (_, n) => ({
   id: n,
   label: n === 0 ? "Never" : n === 1 ? "Every turn" : `${n}`,
 }));
 
-const CPU_THRESHOLDS = { warning: 60, danger: 85 };
-const MEM_THRESHOLDS = { warning: 70, danger: 85 };
-
-export function TopDashboardSurface(_props: PluginSurfaceProps) {
-  const { colors } = usePluginTheme();
+export function TopDashboardSurface(props: PluginSurfaceProps) {
+  const { theme, layout } = props;
+  const { colors } = theme;
   const [activeTab, setActiveTab] = useState<SurfaceTab>("system");
   // No background settings poll: mount/focus verification plus mutation
   // invalidation keep the dashboard in sync without daemon churn.
@@ -78,266 +73,254 @@ export function TopDashboardSurface(_props: PluginSurfaceProps) {
   };
 
   return (
-    <View style={[styles.root, { backgroundColor: colors.surface0 }]}>
-      <ModalBody
-        headerMode="pinned"
-        header={
-          <Tabs
-            tabs={TABS}
+    <HostThemeProvider theme={theme}>
+      <HostLayoutProvider layout={layout}>
+        <View style={[styles.root, { backgroundColor: colors.surface0 }]}>
+          {/*
+           * The sidebar host supplies no scroller for plugin surfaces, so the
+           * dashboard owns exactly one: HostScroll below the pinned tab
+           * strip (the header stays fixed because it sits outside the scroller).
+           */}
+          <HostTabs
+            tabs={[...SURFACE_TABS]}
             activeTab={activeTab}
             onTabChange={(id) => setActiveTab(id as SurfaceTab)}
           />
-        }
-        headerStyle={{
-          backgroundColor: colors.surface0,
-          paddingHorizontal: 12,
-          paddingTop: 12,
-          paddingBottom: 6,
-        }}
-        contentContainerStyle={{
-          gap: 12,
-          paddingHorizontal: 12,
-          paddingBottom: 12,
-          paddingTop: 6,
-        }}
-        refreshing={isLoading}
-      >
-        {activeTab === "system" && (
-        <Stack gap={12}>
-          <Text style={{ fontSize: 16, fontWeight: "700", color: colors.foreground }}>
-            Host System Resources
-          </Text>
-
-          {pillHidden && (
-            <Card variant="elevated">
-              <Text style={{ fontSize: 12, fontWeight: "600", color: colors.foregroundMuted }}>
-                Composer pill is hidden in trackbar. You can re-enable it from the Settings tab above.
-              </Text>
-            </Card>
-          )}
-
-          <Card variant="elevated">
-            <Row justify="space-around" align="center" style={styles.gaugeContainer}>
-              <MetricGauge
-                value={data?.cpuUsagePercent ?? 0}
-                thresholds={CPU_THRESHOLDS}
-                label="CPU Load"
-                size={72}
-              />
-              <MetricGauge
-                value={data?.memoryUsedPercent ?? 0}
-                thresholds={MEM_THRESHOLDS}
-                label="RAM Used"
-                size={72}
-              />
-            </Row>
-          </Card>
-
-          <Card variant="elevated">
-            <KeyValueGroup>
-              <KeyValue
-                label="CPU"
-                value={data?.cpuUsagePercent !== undefined ? `${data.cpuUsagePercent}%` : "--"}
-              />
-              <KeyValue
-                label="Memory"
-                value={
-                  data?.memoryUsedBytes !== undefined
-                    ? `${formatBytes(data.memoryUsedBytes, { compact: true, decimals: 1 })} (${data.memoryUsedPercent ?? "--"}%)`
-                    : "--"
-                }
-              />
-              <KeyValue
-                label="Load"
-                value={data?.loadAvg?.[0] !== undefined ? data.loadAvg[0].toFixed(2) : "--"}
-              />
-              <KeyValue
-                label="Uptime"
-                value={data?.uptimeSeconds ? formatUptime(data.uptimeSeconds) : "--"}
-              />
-              <KeyValue label="Branch" value={data?.branch ?? "--"} copyable />
-              <KeyValue
-                label="MCP"
-                value={
-                  data?.mcp && typeof data.mcp.total === "number"
-                    ? `${data.mcp.healthy}/${data.mcp.total} healthy`
-                    : "MCP --"
-                }
-              />
-            </KeyValueGroup>
-          </Card>
-          {isLoading && !data ? (
-            <Text style={{ fontSize: 12, color: colors.foregroundMuted }}>
-              Loading live snapshot...
-            </Text>
-          ) : null}
-        </Stack>
-      )}
-
-      {activeTab === "fleet" && <FleetView />}
-
-      {activeTab === "permissions" && <PermissionAuditView variant="compact" />}
-
-      {activeTab === "settings" && (
-        <Stack gap={12}>
-          <Card variant="elevated">
-            <CardHeader
-              title="Pill Display Mode"
-              icon="LayoutGrid"
-              subtitle="How active items appear in the composer trackbar"
-            />
-            <ChoiceChips
-              options={[
-                { id: "cycle", label: "Cycle", description: "Rotate one at a time" },
-                { id: "all", label: "All in One", description: "Combined into one pill" },
-                { id: "multiple", label: "Multiple", description: "Dedicated pills" },
-              ]}
-              value={settings.pillMode ?? "cycle"}
-              showActiveDescription
-              onChange={(pillMode: PillMode) => applySettings({ pillMode })}
-            />
-            <View style={styles.settingsSpacer}>
-              <Toggle
-                label="Show Composer Pill"
-                description="Hide the composer pill entirely; the dashboard stays available from the sidebar"
-                value={settings.showComposerPill ?? true}
-                onValueChange={(val) => applySettings({ showComposerPill: val })}
-              />
-            </View>
-          </Card>
-
-          <Card variant="elevated">
-            <CardHeader
-              title="Metric Surfaces"
-              icon="Sliders"
-              subtitle="Choose where each metric appears (pill vs timeline)"
-            />
-            <Stack gap={12}>
-              {METRIC_DEFINITIONS.map((def) => {
-                const boxes = checkboxesFromTarget(settings.metricSurfaces?.[def.id]);
-                const setBox = (which: "pill" | "timeline", val: boolean) => {
-                  const nextBoxes = { ...boxes, [which]: val };
-                  if (def.pillOnly) nextBoxes.timeline = false;
-                  applySettings({
-                    metricSurfaces: {
-                      ...settings.metricSurfaces,
-                      [def.id]: targetFromCheckboxes(nextBoxes.pill, nextBoxes.timeline),
-                    } as TopSettings["metricSurfaces"],
-                  });
-                };
-                return (
-                  <View key={def.id}>
-                    <Text style={{ fontSize: 11, fontWeight: "700", color: colors.foreground }}>
-                      {def.title}
-                    </Text>
-                    <Row gap={24} align="center" style={styles.metricTargets}>
-                      <Row gap={6} align="center">
-                        <Text style={[styles.metricTargetLabel, { color: colors.foreground }]}>
-                          Pill
-                        </Text>
-                        <Toggle value={boxes.pill} onValueChange={(val) => setBox("pill", val)} />
-                      </Row>
-                      <Row gap={6} align="center">
-                        <Text style={[styles.metricTargetLabel, { color: colors.foreground }]}>
-                          Timeline
-                        </Text>
-                        <Toggle
-                          value={boxes.timeline && !def.pillOnly}
-                          disabled={!!def.pillOnly}
-                          onValueChange={(val) => setBox("timeline", val)}
-                        />
-                      </Row>
-                    </Row>
-                  </View>
-                );
-              })}
-            </Stack>
-          </Card>
-
-          <Card variant="elevated">
-            <CardHeader
-              title="Rotation Speed"
-              icon="Clock"
-              value={
-                <Text style={{ color: colors.accent, fontWeight: "600" }}>
-                  {`${settings.intervalSeconds}s`}
-                </Text>
-              }
-            />
-            <ChoiceChips
-              options={[2, 3, 4, 6].map((sec) => ({ id: sec, label: `${sec}s` }))}
-              value={settings.intervalSeconds}
-              onChange={(intervalSeconds) => applySettings({ intervalSeconds })}
-            />
-          </Card>
-
-          <Card variant="elevated">
-            <CardHeader
-              title="Timeline Cadence"
-              icon="Clock"
-              value={
-                <Text style={{ color: colors.accent, fontWeight: "600" }}>
-                  {(settings.timelineCadence ?? 1) === 0
-                    ? "Never"
-                    : (settings.timelineCadence ?? 1) === 1
-                      ? "Every turn"
-                      : `Every ${(settings.timelineCadence ?? 1)} turns`}
-                </Text>
-              }
-              subtitle="How often a card is stamped into the timeline view (0 = never)"
-            />
-            <ChoiceChips
-              options={TIMELINE_CADENCE_OPTIONS}
-              value={settings.timelineCadence ?? 1}
-              onChange={(timelineCadence) => applySettings({ timelineCadence })}
-            />
-          </Card>
-
-          <Button
-            label="Reset to Defaults"
-            variant="secondary"
-            size="sm"
-            onPress={() => {
-              void resetSettings().then((defaults) => {
-                notifySettingsChanged(defaults ?? topSettingsContract.defaultSettings);
-              });
+          <HostScroll
+            style={styles.scroll}
+            contentContainerStyle={{
+              gap: 12,
+              paddingHorizontal: 12,
+              paddingBottom: 12,
+              paddingTop: 6,
             }}
-          />
-        </Stack>
-      )}
+          >
+            {activeTab === "system" && (
+              <HostStack gap={12}>
+                <Text style={{ fontSize: 16, fontWeight: "700", color: colors.foreground }}>
+                  Host System Resources
+                </Text>
 
-      {activeTab === "about" && (
-        <AboutSection
-          name="paseo-top"
-          description="Live host system and workspace monitor for Paseo composer trackbar."
-          version={data?.version ?? PLUGIN_VERSION}
-          author="xpufx"
-          repository="https://github.com/xpufx/paseo-top"
-          issues="https://github.com/xpufx/paseo-top/issues"
-          license="MIT"
-          density="tiny"
-          extraItems={[
-            {
-              label: "Host Platform",
-              value: data?.platform ? `${data.platform} (${data.arch ?? "unknown"})` : "Linux",
-              copyable: true,
-            },
-            { label: "Host Name", value: data?.hostname ?? "localhost", copyable: true },
-            { label: "CPU Model", value: data?.cpuModel ?? "unknown", copyable: true },
-            { label: "CPU Cores", value: `${data?.cpuCores ?? 0} cores` },
-            {
-              label: "Total Memory",
-              value: data?.memoryTotalBytes ? formatBytes(data.memoryTotalBytes) : "unknown",
-            },
-            {
-              label: "Host Uptime",
-              value: data?.uptimeSeconds ? formatUptime(data.uptimeSeconds) : "unknown",
-            },
-          ]}
-        />
-      )}
-    </ModalBody>
-    </View>
+                {pillHidden && (
+                  <HostCard variant="elevated">
+                    <Text
+                      style={{ fontSize: 12, fontWeight: "600", color: colors.foregroundMuted }}
+                    >
+                      Composer pill is hidden in trackbar. You can re-enable it from the Settings
+                      tab above.
+                    </Text>
+                  </HostCard>
+                )}
+
+                <HostCard variant="elevated">
+                  <HostRow justify="between" align="center" style={styles.gaugeContainer}>
+                    <HostMetricGauge
+                      value={data?.cpuUsagePercent ?? 0}
+                      thresholds={CPU_THRESHOLDS}
+                      label="CPU Load"
+                      size={72}
+                    />
+                    <HostMetricGauge
+                      value={data?.memoryUsedPercent ?? 0}
+                      thresholds={MEM_THRESHOLDS}
+                      label="RAM Used"
+                      size={72}
+                    />
+                  </HostRow>
+                </HostCard>
+
+                <HostCard variant="elevated">
+                  <HostGrid columns={2} gap={12}>
+                    <HostKeyValue
+                      label="CPU"
+                      value={data?.cpuUsagePercent !== undefined ? `${data.cpuUsagePercent}%` : "--"}
+                    />
+                    <HostKeyValue
+                      label="Memory"
+                      value={
+                        data?.memoryUsedBytes !== undefined
+                          ? `${formatBytes(data.memoryUsedBytes, { compact: true, decimals: 1 })} (${data.memoryUsedPercent ?? "--"}%)`
+                          : "--"
+                      }
+                    />
+                    <HostKeyValue
+                      label="Load"
+                      value={data?.loadAvg?.[0] !== undefined ? data.loadAvg[0].toFixed(2) : "--"}
+                    />
+                    <HostKeyValue
+                      label="Uptime"
+                      value={data?.uptimeSeconds ? formatUptime(data.uptimeSeconds) : "--"}
+                    />
+                    <HostKeyValue label="Branch" value={data?.branch ?? "--"} copyable />
+                    <HostKeyValue
+                      label="MCP"
+                      value={
+                        data?.mcp && typeof data.mcp.total === "number"
+                          ? `${data.mcp.healthy}/${data.mcp.total} healthy`
+                          : "MCP --"
+                      }
+                    />
+                  </HostGrid>
+                </HostCard>
+                {isLoading && !data ? (
+                  <Text style={{ fontSize: 12, color: colors.foregroundMuted }}>
+                    Loading live snapshot...
+                  </Text>
+                ) : null}
+              </HostStack>
+            )}
+
+            {activeTab === "fleet" && <FleetView />}
+
+            {activeTab === "permissions" && <PermissionAuditView variant="compact" />}
+
+            {activeTab === "settings" && (
+              <HostStack gap={12}>
+                <HostCard variant="elevated">
+                  <HostCardHeader
+                    title="Pill Display Mode"
+                    icon="LayoutGrid"
+                    subtitle="How active items appear in the composer trackbar"
+                  />
+                  <ChoiceChips
+                    options={[
+                      { id: "cycle", label: "Cycle", description: "Rotate one at a time" },
+                      { id: "all", label: "All in One", description: "Combined into one pill" },
+                      { id: "multiple", label: "Multiple", description: "Dedicated pills" },
+                    ]}
+                    value={settings.pillMode ?? "cycle"}
+                    showActiveDescription
+                    onChange={(pillMode: PillMode) => applySettings({ pillMode })}
+                  />
+                  <View style={styles.settingsSpacer}>
+                    <HostToggle
+                      label="Show Composer Pill"
+                      description="Hide the composer pill entirely; the dashboard stays available from the sidebar"
+                      value={settings.showComposerPill ?? true}
+                      onValueChange={(val) => applySettings({ showComposerPill: val })}
+                    />
+                  </View>
+                </HostCard>
+
+                <HostCard variant="elevated">
+                  <HostCardHeader
+                    title="Metric Surfaces"
+                    icon="Sliders"
+                    subtitle="Choose where each metric appears (pill vs timeline)"
+                  />
+                  <HostStack gap={12}>
+                    {METRIC_DEFINITIONS.map((def) => {
+                      const boxes = checkboxesFromTarget(settings.metricSurfaces?.[def.id]);
+                      const setBox = (which: "pill" | "timeline", val: boolean) => {
+                        const nextBoxes = { ...boxes, [which]: val };
+                        if (def.pillOnly) nextBoxes.timeline = false;
+                        applySettings({
+                          metricSurfaces: {
+                            ...settings.metricSurfaces,
+                            [def.id]: targetFromCheckboxes(nextBoxes.pill, nextBoxes.timeline),
+                          } as TopSettings["metricSurfaces"],
+                        });
+                      };
+                      return (
+                        <View key={def.id}>
+                          <Text style={{ fontSize: 11, fontWeight: "700", color: colors.foreground }}>
+                            {def.title}
+                          </Text>
+                          <HostRow gap={24} align="center" style={styles.metricTargets}>
+                            <HostRow gap={6} align="center">
+                              <Text style={[styles.metricTargetLabel, { color: colors.foreground }]}>
+                                Pill
+                              </Text>
+                              <HostToggle
+                                value={boxes.pill}
+                                onValueChange={(val) => setBox("pill", val)}
+                              />
+                            </HostRow>
+                            <HostRow gap={6} align="center">
+                              <Text style={[styles.metricTargetLabel, { color: colors.foreground }]}>
+                                Timeline
+                              </Text>
+                              <HostToggle
+                                value={boxes.timeline && !def.pillOnly}
+                                disabled={!!def.pillOnly}
+                                onValueChange={(val) => setBox("timeline", val)}
+                              />
+                            </HostRow>
+                          </HostRow>
+                        </View>
+                      );
+                    })}
+                  </HostStack>
+                </HostCard>
+
+                <HostCard variant="elevated">
+                  <HostCardHeader
+                    title="Rotation Speed"
+                    icon="Clock"
+                    value={
+                      <Text style={{ color: colors.accent, fontWeight: "600" }}>
+                        {`${settings.intervalSeconds}s`}
+                      </Text>
+                    }
+                  />
+                  <ChoiceChips
+                    options={[2, 3, 4, 6].map((sec) => ({ id: sec, label: `${sec}s` }))}
+                    value={settings.intervalSeconds}
+                    onChange={(intervalSeconds) => applySettings({ intervalSeconds })}
+                  />
+                </HostCard>
+
+                <HostCard variant="elevated">
+                  <HostCardHeader
+                    title="Timeline Cadence"
+                    icon="Clock"
+                    value={
+                      <Text style={{ color: colors.accent, fontWeight: "600" }}>
+                        {(settings.timelineCadence ?? 1) === 0
+                          ? "Never"
+                          : (settings.timelineCadence ?? 1) === 1
+                            ? "Every turn"
+                            : `Every ${(settings.timelineCadence ?? 1)} turns`}
+                      </Text>
+                    }
+                    subtitle="How often a card is stamped into the timeline view (0 = never)"
+                  />
+                  <ChoiceChips
+                    options={TIMELINE_CADENCE_OPTIONS}
+                    value={settings.timelineCadence ?? 1}
+                    onChange={(timelineCadence) => applySettings({ timelineCadence })}
+                  />
+                </HostCard>
+
+                <HostButton
+                  label="Reset to Defaults"
+                  variant="secondary"
+                  size="sm"
+                  onPress={() => {
+                    void resetSettings().then((defaults) => {
+                      notifySettingsChanged(defaults ?? topSettingsContract.defaultSettings);
+                    });
+                  }}
+                />
+              </HostStack>
+            )}
+
+            {activeTab === "about" && (
+              <HostAboutSection
+                name="paseo-top"
+                description="Live host system and workspace monitor for Paseo composer trackbar."
+                version={data?.version ?? PLUGIN_VERSION}
+                author="xpufx"
+                repository="https://github.com/xpufx/paseo-top"
+                issues="https://github.com/xpufx/paseo-top/issues"
+                license="MIT"
+                extraItems={aboutExtraItems(data)}
+              />
+            )}
+          </HostScroll>
+        </View>
+      </HostLayoutProvider>
+    </HostThemeProvider>
   );
 }
 
@@ -346,6 +329,10 @@ const styles = {
     flex: 1,
     minHeight: 0,
     width: "100%",
+  },
+  scroll: {
+    flex: 1,
+    minHeight: 0,
   },
   gaugeContainer: {
     paddingVertical: 12,

@@ -3,6 +3,9 @@ import {
   defineSettingsContract,
   type RpcOutput,
   type CustomPillState,
+  type MetricThresholds,
+  formatBytes,
+  formatUptime,
 } from "paseo-plugin-helper/shared";
 import { z } from "zod";
 
@@ -547,6 +550,116 @@ export function legacyFlagView(settings: {
     showUptime: pill("uptime"),
     showMcp: pill("mcp"),
   };
+}
+
+// --- Canonical metric thresholds -------------------------------------------
+
+/**
+ * Single source of truth for CPU/RAM warning/danger color thresholds. The
+ * pill, the dashboard surface, and the timeline card all resolve through
+ * these constants so a metric never changes color depending on where it is
+ * displayed (pill.tsx and telemetry.tsx used to carry divergent copies).
+ */
+export const CPU_THRESHOLDS: MetricThresholds = { warning: 60, danger: 85 };
+export const MEM_THRESHOLDS: MetricThresholds = { warning: 70, danger: 85 };
+
+// --- Tabs -------------------------------------------------------------------
+
+export interface TopTabItem {
+  id: string;
+  label: string;
+  shortLabel: string;
+  icon: string;
+}
+
+const SYSTEM_TAB: TopTabItem = {
+  id: "system",
+  label: "System",
+  shortLabel: "System",
+  icon: "Activity",
+};
+const PERMISSIONS_TAB: TopTabItem = {
+  id: "permissions",
+  label: "Permissions",
+  shortLabel: "Permissions",
+  icon: "ShieldCheck",
+};
+const SETTINGS_TAB: TopTabItem = {
+  id: "settings",
+  label: "Settings",
+  shortLabel: "Settings",
+  icon: "Sliders",
+};
+const ABOUT_TAB: TopTabItem = { id: "about", label: "About", shortLabel: "About", icon: "Info" };
+
+/** Sidebar dashboard tabs (client/surface.tsx). */
+export const SURFACE_TABS: readonly TopTabItem[] = [
+  { ...SYSTEM_TAB, label: "Activity", shortLabel: "Activity" },
+  { id: "fleet", label: "Fleet", shortLabel: "Fleet", icon: "Server" },
+  PERMISSIONS_TAB,
+  SETTINGS_TAB,
+  ABOUT_TAB,
+];
+
+/** Pill modal tabs (client/pill.tsx). */
+export const MODAL_TABS: readonly TopTabItem[] = [
+  SYSTEM_TAB,
+  { id: "context", label: "Workspace", shortLabel: "Workspace", icon: "GitBranch" },
+  PERMISSIONS_TAB,
+  SETTINGS_TAB,
+  ABOUT_TAB,
+];
+
+// --- About section extras ---------------------------------------------------
+
+/**
+ * Host facts for the About tab. Shared verbatim by the dashboard surface and
+ * the pill modal so the two About sections cannot drift.
+ */
+export function aboutExtraItems(
+  data: SystemResources | undefined,
+): Array<{ label: string; value: string; copyable?: boolean }> {
+  return [
+    {
+      label: "Host Platform",
+      value: data?.platform ? `${data.platform} (${data.arch ?? "unknown"})` : "Linux",
+      copyable: true,
+    },
+    { label: "Host Name", value: data?.hostname ?? "localhost", copyable: true },
+    { label: "CPU Model", value: data?.cpuModel ?? "unknown", copyable: true },
+    { label: "CPU Cores", value: `${data?.cpuCores ?? 0} cores` },
+    {
+      label: "Total Memory",
+      value: data?.memoryTotalBytes ? formatBytes(data.memoryTotalBytes) : "unknown",
+    },
+    {
+      label: "Host Uptime",
+      value: data?.uptimeSeconds ? formatUptime(data.uptimeSeconds) : "unknown",
+    },
+  ];
+}
+
+// --- Enabled-flag OR chain ---------------------------------------------------
+
+/**
+ * The legacy pill-flag OR chain, formerly copy-pasted at every call site that
+ * asks "is any pill item enabled" (pill view, modal settings, multiple-mode
+ * sync). MCP is presence-gated separately, so it is not part of the base
+ * chain — callers OR it in with their own MCP resolution.
+ */
+export function hasAnyLegacyPillFlagEnabled(flags: LegacyFlagView): boolean {
+  return (
+    flags.showCpuRam ||
+    flags.showBranch ||
+    flags.showWorktree ||
+    flags.showAgentTitle ||
+    flags.showAgent ||
+    flags.showAgentProvider ||
+    flags.showAgentActivity ||
+    flags.showAgentId ||
+    flags.showLoad ||
+    flags.showUptime
+  );
 }
 
 /**

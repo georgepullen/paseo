@@ -13,6 +13,13 @@ vi.mock("@getpaseo/plugin/client", () => ({
   useRpc: () => async () => ({}),
 }));
 
+// The host SDK's react-native entry is `export {}` at runtime (the host bundler
+// injects the real primitives), so the test provides the same mock Icon the
+// host seam uses.
+vi.mock("@getpaseo/plugin/client/react-native", () => ({
+  Icon: (props: { name?: string }) => React.createElement("mock-icon", { name: props.name }),
+}));
+
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 let agent: Record<string, unknown> = {};

@@ -11,13 +11,17 @@ function source(...parts: string[]): string {
 }
 
 describe("#219 remaining helper UI migrations", () => {
-  it("keeps top's composer and sidebar on helper-owned contracts without a width cap", () => {
+  it("keeps top's composer and sidebar on host-owned scroll contracts without a width cap", () => {
     const pill = source("plugins", "top", "client", "pill.tsx");
     const surface = source("plugins", "top", "client", "surface.tsx");
     expect(pill).toContain("registerComposerPill");
     expect(pill).toContain("registerSidebarSurface");
     expect(pill).not.toMatch(/\bPressable\b/);
-    expect(surface).toContain("<ModalBody");
+    // #847 Phase 4: ModalBody replaced by the ui/ modal-layer primitives
+    // (HostScroll for the sidebar surface, HostModalSection for the pill
+    // modal); the no-width-cap contract is unchanged.
+    expect(surface).toContain("<HostScroll");
+    expect(pill).toContain("<HostModalSection");
     expect(surface).not.toMatch(/maxContentWidth|TOP_CONTENT_MAX_WIDTH/);
   });
 

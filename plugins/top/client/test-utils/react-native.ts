@@ -27,6 +27,13 @@ export const Image = stub("Image");
 export const ActivityIndicator = stub("ActivityIndicator");
 export const KeyboardAvoidingView = stub("KeyboardAvoidingView");
 
+/**
+ * Host `Icon` stand-in. Renders as `mock-icon` so the tests' `textOf` helper
+ * (which skips `mock-icon` elements) keeps flattening trees to text.
+ */
+export const Icon = (props: { name?: string; size?: number; color?: string }) =>
+  React.createElement("mock-icon", { name: props.name });
+
 export const StyleSheet = {
   create: <T extends Record<string, unknown>>(styles: T): T => styles,
   flatten: (style: unknown) => style,
@@ -100,6 +107,7 @@ export default {
   Image,
   ActivityIndicator,
   KeyboardAvoidingView,
+  Icon,
   StyleSheet,
   Platform,
   Appearance,

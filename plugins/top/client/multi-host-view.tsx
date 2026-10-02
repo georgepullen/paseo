@@ -1,18 +1,19 @@
 import React, { useMemo } from "react";
 import { Text } from "react-native";
 import {
-  Badge,
-  Card,
-  CardHeader,
-  EmptyState,
-  KeyValue,
-  KeyValueGroup,
-  Row,
-  SectionHeader,
-  Stack,
-  StatusDot,
-  usePluginTheme,
-} from "paseo-plugin-helper/client";
+  HostBadge,
+  HostCard,
+  HostCardHeader,
+  HostEmptyState,
+  HostGrid,
+  HostKeyValue,
+  HostRow,
+  HostSectionHeader,
+  HostStack,
+  HostStatusDot,
+  useHostLayout,
+  useHostTheme,
+} from "paseo-plugin-helper/ui";
 import {
   aggregateFleet,
   type FleetHostSnapshot,
@@ -59,7 +60,8 @@ function FleetHostCard({
   snapshot: FleetHostSnapshot;
   now: number;
 }) {
-  const { colors } = usePluginTheme();
+  const { colors } = useHostTheme();
+  const { compact } = useHostLayout();
   const variant = STATUS_VARIANT[snapshot.status];
   const staleAge = formatStaleAge(snapshot.staleAt, now);
   const subtitle =
@@ -68,47 +70,47 @@ function FleetHostCard({
       : (staleAge ?? snapshot.error ?? "Not connected");
 
   return (
-    <Card variant="elevated">
-      <CardHeader
+    <HostCard variant="elevated">
+      <HostCardHeader
         icon="Server"
         title={snapshot.label}
         subtitle={subtitle}
         badge={
-          <Row gap={6} align="center">
-            <StatusDot
+          <HostRow gap={6} align="center">
+            <HostStatusDot
               variant={snapshot.status === "online" ? "success" : variant}
               pulse={snapshot.status === "online"}
             />
-            <Badge
+            <HostBadge
               label={STATUS_LABEL[snapshot.status]}
               variant={variant}
               size="sm"
             />
-          </Row>
+          </HostRow>
         }
       />
-      <KeyValueGroup>
-        <KeyValue label="Host" value={snapshot.serverId} truncate="middle" copyable />
-        <KeyValue label="Latency" value={formatLatency(snapshot.latencyMs)} />
-        <KeyValue
+      <HostGrid columns={compact ? 1 : 2} gap={12}>
+        <HostKeyValue label="Host" value={snapshot.serverId} truncate="middle" copyable />
+        <HostKeyValue label="Latency" value={formatLatency(snapshot.latencyMs)} />
+        <HostKeyValue
           label="Agents"
           value={snapshot.counts ? String(snapshot.counts.agents) : "--"}
         />
-        <KeyValue
+        <HostKeyValue
           label="Active agents"
           value={snapshot.counts ? String(snapshot.counts.activeAgents) : "--"}
         />
-        <KeyValue
+        <HostKeyValue
           label="Workspaces"
           value={snapshot.counts ? String(snapshot.counts.workspaces) : "--"}
         />
-      </KeyValueGroup>
+      </HostGrid>
       {snapshot.status === "error" && snapshot.error ? (
         <Text style={{ marginTop: 8, fontSize: 11, color: colors.statusDanger }}>
           {snapshot.error}
         </Text>
       ) : null}
-    </Card>
+    </HostCard>
   );
 }
 
@@ -122,14 +124,14 @@ function FleetHostCard({
  * Top behavior is unaffected whenever the tab is not selected.
  */
 export function FleetView() {
-  const { colors } = usePluginTheme();
+  const { colors } = useHostTheme();
   const snapshots = useFleetPolling();
   const now = Date.now();
   const aggregate = useMemo(() => aggregateFleet(snapshots), [snapshots]);
 
   if (snapshots.length === 0) {
     return (
-      <EmptyState
+      <HostEmptyState
         icon="Server"
         title="No other hosts"
         description="Configure additional hosts in Paseo to see their fleet status here."
@@ -138,33 +140,33 @@ export function FleetView() {
   }
 
   return (
-    <Stack gap={12}>
+    <HostStack gap={12}>
       <Text style={{ fontSize: 16, fontWeight: "700", color: colors.foreground }}>
         Multi-Host Fleet
       </Text>
 
-      <Card variant="elevated">
-        <CardHeader
+      <HostCard variant="elevated">
+        <HostCardHeader
           title="Fleet Totals"
           icon="Activity"
           subtitle="Counts only. CPU/RAM/load stay per-host."
         />
-        <KeyValueGroup>
-          <KeyValue label="Hosts" value={`${aggregate.responsive}/${aggregate.hosts} responsive`} />
-          <KeyValue
+        <HostGrid columns={2} gap={12}>
+          <HostKeyValue label="Hosts" value={`${aggregate.responsive}/${aggregate.hosts} responsive`} />
+          <HostKeyValue
             label="Online / Stale"
             value={`${aggregate.online} / ${aggregate.stale}`}
           />
-          <KeyValue label="Agents" value={String(aggregate.counts.agents)} />
-          <KeyValue
+          <HostKeyValue label="Agents" value={String(aggregate.counts.agents)} />
+          <HostKeyValue
             label="Active agents"
             value={String(aggregate.counts.activeAgents)}
           />
-          <KeyValue label="Workspaces" value={String(aggregate.counts.workspaces)} />
-        </KeyValueGroup>
-      </Card>
+          <HostKeyValue label="Workspaces" value={String(aggregate.counts.workspaces)} />
+        </HostGrid>
+      </HostCard>
 
-      <SectionHeader title="Hosts" count={snapshots.length} />
+      <HostSectionHeader title="Hosts" count={snapshots.length} />
       {snapshots.map((snapshot) => (
         <FleetHostCard
           key={snapshot.serverId}
@@ -172,6 +174,6 @@ export function FleetView() {
           now={now}
         />
       ))}
-    </Stack>
+    </HostStack>
   );
 }

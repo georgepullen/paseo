@@ -7,44 +7,49 @@ import {
   useRpc,
   type PluginClientContext,
 } from "@getpaseo/plugin/client";
+import { Icon } from "@getpaseo/plugin/client/react-native";
 import {
   registerComposerPill,
   registerSidebarSurface,
+  getClientHost,
   type ComposerPillRegistrar,
   type SidebarSurfaceRegistrar,
   type PillLiveContext,
   type RegisterComposerPillOptions,
-  ModalBody,
-  Card,
-  CardHeader,
-  Button,
-  Row,
-  KeyValue,
-  KeyValueGroup,
-  ProgressBar,
-  MetricGauge,
-  Tabs,
-  Toggle,
-  Badge,
-  Icon,
-  AboutSection,
-  CustomPillModalContent,
   useRpcQuery,
   usePluginSettings,
-  usePluginTheme,
-  getStatusColor,
   triggerHaptic,
   type HostPillProps,
   type RenderModalProps,
-  type KeyValueProps,
-  type CardHeaderProps,
-  type BadgeProps,
 } from "paseo-plugin-helper/client";
+import {
+  HostAboutSection,
+  HostBadge,
+  HostButton,
+  HostCard,
+  HostCardHeader,
+  HostCopyButton,
+  HostKeyValue,
+  HostLayoutProvider,
+  HostMetricGauge,
+  HostModalSection,
+  HostProgressBar,
+  HostRow,
+  HostScroll,
+  HostStack,
+  HostTabs,
+  HostThemeProvider,
+  HostToggle,
+  getStatusColor,
+  useHostLayout,
+  useHostTheme,
+} from "paseo-plugin-helper/ui";
 import {
   formatBytes,
   formatUptime,
   resolveMetricStatus,
   type MetricThresholds,
+  type ThemeColors,
 } from "paseo-plugin-helper/shared";
 import { PermissionAuditView } from "permission-audit/client";
 import {
@@ -62,6 +67,11 @@ import {
   DEFAULT_METRIC_SURFACES,
   checkboxesFromTarget,
   targetFromCheckboxes,
+  CPU_THRESHOLDS,
+  MEM_THRESHOLDS,
+  MODAL_TABS,
+  aboutExtraItems,
+  hasAnyLegacyPillFlagEnabled,
   type SystemResources,
   type TopSettings,
   type CustomPillStateOutput,
@@ -89,6 +99,11 @@ import {
 } from "./pill-labels";
 
 const EMPTY_PARAMS = {};
+
+const TIMELINE_CADENCE_OPTIONS = Array.from({ length: 11 }, (_, n) => ({
+  id: n,
+  label: n === 0 ? "Never" : n === 1 ? "Every turn" : `${n}`,
+}));
 
 function formatWorktreeLocation(dir: string | null | undefined): string {
   if (!dir) return "";
@@ -133,25 +148,9 @@ function formatIdleDuration(isoString: string | null | undefined): string {
   return `${days}d ${hours % 24}h`;
 }
 
-const CPU_THRESHOLDS: MetricThresholds = { warning: 60, danger: 85 };
-const MEM_THRESHOLDS: MetricThresholds = { warning: 70, danger: 85 };
-
-const TABS = [
-  { id: "system", label: "System", shortLabel: "System", icon: "Activity" },
-  { id: "context", label: "Workspace", shortLabel: "Workspace", icon: "GitBranch" },
-  { id: "permissions", label: "Permissions", shortLabel: "Permissions", icon: "ShieldCheck" },
-  { id: "settings", label: "Settings", shortLabel: "Settings", icon: "Sliders" },
-  { id: "about", label: "About", shortLabel: "About", icon: "Info" },
-];
-
-const TIMELINE_CADENCE_OPTIONS = Array.from({ length: 11 }, (_, n) => ({
-  id: n,
-  label: n === 0 ? "Never" : n === 1 ? "Every turn" : `${n}`,
-}));
-
 function getMetricColors(
   data: SystemResources | undefined,
-  colors: ReturnType<typeof usePluginTheme>["colors"],
+  colors: ThemeColors,
 ) {
   if (
     !data ||
@@ -203,28 +202,15 @@ export function getItemTab(item: PillItemType): "system" | "context" {
 
 const currentCycleTabByAgent = new Map<string, ModalTab>();
 
-// The 0.8 host popover is a narrow column, so every helper text component in
-// the modal path renders through these compact wrappers (2-3pt under helper
-// defaults). Call-site props still win via spread order.
-function CompactKeyValue(props: KeyValueProps) {
-  return (
-    <KeyValue
-      labelStyle={styles.compactKvLabel}
-      valueStyle={styles.compactKvValue}
-      {...props}
-    />
-  );
-}
-
-function CompactCardHeader(props: CardHeaderProps) {
-  return (
-    <CardHeader titleStyle={styles.compactCardTitle} {...props} />
-  );
-}
-
-function CompactBadge(props: BadgeProps) {
-  return <Badge textStyle={styles.compactBadgeText} {...props} />;
-}
+// The 0.8 host popover is a narrow column, so modal-path text renders a few
+// points under the ui/ adapter defaults. These spread props apply that
+// compact rhythm at each call site.
+const compactKvProps = {
+  labelStyle: { fontSize: 9 },
+  valueStyle: { fontSize: 10 },
+} as const;
+const compactCardTitleProp = { titleStyle: { fontSize: 11 } } as const;
+const compactBadgeProp = { textStyle: { fontSize: 9 } } as const;
 
 interface LiveSnapshot extends SegmentSnapshot {
   workspaceDirectory?: string | null;
@@ -352,7 +338,16 @@ async function customPillSnapshot(): Promise<CustomPillStateOutput[]> {
  * per-metric pills, custom metric pills) so the presentation model cannot
  * diverge: all are centered surfaces with a pinned popover width. Call sites
  * only describe what is pill-specific.
+ *
+ * `onError` is wired here once for every variant: the helper reports
+ * registration and resolveLabel failures through `options.onError` in addition
+ * to its own console warning, so without this default a failing pill RPC left
+ * the pill missing with no trace outside the helper log. The toast is
+ * throttled per pill+agent so a persistently failing RPC cannot spam the host.
  */
+const PILL_ERROR_TOAST_THROTTLE_MS = 60_000;
+const lastPillErrorToastAt = new Map<string, number>();
+
 function registerTopPill(
   client: ComposerPillRegistrar | PluginClientContext,
   options: Omit<RegisterComposerPillOptions<ModalTab>, "presentation" | "popoverWidth"> & {
@@ -364,6 +359,23 @@ function registerTopPill(
     popoverWidth: 360,
     ...options,
     presentation: options.presentation ?? "centered",
+    onError:
+      options.onError ??
+      (({ agentId, workspaceId, error }) => {
+        console.error(
+          `[top] pill "${options.id}" failed (agent ${agentId}, workspace ${workspaceId}): ${error.message}`,
+        );
+        const key = `${options.id}:${agentId}`;
+        const now = Date.now();
+        if (now - (lastPillErrorToastAt.get(key) ?? 0) >= PILL_ERROR_TOAST_THROTTLE_MS) {
+          lastPillErrorToastAt.set(key, now);
+          try {
+            getClientHost().useToast().error?.(`top pill failed: ${error.message}`);
+          } catch {
+            // No host toast wired; the console error above is the trace.
+          }
+        }
+      }),
   });
 }
 
@@ -390,7 +402,7 @@ function PillItemContent({
   worktreeLocationText,
   isOpen,
 }: PillItemContentProps) {
-  const { colors } = usePluginTheme();
+  const { colors } = useHostTheme();
   const { cpuColor, memColor } = getMetricColors(data, colors);
   const descriptor = describeSegment(item, { data, agent, agentId, worktreeLocationText });
   const toneColor = (tone: SegmentTone): string => {
@@ -415,7 +427,7 @@ function PillItemContent({
   };
 
   return (
-    <Row gap={4} align="center" style={styles.pillContainer}>
+    <HostRow gap={4} align="center" style={styles.pillContainer}>
       {descriptor.iconTone !== "none" ? (
         <Icon name={descriptor.icon} size={12} color={toneColor(descriptor.iconTone)} />
       ) : null}
@@ -444,7 +456,7 @@ function PillItemContent({
           </Text>
         ) : null}
       </Text>
-    </Row>
+    </HostRow>
   );
 }
 
@@ -452,19 +464,19 @@ export { notifySettingsChanged } from "./settings-events";
 type SettingsListener = import("./settings-events").SettingsListener;
 
 function PillOffline() {
-  const { colors } = usePluginTheme();
+  const { colors } = useHostTheme();
   return (
-    <Row gap={4} align="center" style={styles.pillContainer}>
+    <HostRow gap={4} align="center" style={styles.pillContainer}>
       <Icon name="Ghost" size={13} color={colors.statusDanger} />
       <Text numberOfLines={1} style={[styles.pillText, { color: colors.foregroundMuted }]}>
         Offline
       </Text>
-    </Row>
+    </HostRow>
   );
 }
 
 function PillLoading() {
-  const { colors } = usePluginTheme();
+  const { colors } = useHostTheme();
   return (
     <Text numberOfLines={1} style={[styles.pillText, { color: colors.foregroundMuted }]}>
       top...
@@ -473,19 +485,19 @@ function PillLoading() {
 }
 
 function PillEmpty() {
-  const { colors } = usePluginTheme();
+  const { colors } = useHostTheme();
   return (
-    <Row gap={4} align="center" style={styles.pillContainer}>
+    <HostRow gap={4} align="center" style={styles.pillContainer}>
       <Icon name="Activity" size={12} color={colors.accent} />
       <Text numberOfLines={1} style={[styles.pillText, { color: colors.foregroundMuted }]}>
         top
       </Text>
-    </Row>
+    </HostRow>
   );
 }
 
 function McpLoadingPill() {
-  const { colors } = usePluginTheme();
+  const { colors } = useHostTheme();
   return (
     <Text numberOfLines={1} style={[styles.pillText, { color: colors.foregroundMuted }]}>
       MCP…
@@ -543,9 +555,9 @@ function AllInOnePill({
   worktreeLocationText,
   isOpen,
 }: AllInOnePillProps) {
-  const { colors } = usePluginTheme();
+  const { colors } = useHostTheme();
   return (
-    <Row gap={6} align="center" style={styles.allInOneContainer}>
+    <HostRow gap={6} align="center" style={styles.allInOneContainer}>
       {items.map((item, idx) => (
         <React.Fragment key={item}>
           {idx > 0 && (
@@ -561,7 +573,7 @@ function AllInOnePill({
           />
         </React.Fragment>
       ))}
-    </Row>
+    </HostRow>
   );
 }
 
@@ -584,7 +596,18 @@ export interface SingleItemPillViewProps extends PillBodyProps {
   defaultTab?: ModalTab;
 }
 
-export function SingleItemPillView({
+export function SingleItemPillView(props: SingleItemPillViewProps) {
+  // Legacy pill body view (see PillBodyProps): kept for the #507 render
+  // regression tests. The host theme prop flows through HostThemeProvider so
+  // the ui/ adapters inside resolve real host colors.
+  return (
+    <HostThemeProvider theme={props.theme}>
+      <SingleItemPillViewBody {...props} />
+    </HostThemeProvider>
+  );
+}
+
+function SingleItemPillViewBody({
   item,
   workspaceId,
   agentId,
@@ -664,7 +687,18 @@ export function SingleItemPillView({
   );
 }
 
-function PillView({ isOpen, open, workspaceId, agentId }: PillBodyProps) {
+function PillView(props: PillBodyProps) {
+  // Legacy pill body view (see PillBodyProps): kept for the #507 render
+  // regression tests. The host theme prop flows through HostThemeProvider so
+  // the ui/ adapters inside resolve real host colors.
+  return (
+    <HostThemeProvider theme={props.theme}>
+      <PillViewBody {...props} />
+    </HostThemeProvider>
+  );
+}
+
+function PillViewBody({ isOpen, open, workspaceId, agentId }: PillBodyProps) {
   // No background settings poll here: the hook re-verifies on mount and
   // window focus, and mutations invalidate the shared settings cache.
   // Polling from every mounted pill/modal/surface multiplied daemon reads
@@ -686,18 +720,7 @@ function PillView({ isOpen, open, workspaceId, agentId }: PillBodyProps) {
     lastUsage: a?.lastUsage,
   }));
 
-  const hasAnyEnabled =
-    flags.showCpuRam ||
-    flags.showBranch ||
-    flags.showWorktree ||
-    flags.showAgentTitle ||
-    flags.showAgent ||
-    flags.showAgentProvider ||
-    flags.showAgentActivity ||
-    flags.showAgentId ||
-    flags.showLoad ||
-    flags.showUptime ||
-    (flags.showMcp);
+  const hasAnyEnabled = hasAnyLegacyPillFlagEnabled(flags) || flags.showMcp;
 
   // If no items are selected, fallback to CPU & RAM without mutating saved settings
   const effectiveShowCpuRam = flags.showCpuRam || !hasAnyEnabled;
@@ -858,7 +881,8 @@ function MetricSurfaceMatrix({
   customOverrides: Record<string, boolean> | undefined;
   onCustomToggle: (id: string, val: boolean) => void;
 }) {
-  const { colors, isCompact } = usePluginTheme();
+  const { colors } = useHostTheme();
+  const { compact: isCompact } = useHostLayout();
   const surfaces = settings.metricSurfaces ?? DEFAULT_METRIC_SURFACES;
   const provisioned = new Set(settings.provisionedMetrics ?? []);
   const matrixRowMinHeight = isCompact ? 44 : 32;
@@ -908,8 +932,10 @@ function MetricSurfaceMatrix({
           );
         };
         return (
-          <View
+          <HostRow
             key={def.id}
+            justify="between"
+            align="center"
             style={[
               styles.metricMatrixRow,
               isCompact && styles.metricMatrixRowCompact,
@@ -933,28 +959,30 @@ function MetricSurfaceMatrix({
               ) : null}
             </View>
             <View style={[styles.metricMatrixTargets, isCompact && styles.metricMatrixTargetsCompact]}>
-              <Toggle
+              <HostToggle
                 value={boxes.pill}
                 disabled={disabled}
                 onValueChange={(val) => setBox("pill", val)}
                 style={styles.matrixToggle}
               />
-              <Toggle
+              <HostToggle
                 value={boxes.timeline && !def.pillOnly}
                 disabled={disabled || timelineDisabled}
                 onValueChange={(val) => setBox("timeline", val)}
                 style={styles.matrixToggle}
               />
             </View>
-          </View>
+          </HostRow>
         );
       })}
       {customPills.map((pill) => {
         const masterOn = settings.showCustomPills ?? true;
         const enabled = customPillEffectiveEnabled(masterOn, customOverrides, pill);
         return (
-          <View
+          <HostRow
             key={`custom-${pill.id}`}
+            justify="between"
+            align="center"
             style={styles.metricMatrixRow}
           >
             <View style={styles.metricMatrixLabel}>
@@ -966,28 +994,34 @@ function MetricSurfaceMatrix({
               </Text>
             </View>
             <View style={[styles.metricMatrixTargets, isCompact && styles.metricMatrixTargetsCompact]}>
-              <Toggle
+              <HostToggle
                 value={enabled}
                 disabled={!masterOn}
                 onValueChange={(val) => onCustomToggle(pill.id, val)}
                 style={styles.matrixToggle}
               />
-              <Toggle
+              <HostToggle
                 value={false}
                 disabled={true}
                 onValueChange={() => {}}
                 style={styles.matrixToggle}
               />
             </View>
-          </View>
+          </HostRow>
         );
       })}
     </View>
   );
 }
 
-function ResourceModal({ theme, workspaceId, agentId, initialTab, payload }: ResourceModalProps) {
-  const { colors, padding } = usePluginTheme();
+function ResourceModal({ theme, layout, workspaceId, agentId, initialTab, payload }: ResourceModalProps) {
+  const { colors } = useHostTheme();
+  const { compact } = useHostLayout();
+  // Host-density padding rhythm (the helper's "comfortable" scale): the host
+  // owns density now, so the modal keeps the same numeric values locally.
+  const padding = compact
+    ? { horizontal: 12, vertical: 10, gap: 8 }
+    : { horizontal: 16, vertical: 14, gap: 12 };
   // Settings re-verify on mount/focus via hook defaults; the settings tab
   // refetches explicitly below. No background poll: the modal only lives
   // while open. Custom-pill definitions are a separate data source and keep
@@ -1063,18 +1097,7 @@ function ResourceModal({ theme, workspaceId, agentId, initialTab, payload }: Res
     });
   }, [agentId, data, agent, workspace?.directory]);
 
-  const hasAnyPillEnabled =
-    flags.showCpuRam ||
-    flags.showBranch ||
-    flags.showWorktree ||
-    flags.showAgentTitle ||
-    flags.showAgent ||
-    flags.showAgentProvider ||
-    flags.showAgentActivity ||
-    flags.showAgentId ||
-    flags.showLoad ||
-    flags.showUptime ||
-    isMcpEnabled;
+  const hasAnyPillEnabled = hasAnyLegacyPillFlagEnabled(flags) || isMcpEnabled;
 
   const handleRefresh = () => {
     triggerHaptic("light");
@@ -1088,8 +1111,8 @@ function ResourceModal({ theme, workspaceId, agentId, initialTab, payload }: Res
   };
 
   const navbar = (
-    <Tabs
-      tabs={TABS}
+    <HostTabs
+      tabs={[...MODAL_TABS]}
       activeTab={activeTab}
       onTabChange={handleTabChange}
     />
@@ -1103,231 +1126,244 @@ function ResourceModal({ theme, workspaceId, agentId, initialTab, payload }: Res
 
   if (isError && !data) {
     return (
-      <ModalBody
-        style={{ backgroundColor: colors.surface0 }}
-        headerMode="pinned"
-        scrollMode="always"
-        refreshing={isRefetching}
-        onRefresh={handleRefresh}
-        header={navbar}
-        headerStyle={navbarStyle}
-        contentContainerStyle={[{ paddingTop: Math.round(padding.gap / 2) }]}
-      >
-        <Card variant="elevated">
-          <View style={styles.errorBox}>
-            <Icon name="Ghost" size={24} color={colors.statusDanger} />
-            <Text style={[styles.errorText, { color: colors.statusDanger }]}>
-              {error instanceof Error ? error.message : "Failed to load metrics"}
-            </Text>
-          </View>
-        </Card>
-      </ModalBody>
+      <HostModalSection>
+        <View style={styles.modalColumn}>
+          <View style={navbarStyle}>{navbar}</View>
+          <HostScroll style={styles.modalScroll} contentContainerStyle={styles.modalScrollContent}>
+            <HostCard variant="elevated">
+              <View style={styles.errorBox}>
+                <Icon name="Ghost" size={24} color={colors.statusDanger} />
+                <Text style={[styles.errorText, { color: colors.statusDanger }]}>
+                  {error instanceof Error ? error.message : "Failed to load metrics"}
+                </Text>
+              </View>
+            </HostCard>
+          </HostScroll>
+        </View>
+      </HostModalSection>
     );
   }
 
   const { cpuColor, memColor } = getMetricColors(data, colors);
 
   return (
-    <ModalBody
-      style={{ backgroundColor: colors.surface0 }}
-      headerMode="pinned"
-      scrollMode="always"
-      refreshing={isLoading || isRefetching}
-      onRefresh={handleRefresh}
-      header={navbar}
-      headerStyle={navbarStyle}
-      contentContainerStyle={[
-        { paddingTop: Math.round(padding.gap / 2) },
-      ]}
-    >
-      {activeTab === "system" && (
-      <>
-        {/* Dual Metric Gauges Hero */}
-        <Card variant="elevated">
-          <View style={styles.gaugeContainer}>
-            <MetricGauge
-              value={data?.cpuUsagePercent ?? 0}
-              thresholds={CPU_THRESHOLDS}
-              label="CPU Load"
-              size={72}
-            />
-            <MetricGauge
-              value={data?.memoryUsedPercent ?? 0}
-              thresholds={MEM_THRESHOLDS}
-              label="RAM Used"
-              size={72}
-            />
-          </View>
-        </Card>
-
-        {/* Host Meta Card */}
-        <Card variant="elevated">
-          <KeyValueGroup columns={1}>
-            <CompactKeyValue label="Host" value={data?.hostname ?? "Unknown"} copyable />
-            <CompactKeyValue
-              label="Uptime"
-              value={data?.uptimeSeconds ? formatUptime(data?.uptimeSeconds) : "--"}
-            />
-          </KeyValueGroup>
-          <CompactKeyValue
-            label="Processor"
-            value={data?.cpuModel ?? "--"}
-            subValue={data?.cpuCores ? `(${data?.cpuCores} cores)` : undefined}
-          />
-        </Card>
-
-        {/* CPU Utilization Card */}
-        <Card variant="elevated">
-          <CompactCardHeader
-            title="CPU Details"
-            value={
-              <Text style={[styles.metricHighlight, { color: cpuColor }]}>
-                {data?.cpuUsagePercent ?? 0}%
-              </Text>
-            }
-          />
-
-          <ProgressBar
-            value={data?.cpuUsagePercent ?? 0}
-            thresholds={CPU_THRESHOLDS}
-            height={8}
-          />
-
-          <CompactKeyValue
-            label="Load Average (1m, 5m, 15m)"
-            value={data?.loadAvg ? data?.loadAvg.map((n) => n.toFixed(2)).join("  ") : "--  --  --"}
-            mono
-          />
-        </Card>
-
-        {/* Memory Card */}
-        <Card variant="elevated">
-          <CompactCardHeader
-            title="Memory Details"
-            value={
-              <Text style={[styles.metricHighlight, { color: memColor }]}>
-                {data?.memoryUsedPercent ?? 0}%
-              </Text>
-            }
-          />
-
-          <ProgressBar
-            value={data?.memoryUsedPercent ?? 0}
-            thresholds={MEM_THRESHOLDS}
-            height={8}
-          />
-
-          <CompactKeyValue
-            label="Used / Total"
-            value={`${formatBytes(data?.memoryUsedBytes ?? 0)} / ${formatBytes(data?.memoryTotalBytes ?? 0)}`}
-          />
-        </Card>
-
-        {/* MCP Servers Card */}
-        {Boolean(data?.mcpInstalled) && (
-          <Card variant="elevated">
-            <CompactCardHeader
-              title="MCP Servers"
-              subtitle="Source: paseo-mcp-tools"
-              icon="Server"
-              value={
-                data?.mcp ? (
-                  <CompactBadge
-                    label={data?.mcp.isStale ? "Stale Snapshot" : "Live"}
-                    variant={data?.mcp.isStale ? "warning" : "success"}
-                    dot
+    <HostModalSection>
+      <View style={styles.modalColumn}>
+        <View style={navbarStyle}>{navbar}</View>
+        <HostScroll style={styles.modalScroll} contentContainerStyle={styles.modalScrollContent}>
+          {activeTab === "system" && (
+            <>
+              {/* Dual Metric Gauges Hero */}
+              <HostCard variant="elevated">
+                <HostRow justify="between" align="center" style={styles.gaugeContainer}>
+                  <HostMetricGauge
+                    value={data?.cpuUsagePercent ?? 0}
+                    thresholds={CPU_THRESHOLDS}
+                    label="CPU Load"
+                    size={72}
                   />
-                ) : (
-                  <CompactBadge label="No Data" variant="neutral" />
-                )
-              }
-            />
+                  <HostMetricGauge
+                    value={data?.memoryUsedPercent ?? 0}
+                    thresholds={MEM_THRESHOLDS}
+                    label="RAM Used"
+                    size={72}
+                  />
+                </HostRow>
+              </HostCard>
 
-            {data?.mcp ? (
-              <>
-                <KeyValueGroup columns={1}>
-                  <CompactKeyValue
-                    label="Health"
-                    value={`${data?.mcp.healthy} healthy / ${data?.mcp.total} total`}
+              {/* Host Meta Card */}
+              <HostCard variant="elevated">
+                <HostStack gap={12}>
+                  <HostKeyValue
+                    label="Host"
+                    value={data?.hostname ?? "Unknown"}
+                    copyable
+                    {...compactKvProps}
                   />
-                  <CompactKeyValue
-                    label="Snapshot Updated"
-                    value={formatTimeAgo(data?.mcp.updatedAt)}
+                  <HostKeyValue
+                    label="Uptime"
+                    value={data?.uptimeSeconds ? formatUptime(data?.uptimeSeconds) : "--"}
+                    {...compactKvProps}
                   />
-                  <CompactKeyValue
-                    label="Data Provider"
-                    value="paseo-mcp-tools"
-                  />
-                </KeyValueGroup>
+                </HostStack>
+                <HostKeyValue
+                  label="Processor"
+                  value={data?.cpuModel ?? "--"}
+                  subValue={data?.cpuCores ? `(${data?.cpuCores} cores)` : undefined}
+                  {...compactKvProps}
+                />
+              </HostCard>
 
-                {data?.mcp.servers && data?.mcp.servers.length > 0 ? (
-                  <View style={styles.mcpList}>
-                    {data?.mcp.servers.map((srv) => {
-                      const badgeVariant: "success" | "warning" | "danger" | "neutral" =
-                        srv.status === "healthy"
-                          ? "success"
-                          : srv.status === "degraded"
-                            ? "warning"
-                            : srv.status === "down"
-                              ? "danger"
-                              : "neutral";
-                      return (
-                        <View key={srv.name} style={styles.mcpRow}>
-                          <View style={styles.mcpInfo}>
-                            <Text
-                              numberOfLines={1}
-                              style={[styles.mcpName, { color: colors.foreground }]}
-                            >
-                              {srv.name}
-                            </Text>
-                            <Text style={[styles.mcpLatency, { color: colors.foregroundMuted }]}>
-                              {srv.latencyMs >= 0 ? `${srv.latencyMs}ms` : "timeout"}
-                            </Text>
-                          </View>
-                          <CompactBadge label={srv.status} variant={badgeVariant} />
+              {/* CPU Utilization Card */}
+              <HostCard variant="elevated">
+                <HostCardHeader
+                  title="CPU Details"
+                  {...compactCardTitleProp}
+                  value={
+                    <Text style={[styles.metricHighlight, { color: cpuColor }]}>
+                      {data?.cpuUsagePercent ?? 0}%
+                    </Text>
+                  }
+                />
+
+                <HostProgressBar
+                  value={data?.cpuUsagePercent ?? 0}
+                  thresholds={CPU_THRESHOLDS}
+                  height={8}
+                />
+
+                <HostKeyValue
+                  label="Load Average (1m, 5m, 15m)"
+                  value={data?.loadAvg ? data?.loadAvg.map((n) => n.toFixed(2)).join("  ") : "--  --  --"}
+                  mono
+                  {...compactKvProps}
+                />
+              </HostCard>
+
+              {/* Memory Card */}
+              <HostCard variant="elevated">
+                <HostCardHeader
+                  title="Memory Details"
+                  {...compactCardTitleProp}
+                  value={
+                    <Text style={[styles.metricHighlight, { color: memColor }]}>
+                      {data?.memoryUsedPercent ?? 0}%
+                    </Text>
+                  }
+                />
+
+                <HostProgressBar
+                  value={data?.memoryUsedPercent ?? 0}
+                  thresholds={MEM_THRESHOLDS}
+                  height={8}
+                />
+
+                <HostKeyValue
+                  label="Used / Total"
+                  value={`${formatBytes(data?.memoryUsedBytes ?? 0)} / ${formatBytes(data?.memoryTotalBytes ?? 0)}`}
+                  {...compactKvProps}
+                />
+              </HostCard>
+
+              {/* MCP Servers Card */}
+              {Boolean(data?.mcpInstalled) && (
+                <HostCard variant="elevated">
+                  <HostCardHeader
+                    title="MCP Servers"
+                    subtitle="Source: paseo-mcp-tools"
+                    icon="Server"
+                    {...compactCardTitleProp}
+                    value={
+                      data?.mcp ? (
+                        <HostBadge
+                          label={data?.mcp.isStale ? "Stale Snapshot" : "Live"}
+                          variant={data?.mcp.isStale ? "warning" : "success"}
+                          dot
+                          {...compactBadgeProp}
+                        />
+                      ) : (
+                        <HostBadge
+                          label="No Data"
+                          variant="neutral"
+                          {...compactBadgeProp}
+                        />
+                      )
+                    }
+                  />
+
+                  {data?.mcp ? (
+                    <>
+                      <HostStack gap={12}>
+                        <HostKeyValue
+                          label="Health"
+                          value={`${data?.mcp.healthy} healthy / ${data?.mcp.total} total`}
+                          {...compactKvProps}
+                        />
+                        <HostKeyValue
+                          label="Snapshot Updated"
+                          value={formatTimeAgo(data?.mcp.updatedAt)}
+                          {...compactKvProps}
+                        />
+                        <HostKeyValue
+                          label="Data Provider"
+                          value="paseo-mcp-tools"
+                          {...compactKvProps}
+                        />
+                      </HostStack>
+
+                      {data?.mcp.servers && data?.mcp.servers.length > 0 ? (
+                        <View style={styles.mcpList}>
+                          {data?.mcp.servers.map((srv) => {
+                            const badgeVariant: "success" | "warning" | "danger" | "neutral" =
+                              srv.status === "healthy"
+                                ? "success"
+                                : srv.status === "degraded"
+                                  ? "warning"
+                                  : srv.status === "down"
+                                    ? "danger"
+                                    : "neutral";
+                            return (
+                              <HostRow
+                                key={srv.name}
+                                justify="between"
+                                align="center"
+                                style={styles.mcpRow}
+                              >
+                                <HostRow gap={8} align="center" style={styles.mcpInfo}>
+                                  <Text
+                                    numberOfLines={1}
+                                    style={[styles.mcpName, { color: colors.foreground }]}
+                                  >
+                                    {srv.name}
+                                  </Text>
+                                  <Text style={[styles.mcpLatency, { color: colors.foregroundMuted }]}>
+                                    {srv.latencyMs >= 0 ? `${srv.latencyMs}ms` : "timeout"}
+                                  </Text>
+                                </HostRow>
+                                <HostBadge {...compactBadgeProp} label={srv.status} variant={badgeVariant} />
+                              </HostRow>
+                            );
+                          })}
                         </View>
-                      );
-                    })}
-                  </View>
-                ) : (
-                  <Text style={[styles.mcpEmpty, { color: colors.foregroundMuted }]}>
-                    No MCP servers configured
-                  </Text>
-                )}
-              </>
-            ) : (
-              <Text style={[styles.mcpEmpty, { color: colors.foregroundMuted }]}>
-                Waiting for status snapshot from paseo-mcp-tools...
-              </Text>
-            )}
-          </Card>
-        )}
+                      ) : (
+                        <Text style={[styles.mcpEmpty, { color: colors.foregroundMuted }]}>
+                          No MCP servers configured
+                        </Text>
+                      )}
+                    </>
+                  ) : (
+                    <Text style={[styles.mcpEmpty, { color: colors.foregroundMuted }]}>
+                      Waiting for status snapshot from paseo-mcp-tools...
+                    </Text>
+                  )}
+                </HostCard>
+              )}
 
         {/* Custom Metric Pills Card */}
         {Boolean(data?.customPills && data?.customPills.length > 0) && (
-          <Card variant="elevated">
-            <CompactCardHeader
+          <HostCard variant="elevated">
+            <HostCardHeader {...compactCardTitleProp}
               title="Custom Metric Pills"
               subtitle="Discovered from ~/.paseo/top/pills"
               icon="Sliders"
               value={
-                <CompactBadge
+                <HostBadge {...compactBadgeProp}
                   label={`${data?.customPills?.length ?? 0} active`}
                   variant="accent"
                 />
               }
             />
-            <KeyValueGroup columns={1}>
+            <HostStack gap={12}>
               {(data?.customPills ?? []).map((cp) => (
-                <CompactKeyValue
+                <HostKeyValue {...compactKvProps}
                   key={cp.id}
                   label={cp.title}
                   value={cp.displayValue}
                   subValue={cp.status !== "neutral" ? `(${cp.status})` : undefined}
                 />
               ))}
-            </KeyValueGroup>
-          </Card>
+            </HostStack>
+          </HostCard>
         )}
       </>
     )}
@@ -1335,48 +1371,48 @@ function ResourceModal({ theme, workspaceId, agentId, initialTab, payload }: Res
     {activeTab === "context" && (
       <>
         {/* Workspace Information */}
-        <Card variant="elevated">
-          <CompactCardHeader
+        <HostCard variant="elevated">
+          <HostCardHeader {...compactCardTitleProp}
             title="Workspace & Git"
             icon="GitBranch"
             value={
               workspace?.status ? (
-                <CompactBadge label={workspace.status} variant="info" />
+                <HostBadge {...compactBadgeProp} label={workspace.status} variant="info" />
               ) : undefined
             }
           />
-          <KeyValueGroup columns={1}>
-            <CompactKeyValue label="Git Branch" value={data?.branch || "Unknown"} />
-            <CompactKeyValue label="Kind" value={workspace?.kind || "Unknown"} />
-          </KeyValueGroup>
+          <HostStack gap={12}>
+            <HostKeyValue {...compactKvProps} label="Git Branch" value={data?.branch || "Unknown"} />
+            <HostKeyValue {...compactKvProps} label="Kind" value={workspace?.kind || "Unknown"} />
+          </HostStack>
           {workspace?.directory ? (
-            <CompactKeyValue label="Worktree Location" value={workspace.directory} copyable mono />
+            <HostKeyValue {...compactKvProps} label="Worktree Location" value={workspace.directory} copyable mono />
           ) : null}
           {workspace?.name ? (
-            <CompactKeyValue label="Workspace Name" value={workspace.name} />
+            <HostKeyValue {...compactKvProps} label="Workspace Name" value={workspace.name} />
           ) : null}
           {workspace?.title && workspace.title !== workspace.name ? (
-            <CompactKeyValue label="Workspace Title" value={workspace.title} />
+            <HostKeyValue {...compactKvProps} label="Workspace Title" value={workspace.title} />
           ) : null}
           {workspace?.projectDisplayName ? (
-            <CompactKeyValue label="Project" value={workspace.projectDisplayName} />
+            <HostKeyValue {...compactKvProps} label="Project" value={workspace.projectDisplayName} />
           ) : null}
           {workspace?.diffStat ? (
-            <CompactKeyValue
+            <HostKeyValue {...compactKvProps}
               label="Git Changes"
               value={`+${workspace.diffStat.additions}  -${workspace.diffStat.deletions}`}
             />
           ) : null}
-        </Card>
+        </HostCard>
 
         {/* Agent Information */}
-        <Card variant="elevated">
-          <CompactCardHeader
+        <HostCard variant="elevated">
+          <HostCardHeader {...compactCardTitleProp}
             title={agent?.title ? `Agent: ${agent.title}` : "Agent Session"}
             icon="Bot"
             value={
               agent?.status ? (
-                <CompactBadge
+                <HostBadge {...compactBadgeProp}
                   label={agent.status}
                   variant={agent.status === "running" ? "success" : "info"}
                 />
@@ -1384,17 +1420,17 @@ function ResourceModal({ theme, workspaceId, agentId, initialTab, payload }: Res
             }
           />
           {agent?.title ? (
-            <CompactKeyValue label="Agent Tab" value={agent.title} />
+            <HostKeyValue {...compactKvProps} label="Agent Tab" value={agent.title} />
           ) : null}
           {agentId ? (
-            <CompactKeyValue label="Agent ID" value={agentId} copyable mono />
+            <HostKeyValue {...compactKvProps} label="Agent ID" value={agentId} copyable mono />
           ) : null}
-          <KeyValueGroup columns={1}>
-            <CompactKeyValue label="Model" value={agent?.model || "Standard"} />
-            <CompactKeyValue label="Provider" value={agent?.provider || "Default"} />
-          </KeyValueGroup>
-          <KeyValueGroup columns={1}>
-            <CompactKeyValue
+          <HostStack gap={12}>
+            <HostKeyValue {...compactKvProps} label="Model" value={agent?.model || "Standard"} />
+            <HostKeyValue {...compactKvProps} label="Provider" value={agent?.provider || "Default"} />
+          </HostStack>
+          <HostStack gap={12}>
+            <HostKeyValue {...compactKvProps}
               label="Last Worked"
               value={
                 agent?.status === "running"
@@ -1402,7 +1438,7 @@ function ResourceModal({ theme, workspaceId, agentId, initialTab, payload }: Res
                   : formatTimeAgo(agent?.lastActivityAt)
               }
             />
-            <CompactKeyValue
+            <HostKeyValue {...compactKvProps}
               label="Inactivity"
               value={
                 agent?.status === "running"
@@ -1410,25 +1446,25 @@ function ResourceModal({ theme, workspaceId, agentId, initialTab, payload }: Res
                   : formatIdleDuration(agent?.lastActivityAt)
               }
             />
-          </KeyValueGroup>
+          </HostStack>
           {agent?.cwd ? (
-            <CompactKeyValue label="Working Directory" value={agent.cwd} copyable mono />
+            <HostKeyValue {...compactKvProps} label="Working Directory" value={agent.cwd} copyable mono />
           ) : null}
-        </Card>
+        </HostCard>
 
         {/* Token Usage & Context Window */}
-        <Card variant="elevated">
-          <CompactCardHeader
+        <HostCard variant="elevated">
+          <HostCardHeader {...compactCardTitleProp}
             title="Tokens & Context Window"
             icon="Coins"
             value={
               contextPercent != null ? (
-                <CompactBadge
+                <HostBadge {...compactBadgeProp}
                   label={`${contextPercent}% ctx`}
                   variant={contextPercent >= 85 ? "danger" : contextPercent >= 70 ? "warning" : "success"}
                 />
               ) : tokenMetrics?.totalTokens != null ? (
-                <CompactBadge
+                <HostBadge {...compactBadgeProp}
                   label={`${formatCompactTokens(tokenMetrics.totalTokens)} tok`}
                   variant="neutral"
                 />
@@ -1438,64 +1474,64 @@ function ResourceModal({ theme, workspaceId, agentId, initialTab, payload }: Res
 
           {tokenMetrics?.contextMaxTokens != null && tokenMetrics.contextMaxTokens > 0 ? (
             <View style={styles.contextUsageBlock}>
-              <View style={styles.contextUsageRow}>
+              <HostRow justify="between" align="center" style={styles.contextUsageRow}>
                 <Text style={[styles.compactKvLabel, { color: colors.foregroundMuted }]}>Context Utilization</Text>
                 <Text style={[styles.compactKvValue, { color: colors.foreground, fontWeight: "600" }]}>
                   {formatCompactTokens(tokenMetrics.contextUsedTokens ?? 0)} / {formatCompactTokens(tokenMetrics.contextMaxTokens)} ({contextPercent}%)
                 </Text>
-              </View>
-              <ProgressBar
+              </HostRow>
+              <HostProgressBar
                 value={contextPercent ?? 0}
                 thresholds={{ warning: 70, danger: 85 }}
                 height={8}
               />
             </View>
           ) : tokenMetrics?.contextUsedTokens != null ? (
-            <CompactKeyValue
+            <HostKeyValue {...compactKvProps}
               label="Context Used"
               value={`${tokenMetrics.contextUsedTokens.toLocaleString()} (${formatCompactTokens(tokenMetrics.contextUsedTokens)})`}
             />
           ) : null}
 
-          <KeyValueGroup columns={1}>
-            <CompactKeyValue
+          <HostStack gap={12}>
+            <HostKeyValue {...compactKvProps}
               label="Input Tokens"
               value={tokenMetrics?.inputTokens != null ? tokenMetrics.inputTokens.toLocaleString() : "--"}
               subValue={tokenMetrics?.inputTokens != null ? formatCompactTokens(tokenMetrics.inputTokens) : undefined}
             />
-            <CompactKeyValue
+            <HostKeyValue {...compactKvProps}
               label="Output Tokens"
               value={tokenMetrics?.outputTokens != null ? tokenMetrics.outputTokens.toLocaleString() : "--"}
               subValue={tokenMetrics?.outputTokens != null ? formatCompactTokens(tokenMetrics.outputTokens) : undefined}
             />
             {tokenMetrics?.cachedTokens != null && (
-              <CompactKeyValue
+              <HostKeyValue {...compactKvProps}
                 label="Cached Tokens"
                 value={tokenMetrics.cachedTokens.toLocaleString()}
                 subValue={formatCompactTokens(tokenMetrics.cachedTokens)}
               />
             )}
             {tokenMetrics?.costUsd != null && (
-              <CompactKeyValue
+              <HostKeyValue {...compactKvProps}
                 label="Session / Turn Cost"
                 value={`$${tokenMetrics.costUsd < 0.01 ? tokenMetrics.costUsd.toFixed(4) : tokenMetrics.costUsd.toFixed(2)}`}
               />
             )}
-          </KeyValueGroup>
+          </HostStack>
           {!tokenMetrics && (
             <Text style={[styles.mcpEmpty, { color: colors.foregroundMuted, marginTop: 4 }]}>
               No token usage recorded for this agent session yet
             </Text>
           )}
-        </Card>
+        </HostCard>
       </>
     )}
 
     {activeTab === "settings" && (
       <>
         {/* Pill Display Mode */}
-        <Card variant="elevated">
-          <CompactCardHeader
+        <HostCard variant="elevated">
+          <HostCardHeader {...compactCardTitleProp}
             title="Pill Display Mode"
             icon="LayoutGrid"
             subtitle="How active items appear in the composer trackbar"
@@ -1515,7 +1551,7 @@ function ResourceModal({ theme, workspaceId, agentId, initialTab, payload }: Res
             }}
           />
           <View style={styles.settingsSpacer}>
-            <Toggle
+            <HostToggle
               label="Show Composer Pill"
               description="Hide the composer pill entirely; the dashboard stays available from the sidebar"
               style={styles.toggleFullWidth}
@@ -1527,11 +1563,11 @@ function ResourceModal({ theme, workspaceId, agentId, initialTab, payload }: Res
               }}
             />
           </View>
-        </Card>
+        </HostCard>
 
         {/* Active Pill Items Selectors */}
-        <Card variant="elevated">
-          <CompactCardHeader
+        <HostCard variant="elevated">
+          <HostCardHeader {...compactCardTitleProp}
             title="Active Pill Items"
             icon="Sliders"
             subtitle={
@@ -1566,17 +1602,17 @@ function ResourceModal({ theme, workspaceId, agentId, initialTab, payload }: Res
               }}
             />
           </View>
-        </Card>
+        </HostCard>
 
         {/* Custom Metric Pills */}
-        <Card variant="elevated">
-          <CompactCardHeader
+        <HostCard variant="elevated">
+          <HostCardHeader {...compactCardTitleProp}
             title="Custom Metric Pills"
             icon="Sliders"
             subtitle="Standalone pills discovered from ~/.paseo/top/pills"
           />
           <View style={styles.settingsToggles}>
-            <Toggle
+            <HostToggle
               label="Show Custom Metric Pills"
               description="Display pills defined in ~/.paseo/top/pills as standalone composer pills"
               style={styles.toggleFullWidth}
@@ -1590,12 +1626,12 @@ function ResourceModal({ theme, workspaceId, agentId, initialTab, payload }: Res
             />
 
           </View>
-        </Card>
+        </HostCard>
 
         {/* Rotation Speed Setting (Cycle mode only) */}
         {(settings.pillMode ?? "cycle") === "cycle" && (
-          <Card variant="elevated">
-            <CompactCardHeader
+          <HostCard variant="elevated">
+            <HostCardHeader {...compactCardTitleProp}
               title="Rotation Speed"
               icon="Clock"
               value={
@@ -1612,12 +1648,12 @@ function ResourceModal({ theme, workspaceId, agentId, initialTab, payload }: Res
                 updateSettings({ intervalSeconds });
               }}
             />
-          </Card>
+          </HostCard>
         )}
 
         {/* Timeline Cadence Setting */}
-        <Card variant="elevated">
-          <CompactCardHeader
+        <HostCard variant="elevated">
+          <HostCardHeader {...compactCardTitleProp}
             title="Timeline Cadence"
             icon="Clock"
             value={
@@ -1643,30 +1679,30 @@ function ResourceModal({ theme, workspaceId, agentId, initialTab, payload }: Res
           <Text style={[styles.modeDesc, styles.modeDescSpaced, { color: colors.foregroundMuted }]}>
             0 behaves as never; N above 1 stamps every Nth turn
           </Text>
-        </Card>
+        </HostCard>
 
         {/* Default Modal Tab Setting */}
-        <Card variant="elevated">
-          <CompactCardHeader
+        <HostCard variant="elevated">
+          <HostCardHeader {...compactCardTitleProp}
             title="Default Modal Tab"
             icon="Sliders"
             value={
               <Text style={[styles.accentValueText, { color: colors.accent }]}>
-                {TABS.find((t) => t.id === settings.defaultTab)?.label || "System"}
+                {MODAL_TABS.find((t) => t.id === settings.defaultTab)?.label || "System"}
               </Text>
             }
           />
           <ChoiceChips
-            options={TABS.map((tab) => ({ id: tab.id as ModalTab, label: tab.label }))}
+            options={MODAL_TABS.map((tab) => ({ id: tab.id as ModalTab, label: tab.label }))}
             value={settings.defaultTab ?? "system"}
             onChange={(defaultTab) => {
               triggerHaptic("light");
               updateSettings({ defaultTab });
             }}
           />
-        </Card>
+        </HostCard>
 
-        <Button
+        <HostButton
           label="Reset to Defaults"
           variant="secondary"
           size="sm"
@@ -1685,7 +1721,7 @@ function ResourceModal({ theme, workspaceId, agentId, initialTab, payload }: Res
     )}
 
     {activeTab === "about" && (
-      <AboutSection
+      <HostAboutSection
         name="paseo-top"
         description="Live host system and workspace monitor for Paseo composer trackbar."
         version={data?.version ?? PLUGIN_VERSION}
@@ -1693,28 +1729,7 @@ function ResourceModal({ theme, workspaceId, agentId, initialTab, payload }: Res
         repository="https://github.com/xpufx/paseo-top"
         issues="https://github.com/xpufx/paseo-top/issues"
         license="MIT"
-        density="tiny"
-        extraItems={[
-          {
-            label: "Host Platform",
-            value: data?.platform ? `${data?.platform} (${data?.arch ?? "unknown"})` : "Linux",
-            copyable: true,
-          },
-          { label: "Host Name", value: data?.hostname ?? "localhost", copyable: true },
-          { label: "CPU Model", value: data?.cpuModel ?? "unknown", copyable: true },
-          {
-            label: "CPU Cores",
-            value: `${data?.cpuCores ?? 0} cores`,
-          },
-          {
-            label: "Total Memory",
-            value: data?.memoryTotalBytes ? formatBytes(data?.memoryTotalBytes) : "unknown",
-          },
-          {
-            label: "Host Uptime",
-            value: data?.uptimeSeconds ? formatUptime(data?.uptimeSeconds) : "unknown",
-          },
-        ]}
+        extraItems={aboutExtraItems(data)}
       />
     )}
 
@@ -1726,7 +1741,9 @@ function ResourceModal({ theme, workspaceId, agentId, initialTab, payload }: Res
         </Text>
       </View>
     )}
-  </ModalBody>
+        </HostScroll>
+      </View>
+    </HostModalSection>
   );
 }
 
@@ -1735,8 +1752,69 @@ interface LiveCustomPillModalProps {
   initial: CustomPillStateOutput;
 }
 
+/**
+ * Drilldown modal body for a custom metric pill, built from `ui/` primitives
+ * (the deprecated `client/` `CustomPillModalContent` was dropped in the #847
+ * migration). The host owns the modal frame; this fills it fluidly.
+ */
+function CustomPillModalContent({
+  state,
+  onRefresh,
+  isRefreshing = false,
+}: {
+  state: CustomPillStateOutput;
+  onRefresh?: () => Promise<void> | void;
+  isRefreshing?: boolean;
+}) {
+  const { colors } = useHostTheme();
+  const displayText =
+    state.modalOutput || state.rawValue || (state.error ? `Error: ${state.error}` : "No output");
+
+  return (
+    <View style={styles.customPillModal}>
+      <HostCard>
+        <HostCardHeader
+          title={state.modalTitle ?? state.title}
+          subtitle={state.modalDescription}
+          icon={state.icon}
+          badge={<HostBadge label={state.displayValue} variant={state.status} />}
+          action={
+            onRefresh ? (
+              <HostButton
+                variant="secondary"
+                size="sm"
+                icon="RefreshCw"
+                loading={isRefreshing}
+                label="Refresh"
+                onPress={() => onRefresh()}
+              />
+            ) : undefined
+          }
+        />
+        <View style={styles.codeBlock}>
+          <Text
+            selectable
+            numberOfLines={8}
+            style={[styles.codeText, { color: colors.foreground }]}
+          >
+            {displayText}
+          </Text>
+          <HostCopyButton
+            text={displayText}
+            accessibilityLabel="Copy pill output"
+            toastMessage="pill output"
+          />
+        </View>
+        <Text style={[styles.timestampText, { color: colors.foregroundMuted }]}>
+          Last updated: {new Date(state.lastUpdated).toLocaleTimeString()}
+        </Text>
+      </HostCard>
+    </View>
+  );
+}
+
 function LiveCustomPillModal({ pillId, initial }: LiveCustomPillModalProps) {
-  const { colors } = usePluginTheme();
+  const { colors } = useHostTheme();
   const [refreshing, setRefreshing] = useState(false);
   const [outputOverride, setOutputOverride] = useState<string | undefined>(undefined);
   const { data, refetch } = useCustomPillsQuery();
@@ -1871,17 +1949,7 @@ export function contributeClient(client: ComposerPillRegistrar | PluginClientCon
         activePills.delete("paseo-top");
       }
 
-      const hasAny =
-        flags.showCpuRam ||
-        flags.showBranch ||
-        flags.showWorktree ||
-        flags.showAgentTitle ||
-        flags.showAgent ||
-        flags.showAgentProvider ||
-        flags.showAgentActivity ||
-        flags.showAgentId ||
-        flags.showLoad ||
-        flags.showUptime;
+      const hasAny = hasAnyLegacyPillFlagEnabled(flags);
 
       const effectiveCpu = flags.showCpuRam || !hasAny;
 
@@ -2438,5 +2506,38 @@ const styles = {
     fontSize: 10,
     fontStyle: "italic",
     paddingVertical: 4,
+  },
+  modalColumn: {
+    flex: 1,
+    minHeight: 0,
+  },
+  modalScroll: {
+    flex: 1,
+    minHeight: 0,
+  },
+  modalScrollContent: {
+    paddingTop: 6,
+  },
+  customPillModal: {
+    flex: 1,
+    minHeight: 0,
+    width: "100%",
+    padding: 12,
+  },
+  codeBlock: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 8,
+    marginTop: 8,
+  },
+  codeText: {
+    flex: 1,
+    minWidth: 0,
+    fontSize: 11,
+    fontFamily: "monospace",
+  },
+  timestampText: {
+    fontSize: 11,
+    marginTop: 8,
   },
 } as const;
