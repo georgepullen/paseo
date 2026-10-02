@@ -147,6 +147,8 @@ export interface HookRouterOptions {
   labelTriageEnabled?: boolean;
   /** Enable the in-process issue close guard (#847). Defaults off in test mode. */
   closeGuardEnabled?: boolean;
+  /** Enable the repository.created onboarding handler (#847). Defaults off in test mode. */
+  repoOnboardingEnabled?: boolean;
   /** Actor(s) whose issue closures are intercepted. Defaults to `xpufx`. */
   closeGuardTargetActors?: string[];
   /** Terminal labels that permit closure without reopening. */
@@ -545,6 +547,50 @@ export interface DirectActionResult {
   reopened?: boolean;
   commented?: boolean;
   notified?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Repository onboarding (#847)
+//
+// On `repository.created`, seed the new repository with the canonical label
+// catalogue from the platform repo and open the standard fleet onboarding
+// issue. Label reconciliation is ported from the platform synchronizer
+// (scripts/forgejo-label-sync): it creates missing labels and updates changed
+// fields, and never deletes labels.
+// ---------------------------------------------------------------------------
+
+/** Raw-API path of the canonical label catalogue in the platform repo. */
+export const REPO_ONBOARDING_CATALOGUE_PATH =
+  "/api/v1/repos/xpufx-org/platform/raw/forgejo/labels/base-v1.json?ref=main";
+
+/** Title of the auto-created onboarding issue. */
+export const REPO_ONBOARDING_ISSUE_TITLE =
+  "chore: repository fleet onboarding & standard workflow seeding";
+
+/** Labels applied to the onboarding issue. */
+export const REPO_ONBOARDING_ISSUE_LABELS: readonly string[] = [
+  ORCHESTRATOR_ATTENTION_LABEL,
+  "priority/1-high",
+];
+
+/** Body of the auto-created onboarding issue. */
+export const REPO_ONBOARDING_ISSUE_BODY = [
+  "This repository was created and has been onboarded to the Paseo engineering fleet.",
+  "",
+  "- The canonical label catalogue (`forgejo/labels/base-v1.json`) has been synchronized from `xpufx-org/platform`.",
+  "- Fleet governance is active: label triage, the issue close guard, and watchdog health checks now apply.",
+  "",
+  "Close this issue once the standard repository workflows have been seeded.",
+].join("\n");
+
+export interface RepoOnboardingResult {
+  acted: boolean;
+  reason: string;
+  labelsCreated?: number;
+  labelsUpdated?: number;
+  issueCreated?: boolean;
+  issueNumber?: number;
+  issueUrl?: string;
 }
 
 export function eventKind(event: string, body: any): string {
@@ -1708,6 +1754,7 @@ export class HookRouter {
   /** Direct-action guards (#847). */
   public readonly labelTriageEnabled: boolean;
   public readonly closeGuardEnabled: boolean;
+  public readonly repoOnboardingEnabled: boolean;
   private readonly closeGuardTargetActors: string[];
   private readonly closeGuardAcceptedLabels: string[];
   private readonly sharedAgentActor: string;
@@ -1736,6 +1783,7 @@ export class HookRouter {
     // fixtures never touch the network; production enables them by default.
     this.labelTriageEnabled = options?.labelTriageEnabled ?? !this.isTestMode;
     this.closeGuardEnabled = options?.closeGuardEnabled ?? !this.isTestMode;
+    this.repoOnboardingEnabled = options?.repoOnboardingEnabled ?? !this.isTestMode;
     this.closeGuardTargetActors = parseTargetActors(options?.closeGuardTargetActors);
     this.closeGuardAcceptedLabels =
       options?.closeGuardAcceptedLabels && options.closeGuardAcceptedLabels.length > 0
@@ -1979,6 +2027,8 @@ export class HookRouter {
         await this.runLabelTriage(body);
       } else if (ev === "issues" && action === "closed") {
         await this.runCloseGuard(body);
+      } else if (ev === "repository" && action === "created") {
+        await this.runRepoOnboarding(body);
       }
     } catch (err) {
       this.log(
@@ -2132,6 +2182,202 @@ export class HookRouter {
 
     this.log(`[info] close guard: reopened ${repo}#${issueNumber} closed by targeted actor '${actor}'`);
     return { acted: true, reason: decision.reason, reopened: true, commented, notified };
+  }
+
+  /**
+   * Seed a newly created repository with the canonical label catalogue and the
+   * standard fleet onboarding issue. Idempotent: an existing Issue #1 short-
+   * circuits creation, and label reconciliation only creates or updates.
+   */
+  public async runRepoOnboarding(body: any): Promise<RepoOnboardingResult> {
+    if (!this.repoOnboardingEnabled) {
+      return { acted: false, reason: "repository onboarding disabled" };
+    }
+    const repo = this.bareRepoFromPayload(body);
+    if (!repo) {
+      return { acted: false, reason: "missing repository in payload" };
+    }
+
+    const host = resolveForgejoHost();
+    const token = await this.resolveApiToken(host);
+
+    const catalogueRes = await forgejoApiGet<{ manifest_version?: number; labels?: any[] }>(
+      REPO_ONBOARDING_CATALOGUE_PATH,
+      { host, token },
+    );
+    if (catalogueRes.outcome !== "ok") {
+      const detail = catalogueRes.error;
+      this.log(`[warn] repo onboarding: could not read label catalogue: ${detail}`);
+      return { acted: false, reason: `label catalogue fetch failed: ${detail}` };
+    }
+    const catalogue = Array.isArray(catalogueRes.data?.labels) ? catalogueRes.data.labels : [];
+    if (catalogue.length === 0) {
+      return { acted: false, reason: "label catalogue is empty" };
+    }
+
+    const existing = await this.fetchAllLabels(repo, host, token);
+    const { created, updated } = await this.reconcileLabels(repo, host, token, catalogue, existing);
+
+    const issueNumber = 1;
+    const issueRes = await forgejoApiGet<any>(`/api/v1/repos/${repo}/issues/${issueNumber}`, { host, token });
+    if (issueRes.outcome === "ok") {
+      this.log(`[info] repo onboarding: ${repo}#${issueNumber} already exists; skipping issue creation`);
+      return {
+        acted: true,
+        reason: "onboarding issue already exists",
+        labelsCreated: created,
+        labelsUpdated: updated,
+        issueCreated: false,
+        issueNumber,
+        issueUrl: typeof issueRes.data?.html_url === "string" ? issueRes.data.html_url : undefined,
+      };
+    }
+
+    const labelIds = await this.resolveLabelIds(repo, host, token, REPO_ONBOARDING_ISSUE_LABELS);
+    if (labelIds.length === 0) {
+      return {
+        acted: false,
+        reason: "onboarding labels missing after reconciliation",
+        labelsCreated: created,
+        labelsUpdated: updated,
+      };
+    }
+
+    const create = await forgejoApiRequest<any>(
+      "POST",
+      `/api/v1/repos/${repo}/issues`,
+      {
+        title: REPO_ONBOARDING_ISSUE_TITLE,
+        body: REPO_ONBOARDING_ISSUE_BODY,
+        labels: labelIds,
+      },
+      { host, token },
+    );
+    if (create.outcome !== "ok") {
+      const detail = create.error;
+      this.log(`[warn] repo onboarding: failed to create ${repo}#${issueNumber}: ${detail}`);
+      return {
+        acted: false,
+        reason: `issue create failed: ${detail}`,
+        labelsCreated: created,
+        labelsUpdated: updated,
+      };
+    }
+    this.log(
+      `[info] repo onboarding: seeded ${repo} with ${created} label(s) and onboarding issue #${issueNumber}`,
+    );
+    return {
+      acted: true,
+      reason: "repository onboarded",
+      labelsCreated: created,
+      labelsUpdated: updated,
+      issueCreated: true,
+      issueNumber,
+      issueUrl: typeof create.data?.html_url === "string" ? create.data.html_url : undefined,
+    };
+  }
+
+  /** List every label in a repository, following the 50-per-page pagination. */
+  private async fetchAllLabels(repo: string, host: string, token: string | null): Promise<any[]> {
+    const labels: any[] = [];
+    let page = 1;
+    for (;;) {
+      const res = await forgejoApiGet<any[]>(`/api/v1/repos/${repo}/labels?limit=50&page=${page}`, {
+        host,
+        token,
+      });
+      if (res.outcome !== "ok") {
+        const detail = res.error;
+        this.log(`[warn] repo onboarding: could not list labels for ${repo}: ${detail}`);
+        return labels;
+      }
+      const batch = Array.isArray(res.data) ? res.data : [];
+      labels.push(...batch);
+      if (batch.length < 50) return labels;
+      page += 1;
+    }
+  }
+
+  /**
+   * Create missing catalogue labels and update changed managed fields
+   * (color, description, exclusive). Never deletes labels.
+   */
+  private async reconcileLabels(
+    repo: string,
+    host: string,
+    token: string | null,
+    catalogue: any[],
+    existing: any[],
+  ): Promise<{ created: number; updated: number }> {
+    const existingByName = new Map<string, any>();
+    for (const label of existing) {
+      const name = typeof label?.name === "string" ? label.name : "";
+      if (name) existingByName.set(name, label);
+    }
+    let created = 0;
+    let updated = 0;
+    for (const desired of catalogue) {
+      const name = typeof desired?.name === "string" ? desired.name.trim() : "";
+      if (!name) continue;
+      const current = existingByName.get(name);
+      if (!current) {
+        const payload: Record<string, unknown> = { name };
+        if (typeof desired.color === "string" && desired.color) payload.color = desired.color;
+        if (typeof desired.description === "string" && desired.description) {
+          payload.description = desired.description;
+        }
+        if (typeof desired.exclusive === "boolean") payload.exclusive = desired.exclusive;
+        const res = await forgejoApiRequest<any>("POST", `/api/v1/repos/${repo}/labels`, payload, {
+          host,
+          token,
+        });
+        if (res.outcome !== "ok") {
+          this.log(`[warn] repo onboarding: failed to create label ${name} in ${repo}: ${res.error}`);
+          continue;
+        }
+        created += 1;
+        continue;
+      }
+      const changes: Record<string, unknown> = {};
+      for (const field of ["color", "description", "exclusive"] as const) {
+        if (field in desired && desired[field] !== current[field]) changes[field] = desired[field];
+      }
+      if (Object.keys(changes).length === 0) continue;
+      const res = await forgejoApiRequest<any>(
+        "PATCH",
+        `/api/v1/repos/${repo}/labels/${current.id}`,
+        { name, ...changes },
+        { host, token },
+      );
+      if (res.outcome !== "ok") {
+        this.log(`[warn] repo onboarding: failed to update label ${name} in ${repo}: ${res.error}`);
+        continue;
+      }
+      updated += 1;
+    }
+    return { created, updated };
+  }
+
+  /** Resolve label names to their Forgejo ids for issue creation. */
+  private async resolveLabelIds(
+    repo: string,
+    host: string,
+    token: string | null,
+    names: readonly string[],
+  ): Promise<number[]> {
+    const existing = await this.fetchAllLabels(repo, host, token);
+    const byName = new Map<string, number>();
+    for (const label of existing) {
+      const name = typeof label?.name === "string" ? label.name : "";
+      const id = typeof label?.id === "number" ? label.id : null;
+      if (name && id != null) byName.set(name, id);
+    }
+    const ids: number[] = [];
+    for (const name of names) {
+      const id = byName.get(name);
+      if (id != null) ids.push(id);
+    }
+    return ids;
   }
 
   private async resolveApiToken(host: string): Promise<string | null> {

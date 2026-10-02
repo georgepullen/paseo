@@ -67,6 +67,10 @@ import {
   CLOSE_GUARD_ACCEPTED_LABELS,
   DEFAULT_CLOSE_GUARD_TARGET_ACTORS,
   CLOSE_GUARD_POLICY_COMMENT,
+  REPO_ONBOARDING_CATALOGUE_PATH,
+  REPO_ONBOARDING_ISSUE_TITLE,
+  REPO_ONBOARDING_ISSUE_LABELS,
+  REPO_ONBOARDING_ISSUE_BODY,
   type CoalesceEvent,
   type WatchdogAgent,
   type WatchdogAgentDisk,
@@ -4280,3 +4284,352 @@ describe("hook-router direct-action guards (#847)", () => {
   });
 });
 
+
+describe("hook-router repository onboarding (#847)", () => {
+  const REPO = "xpufx-org/new-repo";
+  const REPO_URL = "https://forge.mrs.uppidi.com/xpufx-org/new-repo";
+  const REPO_KEY = "forge.mrs.uppidi.com/xpufx-org/new-repo";
+  const HOST = "forge.mrs.uppidi.com";
+  const CATALOGUE_URL = `https://${HOST}${REPO_ONBOARDING_CATALOGUE_PATH}`;
+
+  let tempDir: string;
+  let queueDir: string;
+  let stateDir: string;
+  let requests: Array<{ url: string; method: string; body: any }>;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "paseo-repo-onboarding-test-"));
+    queueDir = join(tempDir, "queues");
+    stateDir = join(tempDir, "state");
+    requests = [];
+    setTokenResolverForTest(async () => "test-token");
+  });
+
+  afterEach(() => {
+    setFetchForTest(null);
+    setTokenResolverForTest(null);
+    try {
+      rmSync(tempDir, { recursive: true, force: true });
+    } catch {}
+  });
+
+  type FetchReply = { status?: number; data?: any };
+
+  const CATALOGUE = {
+    manifest_version: 1,
+    labels: [
+      { name: "priority/0-SOS", color: "#b60205", exclusive: true, description: "SOS" },
+      { name: "priority/1-high", color: "#d93f0b", exclusive: true, description: "High" },
+      { name: "attention/0-orchestrator", color: "#fbca04", exclusive: false, description: "Orchestrator" },
+    ],
+  };
+
+  function installFetch(handler: (req: { url: string; method: string; body: any }) => FetchReply | undefined) {
+    setFetchForTest(async (input: string, init?: any) => {
+      const method = String(init?.method ?? "GET").toUpperCase();
+      const body = init?.body ? JSON.parse(init.body) : undefined;
+      const req = { url: input, method, body };
+      requests.push(req);
+      const reply = handler(req) ?? {};
+      const status = reply.status ?? 200;
+      return {
+        ok: status >= 200 && status < 300,
+        status,
+        statusText: "",
+        json: async () => reply.data ?? {},
+      };
+    });
+  }
+
+  function makeRouter(overrides: Partial<HookRouterOptions> = {}): HookRouter {
+    return new HookRouter(null, {
+      queueDir,
+      stateDir,
+      port: 0,
+      repoOnboardingEnabled: true,
+      ...overrides,
+    });
+  }
+
+  function repoCreatedBody() {
+    return {
+      action: "created",
+      repository: {
+        full_name: REPO,
+        name: "new-repo",
+        html_url: REPO_URL,
+        clone_url: `${REPO_URL}.git`,
+      },
+      sender: { login: "alice" },
+    };
+  }
+
+  /** Fetch handler for the happy path: empty label list, no Issue #1 yet. */
+  function seedFetch(overrides: {
+    existingLabels?: any[];
+    issue1?: any;
+    catalogue?: any;
+  } = {}) {
+    const createdLabels: any[] = [];
+    let nextId = 100;
+    installFetch((req) => {
+      if (req.url === CATALOGUE_URL) {
+        return { data: overrides.catalogue ?? CATALOGUE };
+      }
+      if (req.url.endsWith("/labels?limit=50&page=1")) {
+        return { data: [...(overrides.existingLabels ?? []), ...createdLabels] };
+      }
+      if (req.method === "POST" && req.url.endsWith("/labels")) {
+        const label = { id: nextId++, ...req.body };
+        createdLabels.push(label);
+        return { data: label };
+      }
+      if (req.method === "PATCH" && /\/labels\/\d+$/.test(req.url)) {
+        return { data: { id: 1, ...req.body } };
+      }
+      if (req.url.endsWith("/issues/1")) {
+        if (overrides.issue1 !== undefined) return { data: overrides.issue1 };
+        return { status: 404 };
+      }
+      if (req.method === "POST" && req.url.endsWith("/issues")) {
+        return { data: { number: 1, title: req.body.title, html_url: `${REPO_URL}/issues/1` } };
+      }
+      return { status: 404 };
+    });
+  }
+
+  describe("runRepoOnboarding", () => {
+    it("creates missing labels and the onboarding issue", async () => {
+      const router = makeRouter();
+      seedFetch();
+
+      const res = await router.runRepoOnboarding(repoCreatedBody());
+
+      assert.equal(res.acted, true);
+      assert.equal(res.issueCreated, true);
+      assert.equal(res.issueNumber, 1);
+      assert.equal(res.labelsCreated, 3);
+      assert.equal(res.labelsUpdated, 0);
+
+      const catalogueGet = requests.find((r) => r.url === CATALOGUE_URL);
+      assert.ok(catalogueGet, "expected the catalogue to be fetched");
+
+      const labelPosts = requests.filter((r) => r.method === "POST" && r.url.endsWith("/labels"));
+      assert.equal(labelPosts.length, 3);
+      assert.deepEqual(
+        labelPosts.map((r) => r.body.name),
+        ["priority/0-SOS", "priority/1-high", "attention/0-orchestrator"],
+      );
+      assert.equal(labelPosts[0].url, `https://${HOST}/api/v1/repos/${REPO}/labels`);
+      assert.deepEqual(labelPosts[0].body, {
+        name: "priority/0-SOS",
+        color: "#b60205",
+        description: "SOS",
+        exclusive: true,
+      });
+
+      const issuePost = requests.find((r) => r.method === "POST" && r.url.endsWith("/issues"));
+      assert.ok(issuePost, "expected an issue POST");
+      assert.equal(issuePost!.url, `https://${HOST}/api/v1/repos/${REPO}/issues`);
+      assert.equal(issuePost!.body.title, "chore: repository fleet onboarding & standard workflow seeding");
+      assert.equal(issuePost!.body.body, REPO_ONBOARDING_ISSUE_BODY);
+      assert.deepEqual(issuePost!.body.labels, [102, 101]);
+    });
+
+    it("resolves onboarding label ids from the reconciled label list", async () => {
+      const router = makeRouter();
+      seedFetch({
+        existingLabels: [
+          { id: 5, name: "priority/1-high", color: "#d93f0b" },
+          { id: 6, name: "attention/0-orchestrator", color: "#fbca04" },
+        ],
+      });
+
+      const res = await router.runRepoOnboarding(repoCreatedBody());
+
+      assert.equal(res.acted, true);
+      assert.equal(res.labelsCreated, 1);
+      const issuePost = requests.find((r) => r.method === "POST" && r.url.endsWith("/issues"));
+      assert.deepEqual(issuePost!.body.labels, [6, 5]);
+    });
+
+    it("updates changed managed fields on existing labels", async () => {
+      const router = makeRouter();
+      seedFetch({
+        existingLabels: [
+          { id: 5, name: "priority/1-high", color: "#000000", exclusive: true, description: "Old" },
+          { id: 6, name: "attention/0-orchestrator", color: "#fbca04", exclusive: false, description: "Orchestrator" },
+          { id: 7, name: "priority/0-SOS", color: "#b60205", exclusive: true, description: "SOS" },
+        ],
+      });
+
+      const res = await router.runRepoOnboarding(repoCreatedBody());
+
+      assert.equal(res.acted, true);
+      assert.equal(res.labelsCreated, 0);
+      assert.equal(res.labelsUpdated, 1);
+
+      const patch = requests.find((r) => r.method === "PATCH");
+      assert.ok(patch, "expected a label PATCH");
+      assert.equal(patch!.url, `https://${HOST}/api/v1/repos/${REPO}/labels/5`);
+      assert.deepEqual(patch!.body, {
+        name: "priority/1-high",
+        color: "#d93f0b",
+        description: "High",
+      });
+    });
+
+    it("skips issue creation when Issue #1 already exists", async () => {
+      const router = makeRouter();
+      seedFetch({
+        issue1: { number: 1, title: "Existing", html_url: `${REPO_URL}/issues/1` },
+      });
+
+      const res = await router.runRepoOnboarding(repoCreatedBody());
+
+      assert.equal(res.acted, true);
+      assert.equal(res.issueCreated, false);
+      assert.equal(res.issueNumber, 1);
+      assert.equal(res.issueUrl, `${REPO_URL}/issues/1`);
+      assert.equal(requests.filter((r) => r.method === "POST" && r.url.endsWith("/issues")).length, 0);
+    });
+
+    it("paginates the existing label list", async () => {
+      const router = makeRouter();
+      const page1 = Array.from({ length: 50 }, (_, i) => ({ id: i + 1, name: `l/${i}` }));
+      const page2 = [{ id: 51, name: "attention/0-orchestrator", color: "#fbca04" }];
+      installFetch((req) => {
+        if (req.url === CATALOGUE_URL) return { data: CATALOGUE };
+        if (req.url.endsWith("/labels?limit=50&page=1")) return { data: page1 };
+        if (req.url.endsWith("/labels?limit=50&page=2")) return { data: page2 };
+        if (req.method === "POST" && req.url.endsWith("/labels")) return { data: { id: 99, ...req.body } };
+        if (req.url.endsWith("/issues/1")) return { status: 404 };
+        if (req.method === "POST" && req.url.endsWith("/issues")) return { data: { number: 1 } };
+        return { status: 404 };
+      });
+
+      const res = await router.runRepoOnboarding(repoCreatedBody());
+
+      assert.equal(res.acted, true);
+      assert.equal(res.labelsCreated, 2);
+      const pages = requests
+        .filter((r) => r.url.includes("/labels?limit=50"))
+        .map((r) => r.url);
+      assert.deepEqual(
+        pages.slice(0, 2),
+        [
+          `https://${HOST}/api/v1/repos/${REPO}/labels?limit=50&page=1`,
+          `https://${HOST}/api/v1/repos/${REPO}/labels?limit=50&page=2`,
+        ],
+      );
+    });
+
+    it("reports a catalogue fetch failure without throwing", async () => {
+      const router = makeRouter();
+      installFetch((req) => {
+        if (req.url === CATALOGUE_URL) return { status: 500 };
+        return { status: 404 };
+      });
+
+      const res = await router.runRepoOnboarding(repoCreatedBody());
+
+      assert.equal(res.acted, false);
+      assert.match(res.reason, /label catalogue fetch failed/);
+      assert.equal(requests.filter((r) => r.method === "POST").length, 0);
+    });
+
+    it("reports an empty catalogue without touching the repo", async () => {
+      const router = makeRouter();
+      seedFetch({ catalogue: { manifest_version: 1, labels: [] } });
+
+      const res = await router.runRepoOnboarding(repoCreatedBody());
+
+      assert.equal(res.acted, false);
+      assert.match(res.reason, /empty/);
+      assert.equal(requests.filter((r) => r.method === "POST").length, 0);
+    });
+
+    it("reports an issue create failure without throwing", async () => {
+      const router = makeRouter();
+      const createdLabels: any[] = [];
+      installFetch((req) => {
+        if (req.url === CATALOGUE_URL) return { data: CATALOGUE };
+        if (req.url.endsWith("/labels?limit=50&page=1")) return { data: [...createdLabels] };
+        if (req.method === "POST" && req.url.endsWith("/labels")) {
+          const label = { id: 99, ...req.body };
+          createdLabels.push(label);
+          return { data: label };
+        }
+        if (req.url.endsWith("/issues/1")) return { status: 404 };
+        if (req.method === "POST" && req.url.endsWith("/issues")) return { status: 500 };
+        return { status: 404 };
+      });
+
+      const res = await router.runRepoOnboarding(repoCreatedBody());
+
+      assert.equal(res.acted, false);
+      assert.match(res.reason, /issue create failed/);
+      assert.equal(res.labelsCreated, 3);
+    });
+
+    it("skips a payload without a repository", async () => {
+      const router = makeRouter();
+      installFetch(() => ({ data: {} }));
+
+      const res = await router.runRepoOnboarding({ action: "created", sender: { login: "alice" } });
+
+      assert.equal(res.acted, false);
+      assert.match(res.reason, /missing repository/);
+      assert.equal(requests.length, 0);
+    });
+
+    it("is disabled by default in test mode", async () => {
+      const router = new HookRouter(null, { queueDir, stateDir, port: 0 });
+      installFetch(() => ({ data: {} }));
+
+      const res = await router.runRepoOnboarding(repoCreatedBody());
+
+      assert.equal(res.acted, false);
+      assert.equal(res.reason, "repository onboarding disabled");
+      assert.equal(requests.length, 0);
+    });
+  });
+
+  describe("runDirectActions routing", () => {
+    it("dispatches repository:created to the onboarding handler", async () => {
+      const router = makeRouter();
+      const calls: string[] = [];
+      (router as any).runRepoOnboarding = async () => {
+        calls.push("onboarding");
+        return { acted: true, reason: "" };
+      };
+
+      await router.runDirectActions("repository", { action: "created" });
+      await router.runDirectActions("repository", { action: "deleted" });
+      await router.runDirectActions("repository", {});
+
+      assert.deepEqual(calls, ["onboarding"]);
+    });
+
+    it("never rejects when the onboarding handler throws", async () => {
+      const router = makeRouter();
+      (router as any).runRepoOnboarding = async () => {
+        throw new Error("boom");
+      };
+      await assert.doesNotReject(router.runDirectActions("repository", { action: "created" }));
+    });
+
+    it("runs onboarding during webhook ingestion", async () => {
+      const router = makeRouter();
+      const seen: Array<{ event: string; action: string }> = [];
+      (router as any).runDirectActions = async (event: string, body: any) => {
+        seen.push({ event, action: body.action });
+      };
+
+      await router.ingestWebhook("repository", repoCreatedBody());
+      await new Promise((resolve) => setImmediate(resolve));
+
+      assert.deepEqual(seen, [{ event: "repository", action: "created" }]);
+    });
+  });
+});
