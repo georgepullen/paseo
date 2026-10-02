@@ -15,6 +15,9 @@
       ],
       "paseo-plugin-helper/mcp": [
         "../../packages/paseo-plugin-helper/src/mcp/index.ts"
+      ],
+      "paseo-plugin-helper/ui": [
+        "../../packages/paseo-plugin-helper/src/ui/index.ts"
       ]
     },
     "target": "ES2020",

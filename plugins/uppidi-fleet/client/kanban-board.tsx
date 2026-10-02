@@ -10,6 +10,7 @@ import {
   usePluginTheme,
   InteractiveRow,
 } from "paseo-plugin-helper/client";
+import { HostScroll } from "paseo-plugin-helper/ui";
 import type { UppidiIssue, AttentionLabel, KanbanColumnId } from "../shared/contracts.js";
 
 export interface KanbanColumnDef {
@@ -558,7 +559,10 @@ export function UppidiFleetKanbanBoard({
         </Row>
       </View>
 
-      {/* Horizontal ScrollView across the 4 Columns */}
+      {/* Horizontal ScrollView across the 4 Columns.
+          A nested horizontal scroller keeps the plain React Native ScrollView
+          (not the host sheet-gesture scroller) so the bottom sheet never
+          collapses on device (#219). */}
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={true}
@@ -654,6 +658,11 @@ export function UppidiFleetKanbanBoard({
           // React Native Web strips non-allowlisted DOM props (onDragOver,
           // onDrop, ...) from <View>/<ScrollView>, so drop zones must be
           // native elements on web or drops never fire. See #807.
+          //
+          // The column body is a native div that owns the drop handlers; the
+          // vertical scroll is delegated to HostScroll (host scroll ownership)
+          // instead of a hand-rolled `overflow: auto` div, which fought the
+          // HTML5 drag gesture and broke drops (#807).
           if (isWeb) {
             const webColumnTestProps = { testID: `kanban-column-${col.id}` } as any;
             const webBodyTestProps = { testID: `kanban-column-body-${col.id}` } as any;
@@ -674,13 +683,16 @@ export function UppidiFleetKanbanBoard({
                     display: "flex",
                     flexDirection: "column",
                     flex: 1,
+                    minHeight: 0,
                     maxHeight: 600,
-                    overflowY: "auto",
-                    gap: 8,
-                    paddingBottom: 8,
                   }}
                 >
-                  {columnCards}
+                  <HostScroll
+                    style={{ flex: 1, minHeight: 0 }}
+                    contentContainerStyle={{ gap: 8, paddingBottom: 8 }}
+                  >
+                    {columnCards}
+                  </HostScroll>
                 </div>
               </div>
             );
@@ -694,15 +706,15 @@ export function UppidiFleetKanbanBoard({
             >
               {columnHeader}
 
-              {/* Column Body: Vertically scrollable within column */}
-              <ScrollView
+              {/* Column Body: vertical scroll delegated to HostScroll */}
+              <HostScroll
                 showsVerticalScrollIndicator={true}
                 style={{ flex: 1, maxHeight: 600 }}
                 contentContainerStyle={{ gap: 8, paddingBottom: 8 }}
                 testID={`kanban-column-body-${col.id}`}
               >
                 {columnCards}
-              </ScrollView>
+              </HostScroll>
             </View>
           );
         })}
