@@ -147,6 +147,8 @@ export interface HookRouterOptions {
   labelTriageEnabled?: boolean;
   /** Enable the in-process issue close guard (#847). Defaults off in test mode. */
   closeGuardEnabled?: boolean;
+  /** Enable the CI failure issue creator (#865). Defaults off in test mode. */
+  ciFailureEnabled?: boolean;
   /** Enable the repository.created onboarding handler (#847). Defaults off in test mode. */
   repoOnboardingEnabled?: boolean;
   /** Actor(s) whose issue closures are intercepted. Defaults to `xpufx`. */
@@ -441,6 +443,9 @@ export const CLOSE_GUARD_POLICY_COMMENT = [
   "Autonomous agents and orchestrators must **never** close issues directly. Upon completing implementation and local verification, agents must transition tickets to `state/2-review` or `state/3-verify` with an envelope report and await operator verification. Only the human operator closes issues upon final review (`state/4-done` / `confirmed-done`).",
 ].join("\n");
 
+/** Labels applied to auto-created CI failure issues (#865). */
+export const CI_FAILURE_LABELS: readonly string[] = ["kind/bug", "priority/1-high", "attention/0-orchestrator"];
+
 export interface DirectActionDecision {
   act: boolean;
   reason: string;
@@ -540,6 +545,76 @@ export function closeGuardDecision(input: {
   return { act: true, reason: "targeted actor closed a non-terminal issue" };
 }
 
+// ---------------------------------------------------------------------------
+// CI failure issue creation (#865)
+//
+// The `action_run_failure` webhook carries an ActionPayload whose `run` is the
+// completed ActionRun. The pure helpers below extract the failure details and
+// build the issue title/body; the async handler only performs I/O around them.
+// ---------------------------------------------------------------------------
+
+/** Issue title for an auto-created CI failure ticket (#865). */
+export function ciFailureIssueTitle(workflowName: string, repo: string): string {
+  return `ci: ${workflowName} failed (${repo})`;
+}
+
+export interface CiFailureDetails {
+  workflowName: string;
+  repo: string;
+  runUrl: string;
+  conclusion: string;
+  failedStep: string | null;
+  title: string;
+}
+
+/**
+ * Extract CI failure details from an `action_run_failure` webhook payload.
+ * Returns null when the payload carries no usable run or repository.
+ */
+export function ciFailureDetailsFromPayload(body: any): CiFailureDetails | null {
+  const run = body?.run;
+  if (!run || typeof run !== "object") return null;
+  const repository = run.repository ?? {};
+  const repo =
+    typeof repository.full_name === "string" && repository.full_name.trim()
+      ? repository.full_name.trim()
+      : null;
+  if (!repo) return null;
+  const workflowName =
+    typeof run.title === "string" && run.title.trim()
+      ? run.title.trim()
+      : run.workflow_id != null && String(run.workflow_id).trim()
+        ? String(run.workflow_id).trim()
+        : "unknown workflow";
+  const runUrl = typeof run.html_url === "string" ? run.html_url.trim() : "";
+  const conclusion =
+    typeof run.status === "string" && run.status.trim()
+      ? run.status.trim()
+      : typeof body?.action === "string" && body.action.trim()
+        ? body.action.trim()
+        : "failure";
+  // The ActionPayload does not carry job/step info today; surface a failed
+  // step when a future payload revision provides one.
+  const failedStep =
+    typeof run.failed_step === "string" && run.failed_step.trim() ? run.failed_step.trim() : null;
+  return { workflowName, repo, runUrl, conclusion, failedStep, title: ciFailureIssueTitle(workflowName, repo) };
+}
+
+/** Issue body for an auto-created CI failure ticket (#865). */
+export function formatCiFailureBody(details: CiFailureDetails): string {
+  const lines = [
+    `CI workflow **${details.workflowName}** failed on \`${details.repo}\`.`,
+    "",
+    `- Workflow: ${details.workflowName}`,
+    `- Repo: ${details.repo}`,
+    `- Conclusion: ${details.conclusion}`,
+  ];
+  if (details.runUrl) lines.push(`- Run: ${details.runUrl}`);
+  if (details.failedStep) lines.push(`- Failed step: ${details.failedStep}`);
+  lines.push("", "---", "_Created automatically by the fleet hook router (#865)._");
+  return lines.join("\n");
+}
+
 export interface DirectActionResult {
   acted: boolean;
   reason: string;
@@ -547,6 +622,8 @@ export interface DirectActionResult {
   reopened?: boolean;
   commented?: boolean;
   notified?: boolean;
+  /** Issue number created by the handler, when it creates one (#865). */
+  createdIssue?: number | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -1754,6 +1831,8 @@ export class HookRouter {
   /** Direct-action guards (#847). */
   public readonly labelTriageEnabled: boolean;
   public readonly closeGuardEnabled: boolean;
+  /** CI failure issue creator (#865). */
+  public readonly ciFailureEnabled: boolean;
   public readonly repoOnboardingEnabled: boolean;
   private readonly closeGuardTargetActors: string[];
   private readonly closeGuardAcceptedLabels: string[];
@@ -1783,6 +1862,7 @@ export class HookRouter {
     // fixtures never touch the network; production enables them by default.
     this.labelTriageEnabled = options?.labelTriageEnabled ?? !this.isTestMode;
     this.closeGuardEnabled = options?.closeGuardEnabled ?? !this.isTestMode;
+    this.ciFailureEnabled = options?.ciFailureEnabled ?? !this.isTestMode;
     this.repoOnboardingEnabled = options?.repoOnboardingEnabled ?? !this.isTestMode;
     this.closeGuardTargetActors = parseTargetActors(options?.closeGuardTargetActors);
     this.closeGuardAcceptedLabels =
@@ -2027,6 +2107,8 @@ export class HookRouter {
         await this.runLabelTriage(body);
       } else if (ev === "issues" && action === "closed") {
         await this.runCloseGuard(body);
+      } else if (ev === "action_run_failure") {
+        await this.runCiFailure(body);
       } else if (ev === "repository" && action === "created") {
         await this.runRepoOnboarding(body);
       }
@@ -2185,6 +2267,16 @@ export class HookRouter {
   }
 
   /**
+   * CI failure handler (#865): create an issue for a failed workflow run,
+   * deduplicated by an existing open issue with the same title.
+   */
+  public async runCiFailure(body: any): Promise<DirectActionResult> {
+    if (!this.ciFailureEnabled) {
+      return { acted: false, reason: "ci failure handler disabled" };
+    }
+    const details = ciFailureDetailsFromPayload(body);
+    if (!details) {
+      return { acted: false, reason: "missing run or repository in payload" };
    * Seed a newly created repository with the canonical label catalogue and the
    * standard fleet onboarding issue. Idempotent: an existing Issue #1 short-
    * circuits creation, and label reconciliation only creates or updates.
@@ -2201,6 +2293,10 @@ export class HookRouter {
     const host = resolveForgejoHost();
     const token = await this.resolveApiToken(host);
 
+    const existing = await this.findOpenCiFailureIssue(details.repo, details.title, host, token);
+    if (existing != null) {
+      this.log(`[info] ci failure: open issue already exists for ${details.title} (${details.repo}#${existing})`);
+      return { acted: false, reason: `open issue already exists: ${details.repo}#${existing}`, createdIssue: null };
     const catalogueRes = await forgejoApiGet<{ manifest_version?: number; labels?: any[] }>(
       REPO_ONBOARDING_CATALOGUE_PATH,
       { host, token },
@@ -2245,6 +2341,11 @@ export class HookRouter {
 
     const create = await forgejoApiRequest<any>(
       "POST",
+      `/api/v1/repos/${details.repo}/issues`,
+      {
+        title: details.title,
+        body: formatCiFailureBody(details),
+        labels: [...CI_FAILURE_LABELS],
       `/api/v1/repos/${repo}/issues`,
       {
         title: REPO_ONBOARDING_ISSUE_TITLE,
@@ -2255,6 +2356,35 @@ export class HookRouter {
     );
     if (create.outcome !== "ok") {
       const detail = create.error;
+      this.log(`[warn] ci failure: failed to create issue in ${details.repo}: ${detail}`);
+      return { acted: false, reason: `issue create failed: ${detail}` };
+    }
+    const createdIssue = typeof create.data?.number === "number" ? create.data.number : null;
+    this.log(`[info] ci failure: created issue ${details.repo}#${createdIssue} for ${details.title}`);
+    return { acted: true, reason: "ci run failed", createdIssue };
+  }
+
+  /**
+   * Dedup lookup (#865): find an open issue in `repo` whose title exactly
+   * matches the CI failure title. Returns the issue number, or null.
+   */
+  private async findOpenCiFailureIssue(
+    repo: string,
+    title: string,
+    host: string,
+    token: string | null,
+  ): Promise<number | null> {
+    const res = await forgejoApiGet<Array<{ number: number; title: string }>>(
+      `/api/v1/repos/${repo}/issues?state=open&limit=50`,
+      { host, token },
+    );
+    if (res.outcome !== "ok") {
+      const detail = res.error;
+      this.log(`[warn] ci failure: could not list open issues in ${repo}: ${detail}`);
+      return null;
+    }
+    const match = (res.data ?? []).find((issue) => issue.title === title);
+    return match?.number ?? null;
       this.log(`[warn] repo onboarding: failed to create ${repo}#${issueNumber}: ${detail}`);
       return {
         acted: false,

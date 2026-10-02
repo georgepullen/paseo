@@ -67,6 +67,10 @@ import {
   CLOSE_GUARD_ACCEPTED_LABELS,
   DEFAULT_CLOSE_GUARD_TARGET_ACTORS,
   CLOSE_GUARD_POLICY_COMMENT,
+  CI_FAILURE_LABELS,
+  ciFailureIssueTitle,
+  ciFailureDetailsFromPayload,
+  formatCiFailureBody,
   REPO_ONBOARDING_CATALOGUE_PATH,
   REPO_ONBOARDING_ISSUE_TITLE,
   REPO_ONBOARDING_ISSUE_LABELS,
@@ -4239,8 +4243,219 @@ describe("hook-router direct-action guards (#847)", () => {
     });
   });
 
+  describe("ciFailureIssueTitle", () => {
+    it("formats the title with workflow name and repo", () => {
+      assert.equal(ciFailureIssueTitle("CI", "xpufx-org/paseo"), "ci: CI failed (xpufx-org/paseo)");
+    });
+  });
+
+  describe("ciFailureDetailsFromPayload", () => {
+    function actionRunFailureBody(overrides: Record<string, any> = {}) {
+      return {
+        action: "failure",
+        run: {
+          id: 123,
+          title: "CI",
+          status: "failure",
+          html_url: `${REPO_URL}/actions/runs/123`,
+          repository: baseRepository(),
+          ...overrides,
+        },
+        prior_status: "in_progress",
+      };
+    }
+
+    it("extracts workflow name, repo, run URL, and conclusion", () => {
+      const details = ciFailureDetailsFromPayload(actionRunFailureBody());
+      assert.ok(details);
+      assert.equal(details!.workflowName, "CI");
+      assert.equal(details!.repo, REPO);
+      assert.equal(details!.runUrl, `${REPO_URL}/actions/runs/123`);
+      assert.equal(details!.conclusion, "failure");
+      assert.equal(details!.title, `ci: CI failed (${REPO})`);
+      assert.equal(details!.failedStep, null);
+    });
+
+    it("falls back to workflow_id when title is missing", () => {
+      const details = ciFailureDetailsFromPayload(actionRunFailureBody({ title: "", workflow_id: 456 }));
+      assert.equal(details!.workflowName, "456");
+    });
+
+    it("falls back to 'unknown workflow' when neither title nor workflow_id is present", () => {
+      const details = ciFailureDetailsFromPayload(actionRunFailureBody({ title: null, workflow_id: null }));
+      assert.equal(details!.workflowName, "unknown workflow");
+    });
+
+    it("surfaces a failed step when the payload carries one", () => {
+      const details = ciFailureDetailsFromPayload(actionRunFailureBody({ failed_step: "build" }));
+      assert.equal(details!.failedStep, "build");
+    });
+
+    it("returns null when the payload has no run", () => {
+      assert.equal(ciFailureDetailsFromPayload({ action: "failure" }), null);
+      assert.equal(ciFailureDetailsFromPayload({}), null);
+      assert.equal(ciFailureDetailsFromPayload(null), null);
+    });
+
+    it("returns null when the run has no repository full_name", () => {
+      const body: any = actionRunFailureBody();
+      body.run.repository = { name: "paseo" };
+      assert.equal(ciFailureDetailsFromPayload(body), null);
+    });
+  });
+
+  describe("formatCiFailureBody", () => {
+    it("includes workflow, repo, conclusion, and run URL", () => {
+      const body = formatCiFailureBody({
+        workflowName: "CI",
+        repo: REPO,
+        runUrl: `${REPO_URL}/actions/runs/123`,
+        conclusion: "failure",
+        failedStep: null,
+        title: `ci: CI failed (${REPO})`,
+      });
+      assert.ok(body.includes("CI workflow **CI** failed on `xpufx-org/paseo`"));
+      assert.ok(body.includes("- Workflow: CI"));
+      assert.ok(body.includes("- Repo: xpufx-org/paseo"));
+      assert.ok(body.includes("- Conclusion: failure"));
+      assert.ok(body.includes(`- Run: ${REPO_URL}/actions/runs/123`));
+      assert.ok(body.includes("(#865)"));
+    });
+
+    it("includes the failed step when present", () => {
+      const body = formatCiFailureBody({
+        workflowName: "CI",
+        repo: REPO,
+        runUrl: "",
+        conclusion: "failure",
+        failedStep: "build",
+        title: `ci: CI failed (${REPO})`,
+      });
+      assert.ok(body.includes("- Failed step: build"));
+    });
+  });
+
+  describe("runCiFailure", () => {
+    function ciFailureBody(overrides: Record<string, any> = {}) {
+      return {
+        action: "failure",
+        run: {
+          id: 123,
+          title: "CI",
+          status: "failure",
+          html_url: `${REPO_URL}/actions/runs/123`,
+          repository: baseRepository(),
+          ...overrides,
+        },
+        prior_status: "in_progress",
+      };
+    }
+
+    it("creates an issue with failure details and CI labels", async () => {
+      const router = makeRouter({ ciFailureEnabled: true });
+      installFetch((req) => {
+        if (req.method === "GET" && req.url.endsWith("/issues?state=open&limit=50")) {
+          return { data: [] };
+        }
+        if (req.method === "POST" && req.url.endsWith("/issues")) {
+          return { data: { number: 99, title: `ci: CI failed (${REPO})` } };
+        }
+        return { status: 404 };
+      });
+
+      const res = await router.runCiFailure(ciFailureBody());
+      assert.equal(res.acted, true);
+      assert.equal(res.createdIssue, 99);
+
+      const post = requests.find((r) => r.method === "POST" && r.url.endsWith("/issues"));
+      assert.ok(post, "expected an issue POST");
+      assert.equal(post!.url, `https://forge.mrs.uppidi.com/api/v1/repos/${REPO}/issues`);
+      assert.equal(post!.body.title, `ci: CI failed (${REPO})`);
+      assert.ok(post!.body.body.includes("CI workflow **CI** failed"));
+      assert.ok(post!.body.body.includes(`- Run: ${REPO_URL}/actions/runs/123`));
+      assert.deepEqual(post!.body.labels, [...CI_FAILURE_LABELS]);
+    });
+
+    it("deduplicates when an open issue with the same title exists", async () => {
+      const router = makeRouter({ ciFailureEnabled: true });
+      installFetch((req) => {
+        if (req.method === "GET" && req.url.endsWith("/issues?state=open&limit=50")) {
+          return { data: [{ number: 55, title: `ci: CI failed (${REPO})` }] };
+        }
+        return { status: 404 };
+      });
+
+      const res = await router.runCiFailure(ciFailureBody());
+      assert.equal(res.acted, false);
+      assert.match(res.reason, /open issue already exists/);
+      assert.equal(res.createdIssue, null);
+      assert.equal(requests.filter((r) => r.method === "POST").length, 0);
+    });
+
+    it("creates a new issue when the existing match is for a different workflow", async () => {
+      const router = makeRouter({ ciFailureEnabled: true });
+      installFetch((req) => {
+        if (req.method === "GET" && req.url.endsWith("/issues?state=open&limit=50")) {
+          return { data: [{ number: 55, title: `ci: Lint failed (${REPO})` }] };
+        }
+        if (req.method === "POST" && req.url.endsWith("/issues")) {
+          return { data: { number: 99 } };
+        }
+        return { status: 404 };
+      });
+
+      const res = await router.runCiFailure(ciFailureBody());
+      assert.equal(res.acted, true);
+      assert.equal(res.createdIssue, 99);
+    });
+
+    it("skips creation when the issue list cannot be read", async () => {
+      const router = makeRouter({ ciFailureEnabled: true });
+      installFetch((req) => {
+        if (req.method === "GET") return { status: 500 };
+        if (req.method === "POST" && req.url.endsWith("/issues")) {
+          return { data: { number: 99 } };
+        }
+        return { status: 404 };
+      });
+
+      const res = await router.runCiFailure(ciFailureBody());
+      assert.equal(res.acted, true);
+    });
+
+    it("reports an API failure without throwing", async () => {
+      const router = makeRouter({ ciFailureEnabled: true });
+      installFetch((req) => {
+        if (req.method === "GET") return { data: [] };
+        return { status: 500 };
+      });
+
+      const res = await router.runCiFailure(ciFailureBody());
+      assert.equal(res.acted, false);
+      assert.match(res.reason, /issue create failed/);
+    });
+
+    it("returns a skip reason when the payload has no run", async () => {
+      const router = makeRouter({ ciFailureEnabled: true });
+      installFetch(() => ({ data: {} }));
+      const res = await router.runCiFailure({ action: "failure" });
+      assert.equal(res.acted, false);
+      assert.match(res.reason, /missing run or repository/);
+      assert.equal(requests.length, 0);
+    });
+
+    it("is disabled by default in test mode", async () => {
+      const router = new HookRouter(null, { queueDir, stateDir, port: 0 });
+      installFetch(() => ({ data: {} }));
+      const res = await router.runCiFailure(ciFailureBody());
+      assert.equal(res.acted, false);
+      assert.equal(res.reason, "ci failure handler disabled");
+      assert.equal(requests.length, 0);
+    });
+  });
+
   describe("runDirectActions routing", () => {
-    it("dispatches opened and created events to triage and closed events to the guard", async () => {
+    it("dispatches opened and created events to triage, closed events to the guard, and action_run_failure to the CI handler", async () => {
       const router = makeRouter();
       const calls: string[] = [];
       (router as any).runLabelTriage = async () => {
@@ -4251,14 +4466,20 @@ describe("hook-router direct-action guards (#847)", () => {
         calls.push("guard");
         return { acted: false, reason: "" };
       };
+      (router as any).runCiFailure = async () => {
+        calls.push("ci-failure");
+        return { acted: false, reason: "" };
+      };
 
       await router.runDirectActions("issues", { action: "opened" });
       await router.runDirectActions("issue_comment", { action: "created" });
       await router.runDirectActions("issues", { action: "closed" });
       await router.runDirectActions("issues", { action: "labeled" });
       await router.runDirectActions("pull_request", { action: "closed" });
+      await router.runDirectActions("action_run_failure", { action: "failure" });
+      await router.runDirectActions("action_run_success", { action: "success" });
 
-      assert.deepEqual(calls, ["triage", "triage", "guard"]);
+      assert.deepEqual(calls, ["triage", "triage", "guard", "ci-failure"]);
     });
 
     it("never rejects when a guard throws", async () => {
@@ -4280,6 +4501,29 @@ describe("hook-router direct-action guards (#847)", () => {
       await new Promise((resolve) => setImmediate(resolve));
 
       assert.deepEqual(seen, [{ event: "issues", action: "closed" }]);
+    });
+
+    it("dispatches action_run_failure webhooks to the CI failure handler", async () => {
+      const router = makeRouter();
+      const seen: Array<{ event: string; action: string }> = [];
+      (router as any).runDirectActions = async (event: string, body: any) => {
+        seen.push({ event, action: body.action });
+      };
+
+      await router.ingestWebhook("action_run_failure", {
+        action: "failure",
+        run: {
+          id: 123,
+          title: "CI",
+          status: "failure",
+          html_url: `${REPO_URL}/actions/runs/123`,
+          repository: { full_name: REPO, html_url: REPO_URL },
+        },
+        prior_status: "in_progress",
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+
+      assert.deepEqual(seen, [{ event: "action_run_failure", action: "failure" }]);
     });
   });
 });
