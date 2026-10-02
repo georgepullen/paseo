@@ -1,5 +1,6 @@
+import type { HostSurfaceProps } from "paseo-plugin-helper/client";
 import { PermissionAuditView } from "permission-audit/client";
 
-export function PermissionLoggerSurface() {
-  return <PermissionAuditView variant="page" />;
+export function PermissionLoggerSurface({ theme, layout }: HostSurfaceProps) {
+  return <PermissionAuditView variant="page" theme={theme} layout={layout} />;
 }

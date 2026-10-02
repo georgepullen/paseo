@@ -1,7 +1,7 @@
 import { StyleProp, ViewStyle, TextStyle } from 'react-native';
-import { g as PluginTheme, P as PlatformType, R as ResponsiveLayout, T as ThemeColors, S as StatusVariant } from './custom-pills-C98QP7Cg.js';
+import { a as PluginTheme, P as PlatformType, R as ResponsiveLayout, T as ThemeColors, d as StatusVariant } from './settings-BhKEPJRg.cjs';
 import React__default, { ReactNode } from 'react';
-import { d as HostLayout } from './host-whQ9H8yb.js';
+import { d as HostLayout } from './host-whQ9H8yb.cjs';
 
 /**
  * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and

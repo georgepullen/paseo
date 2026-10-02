@@ -1,5 +1,5 @@
 import { ReactNode, ComponentType } from 'react';
-import { S as SettingsContract } from './settings-CP1gv9q3.js';
+import { S as SettingsContract } from './settings-CPUeD-cx.js';
 import { o as HostSurfaceProps, P as PluginCleanup } from './host-whQ9H8yb.js';
 
 /**

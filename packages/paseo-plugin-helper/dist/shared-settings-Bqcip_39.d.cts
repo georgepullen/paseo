@@ -1,9 +1,9 @@
 import * as _tanstack_query_core from '@tanstack/query-core';
 import * as React from 'react';
-import { P as PluginRpcContract, R as RpcInput, a as RpcOutput } from './rpc-D27pph91.js';
+import { P as PluginRpcContract, R as RpcInput, a as RpcOutput } from './rpc-D27pph91.cjs';
 import { UseMutationOptions, UseQueryOptions, UseMutationResult, UseQueryResult } from '@tanstack/react-query';
-import { S as SettingsContract } from './settings-CP1gv9q3.js';
-import { S as SuiteSettings } from './forge-BMhLnv9s.js';
+import { S as SettingsContract } from './settings-BhKEPJRg.cjs';
+import { S as SuiteSettings } from './forge-C0FEgfAD.cjs';
 
 type RpcQueryOptions<TOutput> = Omit<UseQueryOptions<TOutput, Error, TOutput, readonly unknown[]>, "queryKey" | "queryFn">;
 /**

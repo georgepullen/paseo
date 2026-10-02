@@ -1,15 +1,18 @@
 import React, { useMemo, useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
+import { useRpcQuery } from "paseo-plugin-helper/client";
 import {
-  Badge,
-  Button,
-  DataTable,
-  EmptyState,
-  ModalBody,
-  SearchInput,
-  usePluginTheme,
-  useRpcQuery,
-} from "paseo-plugin-helper/client";
+  HostBadge,
+  HostButton,
+  HostDataTable,
+  HostEmptyState,
+  HostLayoutProvider,
+  HostScroll,
+  HostSearchInput,
+  HostThemeProvider,
+  useHostTheme,
+} from "paseo-plugin-helper/ui";
+import type { PluginTheme, ResponsiveLayout } from "paseo-plugin-helper/shared";
 import {
   permissionAuditQuery,
   type PermissionAuditEntry,
@@ -52,6 +55,16 @@ export interface PermissionAuditViewProps {
   showFilters?: boolean;
   limit?: number;
   refreshIntervalMs?: number;
+  /**
+   * Host theme for this surface. The host passes it through the surface
+   * registration props; when present the view wraps its content in
+   * `HostThemeProvider` so every `ui/` adapter paints with host colors.
+   * When absent (tests, standalone rendering) adapters fall back to the
+   * neutral host palette.
+   */
+  theme?: PluginTheme;
+  /** Host layout descriptor for this surface. */
+  layout?: ResponsiveLayout;
 }
 
 const DECISION_FILTERS: DecisionFilter[] = ["all", "pending", "allow", "deny"];
@@ -69,14 +82,53 @@ function decisionLabel(value: DecisionFilter): string {
   }
 }
 
+/**
+ * Permission audit view migrated off the deprecated `client/` UI kit
+ * (paseo#847 Phase 3): `ModalBody` → `HostScroll` (the sidebar host supplies
+ * no scroller, so the view owns exactly one), `DataTable` → `HostDataTable`,
+ * and every other primitive to its `ui/` adapter. Scroll ownership stays
+ * explicit: the page variant renders a single `HostScroll`; the compact
+ * variant renders no scroller and leaves scrolling to the surrounding host
+ * surface.
+ */
 export function PermissionAuditView({
   agentId,
   variant = "page",
   showFilters = true,
   limit = 100,
   refreshIntervalMs = 5000,
+  theme,
+  layout,
 }: PermissionAuditViewProps) {
-  const { colors } = usePluginTheme();
+  const content = (
+    <PermissionAuditViewContent
+      agentId={agentId}
+      variant={variant}
+      showFilters={showFilters}
+      limit={limit}
+      refreshIntervalMs={refreshIntervalMs}
+    />
+  );
+  if (!theme) {
+    return content;
+  }
+  return (
+    <HostThemeProvider theme={theme}>
+      <HostLayoutProvider layout={layout ?? { compact: false, platform: "web" }}>
+        {content}
+      </HostLayoutProvider>
+    </HostThemeProvider>
+  );
+}
+
+function PermissionAuditViewContent({
+  agentId,
+  variant = "page",
+  showFilters = true,
+  limit = 100,
+  refreshIntervalMs = 5000,
+}: Omit<PermissionAuditViewProps, "theme" | "layout">) {
+  const { colors } = useHostTheme();
   const [search, setSearch] = useState("");
   const [decision, setDecision] = useState<DecisionFilter>("all");
 
@@ -84,7 +136,7 @@ export function PermissionAuditView({
     () => (agentId ? { agentId } : {}),
     [agentId],
   );
-  const { data, isLoading, isError, isRefetching, refetch } = usePermissionAudit(serverFilter, {
+  const { data, isLoading, isError, refetch } = usePermissionAudit(serverFilter, {
     limit,
     refreshIntervalMs,
   });
@@ -106,7 +158,7 @@ export function PermissionAuditView({
 
   if (isError) {
     return (
-      <EmptyState
+      <HostEmptyState
         icon="AlertTriangle"
         title="Audit log unavailable"
         description="Could not load recent permission decisions."
@@ -118,7 +170,7 @@ export function PermissionAuditView({
 
   const filters = showFilters ? (
     <View style={{ gap: 12 }}>
-      <SearchInput
+      <HostSearchInput
         value={search}
         onChangeText={setSearch}
         placeholder="Search tool, agent, or arguments…"
@@ -127,9 +179,10 @@ export function PermissionAuditView({
       />
       <View style={{ flexDirection: "row", gap: 8 }}>
         {DECISION_FILTERS.map((value) => (
-          <Button
+          <HostButton
             key={value}
             label={decisionLabel(value)}
+            size="sm"
             variant={decision === value ? "primary" : "secondary"}
             onPress={() => setDecision(value)}
           />
@@ -139,7 +192,7 @@ export function PermissionAuditView({
   ) : null;
 
   const table = (
-    <DataTable<PermissionAuditEntry>
+    <HostDataTable<PermissionAuditEntry>
       data={entries}
       keyExtractor={(item) => item.id}
       columns={[
@@ -174,7 +227,7 @@ export function PermissionAuditView({
           width: 110,
           align: "right",
           render: (item) => (
-            <Badge
+            <HostBadge
               label={
                 item.decision === "pending"
                   ? "Pending"
@@ -195,7 +248,7 @@ export function PermissionAuditView({
         },
       ]}
       emptyState={
-        <EmptyState
+        <HostEmptyState
           icon="ShieldCheck"
           title="No permission decisions yet"
           description="Allowed and denied permission requests will appear here as agents run."
@@ -214,14 +267,9 @@ export function PermissionAuditView({
   }
 
   return (
-    <ModalBody
-      headerMode="pinned"
-      header={filters}
-      refreshing={isRefetching}
-      onRefresh={() => void refetch()}
-      contentContainerStyle={{ gap: 12 }}
-    >
+    <HostScroll contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 14, gap: 12 }}>
+      {filters}
       {table}
-    </ModalBody>
+    </HostScroll>
   );
 }

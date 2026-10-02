@@ -1,6 +1,39 @@
 import { ZodType, z } from 'zod';
 import { P as PluginRpcContract } from './rpc-D27pph91.cjs';
 
+/**
+ * Structural theme types for Paseo plugins.
+ *
+ * These interfaces mirror the Paseo host theme shapes without importing any
+ * Paseo SDK module, so `paseo-plugin-helper/shared` (and everything
+ * built on it) typechecks and bundles identically against Paseo v0.7 and
+ * Paseo v0.8 SDKs.
+ */
+interface ThemeColors {
+    readonly surface0: string;
+    readonly surface1: string;
+    readonly surface2: string;
+    readonly border: string;
+    readonly foreground: string;
+    readonly foregroundMuted: string;
+    readonly accent: string;
+    readonly accentForeground: string;
+    readonly statusSuccess: string;
+    readonly statusWarning: string;
+    readonly statusDanger: string;
+}
+interface PluginTheme {
+    readonly colors: ThemeColors;
+}
+type PlatformType = "ios" | "android" | "web";
+interface ResponsiveLayout {
+    compact: boolean;
+    platform: PlatformType;
+    width?: number;
+    height?: number;
+}
+type StatusVariant = "neutral" | "success" | "warning" | "danger" | "accent" | "info";
+
 declare const SettingsEmptyInputSchema: z.ZodOptional<z.ZodUnion<readonly [z.ZodVoid, z.ZodRecord<z.ZodString, z.ZodUnknown>]>>;
 type SettingsEmptyInput = z.infer<typeof SettingsEmptyInputSchema>;
 interface SettingsContract<TSettings extends Record<string, any>> {
@@ -39,4 +72,4 @@ interface DefineSettingsContractOptions<TSettings extends Record<string, any>> {
  */
 declare function defineSettingsContract<TSettings extends Record<string, any>>(options: DefineSettingsContractOptions<TSettings>): SettingsContract<TSettings>;
 
-export { type DefineSettingsContractOptions as D, type SettingsContract as S, type SettingsEmptyInput as a, SettingsEmptyInputSchema as b, defineSettingsContract as d };
+export { type DefineSettingsContractOptions as D, type PlatformType as P, type ResponsiveLayout as R, type SettingsContract as S, type ThemeColors as T, type PluginTheme as a, type SettingsEmptyInput as b, SettingsEmptyInputSchema as c, type StatusVariant as d, defineSettingsContract as e };

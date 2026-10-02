@@ -27,7 +27,7 @@ export const PLUGINS = {
   "twofado": ["client", "server", "shared"],
   "plugin-updates": ["client", "server", "shared"],
   "wellbeing": ["client", "server", "shared"],
-  "permission-logger": ["client", "server", "shared"],
+  "permission-logger": ["client", "ui", "server", "shared"],
 };
 
 export const TREES = ["client", "core", "ui", "server", "shared", "mcp"];

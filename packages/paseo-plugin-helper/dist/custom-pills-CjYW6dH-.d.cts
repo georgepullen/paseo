@@ -1,37 +1,5 @@
 import { z } from 'zod';
-
-/**
- * Structural theme types for Paseo plugins.
- *
- * These interfaces mirror the Paseo host theme shapes without importing any
- * Paseo SDK module, so `paseo-plugin-helper/shared` (and everything
- * built on it) typechecks and bundles identically against Paseo v0.7 and
- * Paseo v0.8 SDKs.
- */
-interface ThemeColors {
-    readonly surface0: string;
-    readonly surface1: string;
-    readonly surface2: string;
-    readonly border: string;
-    readonly foreground: string;
-    readonly foregroundMuted: string;
-    readonly accent: string;
-    readonly accentForeground: string;
-    readonly statusSuccess: string;
-    readonly statusWarning: string;
-    readonly statusDanger: string;
-}
-interface PluginTheme {
-    readonly colors: ThemeColors;
-}
-type PlatformType = "ios" | "android" | "web";
-interface ResponsiveLayout {
-    compact: boolean;
-    platform: PlatformType;
-    width?: number;
-    height?: number;
-}
-type StatusVariant = "neutral" | "success" | "warning" | "danger" | "accent" | "info";
+import { d as StatusVariant } from './settings-BhKEPJRg.cjs';
 
 declare const CustomPillThresholdsSchema: z.ZodObject<{
     warning: z.ZodOptional<z.ZodNumber>;
@@ -104,4 +72,4 @@ declare function resolveCustomPillStatus(numericValue: number | undefined, thres
  */
 declare function formatPillDisplay(rawValue: string, prefix?: string, suffix?: string): string;
 
-export { type CustomPillDefinition as C, type PlatformType as P, type ResponsiveLayout as R, type StatusVariant as S, type ThemeColors as T, CustomPillDefinitionSchema as a, type CustomPillModal as b, CustomPillModalSchema as c, type CustomPillState as d, type CustomPillThresholds as e, CustomPillThresholdsSchema as f, type PluginTheme as g, formatPillDisplay as h, parseNumericPillValue as p, resolveCustomPillStatus as r };
+export { type CustomPillDefinition as C, CustomPillDefinitionSchema as a, type CustomPillModal as b, CustomPillModalSchema as c, type CustomPillState as d, type CustomPillThresholds as e, CustomPillThresholdsSchema as f, formatPillDisplay as g, parseNumericPillValue as p, resolveCustomPillStatus as r };

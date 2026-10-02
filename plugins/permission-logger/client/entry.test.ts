@@ -28,6 +28,31 @@ describe("permission-logger surface", () => {
     expect(source).toContain("permission-audit/client");
     expect(source).toContain('"page"');
   });
+
+  it("forwards the host theme and layout into the shared audit view", () => {
+    const source = readSource("client/surface.tsx");
+    expect(source).toContain("theme={theme}");
+    expect(source).toContain("layout={layout}");
+  });
+});
+
+describe("permission-logger client/ migration (paseo#847 Phase 3)", () => {
+  it("keeps only lifecycle engines and host-seam types from paseo-plugin-helper/client", () => {
+    const entry = readSource("index.client.tsx");
+    const surface = readSource("client/surface.tsx");
+    for (const source of [entry, surface]) {
+      expect(source).not.toMatch(/import\s*\{[^}]*\b(ModalBody|DataTable|SearchInput|usePluginTheme|PluginThemeProvider|Badge|Button|EmptyState)\b[^}]*\}\s*from\s*"paseo-plugin-helper\/client"/);
+    }
+    expect(entry).toContain("initClientHelpers");
+    expect(entry).toContain("registerSidebarSurface");
+  });
+
+  it("carries a vendored paseo-plugin-helper/ui publish tree", () => {
+    const manifest = JSON.parse(readSource("paseo-plugin.json"));
+    expect(manifest.id).toBe("permission-logger");
+    const uiIndex = readSource("client/vendor/paseo-plugin-helper/ui/index.ts");
+    expect(uiIndex).toContain("HostScroll");
+  });
 });
 
 describe("permission-logger server entry", () => {
