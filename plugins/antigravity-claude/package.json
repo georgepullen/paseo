@@ -1,0 +1,39 @@
+{
+  "name": "@xpufx/paseo-antigravity-claude",
+  "version": "0.1.0",
+  "description": "Paseo plugin that registers antigravity-claude as a separate provider for Claude and GPT models on Google Antigravity, routing to accounts with available partner-model quota.",
+  "type": "module",
+  "private": false,
+  "license": "MIT",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "keywords": [
+    "paseo",
+    "plugin",
+    "antigravity",
+    "claude",
+    "provider"
+  ],
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@getpaseo/plugin": "^0.11.0-beta.3",
+    "@types/node": "^22.20.2",
+    "typescript": "^5.9.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/xpufx/paseo.git",
+    "directory": "plugins/antigravity-claude"
+  },
+  "files": [
+    "paseo-plugin.json",
+    "README.md",
+    "LICENSE",
+    "icon.svg",
+    "index.server.ts",
+    "server"
+  ]
+}

@@ -1,0 +1,7 @@
+{
+  "id": "antigravity-claude",
+  "requirements": { "paseo": ">=0.11.0-beta.3" },
+  "build": [
+    ["npm", "install", "--omit=dev", "--ignore-scripts", "--no-audit", "--no-fund", "--no-workspaces"]
+  ]
+}
