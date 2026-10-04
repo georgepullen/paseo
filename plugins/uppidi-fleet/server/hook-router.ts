@@ -1821,6 +1821,8 @@ export class HookRouter {
   private activePaseo: PaseoApi | null = null;
   private queues = new Map<string, QueueEntry[]>();
   private pausedQueues = new Set<string>();
+  /** Global pause-all flag (#877): set by `pause('all')`, consulted by `isPaused`. */
+  private allQueuesPaused = false;
   private busyQueues = new Set<string>();
   public busyAttempts = new Map<string, number>();
   private droppedCount = new Map<string, number>();
@@ -4521,26 +4523,28 @@ export class HookRouter {
   }
 
   public pause(key?: string): string[] {
-    if (key) {
-      this.pausedQueues.add(key);
-      this.log(`[info] Queue ${key} paused`);
-    } else {
+    if (!key || key === "all") {
+      this.allQueuesPaused = true;
       for (const k of this.queues.keys()) {
         this.pausedQueues.add(k);
       }
+      for (const k of this.getEnrolledRepos()) {
+        this.pausedQueues.add(k);
+      }
+      if (this.queues.has("frontdesk") || this.readFrontDesk()?.agentId) {
+        this.pausedQueues.add("frontdesk");
+      }
       this.log("[info] All queues paused");
+    } else {
+      this.pausedQueues.add(key);
+      this.log(`[info] Queue ${key} paused`);
     }
     return Array.from(this.pausedQueues);
   }
 
   public resume(key?: string): string[] {
-    if (key) {
-      this.pausedQueues.delete(key);
-      this.log(`[info] Queue ${key} resumed`);
-      if (!this.isRepoMuted(key)) {
-        void this.drain(key);
-      }
-    } else {
+    if (!key || key === "all") {
+      this.allQueuesPaused = false;
       this.pausedQueues.clear();
       this.log("[info] All queues resumed");
       for (const k of this.queues.keys()) {
@@ -4548,12 +4552,67 @@ export class HookRouter {
           void this.drain(k);
         }
       }
+    } else {
+      if (this.allQueuesPaused) {
+        // Transition a global pause into per-queue pauses so resuming one
+        // queue keeps every other queue paused (#877).
+        for (const k of this.queues.keys()) {
+          this.pausedQueues.add(k);
+        }
+        for (const k of this.getEnrolledRepos()) {
+          this.pausedQueues.add(k);
+        }
+        this.allQueuesPaused = false;
+      }
+      this.pausedQueues.delete(key);
+      this.log(`[info] Queue ${key} resumed`);
+      if (!this.isRepoMuted(key)) {
+        void this.drain(key);
+      }
     }
     return Array.from(this.pausedQueues);
   }
 
   public isPaused(key: string): boolean {
-    return this.pausedQueues.has(key);
+    if (key === "all") return this.allQueuesPaused || this.pausedQueues.has(key);
+    return this.allQueuesPaused || this.pausedQueues.has(key);
+  }
+
+  /** True while a global `pause('all')` is in effect (#877). */
+  public isAllPaused(): boolean {
+    return this.allQueuesPaused;
+  }
+
+  /**
+   * True when every drain target owned by `agentId` is paused (#877).
+   * A global pause-all suppresses all drains; an agent with no drain targets
+   * is never suppressed so the turn_ended log keeps its existing wording.
+   */
+  private isAgentDrainSuppressed(agentId: string): boolean {
+    let hasTarget = false;
+    const frontDesk = this.readFrontDesk();
+    if (frontDesk?.agentId === agentId) {
+      hasTarget = true;
+      if (!this.isPaused("frontdesk")) return false;
+    }
+    for (const [key] of this.queues.entries()) {
+      if (key === "frontdesk") continue;
+      const orch = this.readOrchestrator(key);
+      if (orch?.agentId === agentId) {
+        hasTarget = true;
+        if (!this.isPaused(key)) return false;
+      }
+    }
+    for (const key of this.busyAttempts.keys()) {
+      if (key === "frontdesk") continue;
+      if (this.queues.has(key)) continue;
+      const orch = this.readOrchestrator(key);
+      if (orch?.agentId === agentId) {
+        hasTarget = true;
+        if (!this.isPaused(key)) return false;
+      }
+    }
+    return hasTarget;
   }
 
   public clearQueue(key: string): number {
@@ -4718,6 +4777,7 @@ export class HookRouter {
     this.busyAttempts.clear();
     this.droppedCount.clear();
     this.pausedQueues.clear();
+    this.allQueuesPaused = false;
     for (const entry of this.coalesceBuffers.values()) {
       if (entry?.timer) clearTimeout(entry.timer);
     }
@@ -4956,7 +5016,7 @@ export class HookRouter {
         clearTimeout(timer);
         this.backoffTimers.delete("frontdesk");
       }
-      if (triggerDrain && !this.isRepoMuted("frontdesk")) {
+      if (triggerDrain && !this.isRepoMuted("frontdesk") && !this.isPaused("frontdesk")) {
         void this.drain("frontdesk");
       }
     }
@@ -4972,7 +5032,7 @@ export class HookRouter {
           clearTimeout(timer);
           this.backoffTimers.delete(key);
         }
-        if (triggerDrain && items.length > 0 && !this.isRepoMuted(key)) {
+        if (triggerDrain && items.length > 0 && !this.isRepoMuted(key) && !this.isPaused(key)) {
           void this.drain(key);
         }
       }
@@ -5002,7 +5062,12 @@ export class HookRouter {
     if (!agentId) return;
 
     if (name === "agent.turn_ended") {
-      this.log(`[info] Agent turn ended for agent ${agentId}, triggering queue drain`);
+      const drainSuppressed = this.isAgentDrainSuppressed(agentId);
+      if (drainSuppressed) {
+        this.log(`[info] Agent turn ended for agent ${agentId}, queue drain suppressed (paused)`);
+      } else {
+        this.log(`[info] Agent turn ended for agent ${agentId}, triggering queue drain`);
+      }
       if (this.latestAgentMap) {
         const existing = this.latestAgentMap.get(agentId);
         if (existing) {
@@ -5012,7 +5077,7 @@ export class HookRouter {
           this.latestAgentMap.set(agentId, { id: agentId, status: "idle", activeTurn: null });
         }
       }
-      this.resetBusyForAgent(agentId, true);
+      this.resetBusyForAgent(agentId, !drainSuppressed);
     } else if (name === "agent.turn_started") {
       if (this.latestAgentMap) {
         const existing = this.latestAgentMap.get(agentId);
@@ -5090,7 +5155,7 @@ export class HookRouter {
       return;
     }
 
-    if (this.pausedQueues.has(key)) return;
+    if (this.isPaused(key)) return;
     if (this.draining.has(key)) return;
 
     const list = this.queues.get(key);
@@ -5368,7 +5433,7 @@ export class HookRouter {
         key,
         depth: entries.length,
         dropped,
-        paused: this.pausedQueues.has(key),
+        paused: this.isPaused(key),
         isBusy,
         busyAttempts,
         orchestrator: orch

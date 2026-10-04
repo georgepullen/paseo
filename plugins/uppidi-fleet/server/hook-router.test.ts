@@ -302,6 +302,211 @@ describe("hook-router in-memory queue and file persistence", () => {
   });
 });
 
+describe("hook-router queue pause-all and turn_ended drain guard (#877)", () => {
+  let tempDir: string;
+  let queueDir: string;
+  let stateDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "paseo-pause-all-test-"));
+    queueDir = join(tempDir, "queues");
+    stateDir = join(tempDir, "state");
+    clearHookLogs();
+  });
+
+  afterEach(() => {
+    try {
+      rmSync(tempDir, { recursive: true, force: true });
+    } catch {}
+  });
+
+  function createIdleRouter() {
+    const sentMessages: Array<{ id: string; text: string }> = [];
+    const mockPaseo = {
+      agents: {
+        ref: (id: string) => ({
+          current: () => ({ id, status: "idle", activeTurn: null }),
+          send: async (text: string) => {
+            sentMessages.push({ id, text });
+          },
+        }),
+      },
+    } as any;
+    const server = {
+      paseo: mockPaseo,
+      on: () => () => {},
+      before: () => () => {},
+      handle: () => {},
+      registerSettings: () => ({} as any),
+      registerProvider: () => {},
+    } as unknown as PluginServerContext;
+    const router = new HookRouter(server, { queueDir, stateDir, port: 0 });
+    return { router, sentMessages };
+  }
+
+  it("pause('all') pauses every enrolled and active queue without a literal 'all' entry", () => {
+    const { router } = createIdleRouter();
+    const keyA = "xpufx-org/pause-a";
+    const keyB = "xpufx-org/pause-b";
+    router.writeOrchestrator(keyA, "agent-pause-a");
+    router.writeOrchestrator(keyB, "agent-pause-b");
+    router.enqueue(keyA, "msg a");
+    router.enqueue(keyB, "msg b");
+
+    const paused = router.pause("all");
+    assert.equal(paused.includes("all"), false);
+    assert.equal(router.isPaused(keyA), true);
+    assert.equal(router.isPaused(keyB), true);
+    assert.equal(router.isAllPaused(), true);
+  });
+
+  it("pause() without args behaves identically to pause('all')", () => {
+    const { router } = createIdleRouter();
+    const key = "xpufx-org/pause-noarg";
+    router.writeOrchestrator(key, "agent-pause-noarg");
+    router.enqueue(key, "msg");
+
+    router.pause();
+    assert.equal(router.isPaused(key), true);
+    assert.equal(router.isAllPaused(), true);
+  });
+
+  it("a queue created after pause-all stays paused via the global flag", () => {
+    const { router } = createIdleRouter();
+    router.pause("all");
+
+    const lateKey = "xpufx-org/pause-late";
+    router.writeOrchestrator(lateKey, "agent-pause-late");
+    router.enqueue(lateKey, "late msg");
+
+    assert.equal(router.isPaused(lateKey), true);
+    assert.equal(router.getQueue(lateKey).length, 1);
+  });
+
+  it("resume('all') clears every pause and single resume keeps other queues paused", () => {
+    const { router } = createIdleRouter();
+    const keyA = "xpufx-org/resume-a";
+    const keyB = "xpufx-org/resume-b";
+    router.writeOrchestrator(keyA, "agent-resume-a");
+    router.writeOrchestrator(keyB, "agent-resume-b");
+    router.enqueue(keyA, "msg a");
+    router.enqueue(keyB, "msg b");
+    router.pause("all");
+
+    router.resume(keyA);
+    assert.equal(router.isPaused(keyA), false);
+    assert.equal(router.isPaused(keyB), true);
+    assert.equal(router.isAllPaused(), false);
+
+    router.pause("all");
+    assert.equal(router.isPaused(keyA), true);
+    assert.equal(router.isPaused(keyB), true);
+
+    router.resume("all");
+    assert.equal(router.isPaused(keyA), false);
+    assert.equal(router.isPaused(keyB), false);
+    assert.equal(router.isAllPaused(), false);
+  });
+
+  it("drain is suppressed while paused and fires after resume-all", async () => {
+    const { router, sentMessages } = createIdleRouter();
+    const key = "xpufx-org/drain-paused";
+    router.writeOrchestrator(key, "agent-drain-paused");
+    router.pause("all");
+
+    router.enqueue(key, "paused task");
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(sentMessages.length, 0);
+    assert.equal(router.getQueue(key).length, 1);
+
+    await router.drain(key);
+    assert.equal(sentMessages.length, 0);
+    assert.equal(router.getQueue(key).length, 1);
+
+    router.resume("all");
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(sentMessages.length, 1);
+    assert.equal(router.getQueue(key).length, 0);
+  });
+
+  it("agent.turn_ended suppresses the drain log and drain while paused, drains after resume", async () => {
+    const { router, sentMessages } = createIdleRouter();
+    const key = "xpufx-org/turn-ended-paused";
+    const agentId = "agent-turn-ended-paused";
+    router.writeOrchestrator(key, agentId);
+    router.pause("all");
+    router.enqueue(key, "queued while paused");
+    router.busyAttempts.set(key, 3);
+
+    clearHookLogs();
+    router.handleLifecycleEvent("agent.turn_ended", { agent: { id: agentId } });
+    const suppressedLogs = getHookLogs(20).join("\n");
+    assert.match(suppressedLogs, /queue drain suppressed \(paused\)/);
+    assert.doesNotMatch(suppressedLogs, /triggering queue drain/);
+
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(sentMessages.length, 0);
+    assert.equal(router.getQueue(key).length, 1);
+    // Busy state is still released even though the drain was suppressed.
+    assert.equal(router.busyAttempts.has(key), false);
+
+    clearHookLogs();
+    router.resume("all");
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(sentMessages.length, 1);
+    assert.equal(router.getQueue(key).length, 0);
+  });
+
+  it("agent.turn_ended still triggers the drain log and drain when unpaused", async () => {
+    let busy = true;
+    const heldSent: Array<{ id: string; text: string }> = [];
+    const heldPaseo = {
+      agents: {
+        ref: (id: string) => ({
+          current: () =>
+            busy
+              ? { id, status: "running", activeTurn: { id: "turn-live" } }
+              : { id, status: "idle", activeTurn: null },
+          send: async (text: string) => {
+            heldSent.push({ id, text });
+          },
+        }),
+      },
+    } as any;
+    const heldServer = {
+      paseo: heldPaseo,
+      on: () => () => {},
+      before: () => () => {},
+      handle: () => {},
+      registerSettings: () => ({} as any),
+      registerProvider: () => {},
+    } as unknown as PluginServerContext;
+    const heldRouter = new HookRouter(heldServer, { queueDir, stateDir, port: 0 });
+
+    const key = "xpufx-org/turn-ended-open";
+    const agentId = "agent-turn-ended-open";
+    heldRouter.writeOrchestrator(key, agentId);
+
+    // Busy agent holds the message in the queue.
+    heldRouter.enqueue(key, "held task");
+    await new Promise((r) => setTimeout(r, 30));
+    assert.equal(heldSent.length, 0);
+    assert.equal(heldRouter.getQueue(key).length, 1);
+
+    // Agent finishes: turn_ended must log the drain trigger and deliver.
+    busy = false;
+    clearHookLogs();
+    heldRouter.handleLifecycleEvent("agent.turn_ended", { agent: { id: agentId } });
+    const openLogs = getHookLogs(20).join("\n");
+    assert.match(openLogs, /triggering queue drain/);
+    assert.doesNotMatch(openLogs, /suppressed \(paused\)/);
+
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(heldSent.length, 1);
+    assert.equal(heldRouter.getQueue(key).length, 0);
+  });
+});
+
 describe("hook-router HTTP server endpoints", () => {
   let tempDir: string;
   let queueDir: string;
