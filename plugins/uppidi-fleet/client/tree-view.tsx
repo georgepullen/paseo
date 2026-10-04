@@ -18,10 +18,11 @@ import {
   StatusDot,
   TextInput,
   copyToClipboard,
-  usePluginTheme,
   useRpcMutation,
   useRpcQuery,
 } from "paseo-plugin-helper/client";
+import { useFleetTheme } from "./theme.js";
+import { MetricsBar } from "./metrics-bar.js";
 import { useToast } from "@getpaseo/plugin/client/react-native";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
 import {
@@ -134,7 +135,7 @@ export function AgentStatusLight({
   size = 8,
 }: AgentStatusLightProps) {
   const [hovered, setHovered] = useState(false);
-  const { colors } = usePluginTheme();
+  const { colors } = useFleetTheme();
   const color = getStatusLightColor(agent);
   const isWorking = color === STATUS_LIGHT_GREEN;
 
@@ -156,7 +157,9 @@ export function AgentStatusLight({
       try {
         window.open(agent.url, "_blank");
         return;
-      } catch {}
+      } catch (err) {
+        console.error(`[uppidi-fleet] agent status light: window.open failed for ${agent.id}:`, err);
+      }
     }
     const url = agent.url || `paseo://agent/${agent.id}`;
     Linking.openURL(url).catch(() => {
@@ -469,14 +472,14 @@ export function AgentHealthGauge({
   expanded = false,
   now = Date.now(),
 }: AgentHealthGaugeProps) {
-  const { colors } = usePluginTheme();
+  const { colors } = useFleetTheme();
   const metrics = agent.metrics;
   // Absent gauge for legacy payloads: no metrics block, nothing rendered.
   if (!metrics) return null;
 
   const gauge: HealthGauge = deriveHealthGauge(agent, DEFAULT_HEALTH_GAUGE_THRESHOLDS, now);
   const toneColor = healthToneColor(gauge.overall, colors);
-  const trackColor = colors.surface2 ?? "#334155";
+  const trackColor = colors.surface2;
   const width = compact ? 28 : 56;
   const height = 4;
 
@@ -599,7 +602,7 @@ export interface AgentMetricsCardProps {
  * Renders null when the agent has no metrics block.
  */
 export function AgentMetricsCard({ agent, now = Date.now() }: AgentMetricsCardProps) {
-  const { colors, typography } = usePluginTheme();
+  const { colors, typography } = useFleetTheme();
   const metrics = agent.metrics;
   if (!metrics) return null;
 
@@ -1361,7 +1364,7 @@ export function FrontDeskWatchDrawer({
                   onPress={handleResumeScroll}
                   accessibilityLabel="Resume scroll"
                   style={{
-                    backgroundColor: colors.surface2 ?? colors.surface1,
+                    backgroundColor: colors.surface2,
                     borderColor: colors.border,
                     borderWidth: 1,
                     borderRadius: 14,
@@ -1642,7 +1645,7 @@ export interface AgentAttentionBannerProps {
  * blocked on operator input. Returns null for healthy agents.
  */
 export function AgentAttentionBanner({ agent, compact = false }: AgentAttentionBannerProps) {
-  const { colors, typography } = usePluginTheme();
+  const { colors, typography } = useFleetTheme();
   const toast = useToast();
   const permissions = agent.pendingPermissions ?? [];
   const hasPermission = permissions.length > 0;
@@ -1652,8 +1655,8 @@ export function AgentAttentionBanner({ agent, compact = false }: AgentAttentionB
 
   const tone: "warning" | "danger" = hasPermission ? "danger" : "warning";
   const accentColor = hasPermission
-    ? colors.statusDanger ?? "#ef4444"
-    : colors.statusWarning ?? "#f59e0b";
+    ? colors.statusDanger
+    : colors.statusWarning;
 
   const handleCopyCommand = async (command: string) => {
     const ok = await copyToClipboard(command, { toast, toastMessage: "Adjudication command" });
@@ -1763,7 +1766,7 @@ export function DenseAgentRow({
   archivingAgentId,
   onArchiveAgent,
 }: DenseAgentRowProps) {
-  const { alpha } = usePluginTheme();
+  const { alpha } = useFleetTheme();
   const [isHovered, setIsHovered] = useState(false);
   const [metricsOpen, setMetricsOpen] = useState(false);
   const agent = node.agent;
@@ -2003,7 +2006,7 @@ export function OrchestratorRow({
   childCount?: number;
   isLast?: boolean;
 }) {
-  const { alpha } = usePluginTheme();
+  const { alpha } = useFleetTheme();
   const [isHovered, setIsHovered] = useState(false);
   const [metricsOpen, setMetricsOpen] = useState(false);
   const agent = node.agent;
@@ -2563,7 +2566,7 @@ export const UppidiFleetTreeView: React.FC<UppidiFleetTreeViewProps> = ({
   repoSortDirection: propsRepoSortDirection,
   onRepoSortDirectionChange,
 }) => {
-  const { colors, typography } = usePluginTheme();
+  const { colors, typography } = useFleetTheme();
   const toast = useToast();
   const [query, setQuery] = useState("");
   const [stateFilter, setStateFilter] = useState<string>("all");
@@ -3099,56 +3102,14 @@ export const UppidiFleetTreeView: React.FC<UppidiFleetTreeViewProps> = ({
        * the Queue page, so these values are copied rather than approximated and
        * a test pins them so the two cannot drift apart again.
        */}
-      <Row
-        wrap
-        gap="xs"
-        align="center"
-        style={{
-          backgroundColor: colors.surface1 ?? "rgba(255,255,255,0.03)",
-          paddingHorizontal: 6,
-          paddingVertical: 4,
-          borderRadius: 6,
-          borderWidth: 1,
-          borderColor: colors.border ?? "transparent",
-        }}
+      <MetricsBar
+        chips={FLEET_STATE_FILTERS}
+        selectedId={stateFilter}
+        onSelect={setStateFilter}
+        colors={colors}
+        typography={typography}
+        hideZeroIds={["failed"]}
       >
-        {FLEET_STATE_FILTERS.map(({ id, label, count, icon }) => {
-          // A permanent "0 Failed" chip is noise; the Queue bar drops its
-          // zero-count criticals the same way.
-          if (count === 0 && id === "failed") return null;
-          const selected = stateFilter === id;
-          return (
-            <React.Fragment key={id}>
-              <InteractiveRow
-                onPress={() => setStateFilter(id)}
-                accessibilityRole="button"
-                accessibilityLabel={`Filter ${label}`}
-                style={{
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: 5,
-                  paddingHorizontal: 8,
-                  paddingVertical: 3,
-                  borderRadius: 4,
-                  backgroundColor: selected
-                    ? (colors.surface2 ?? "rgba(255,255,255,0.08)")
-                    : "transparent",
-                }}
-                pressedOpacity={0.7}
-              >
-                <Icon name={icon} size={13} color={colors.foregroundMuted} />
-                <Text style={{ color: colors.foregroundMuted, ...typography.caption, fontSize: 11 }}>
-                  {label}:
-                </Text>
-                <Text style={{ color: colors.foreground, fontWeight: "700", fontSize: 12 }}>
-                  {count}
-                </Text>
-              </InteractiveRow>
-              <View style={{ width: 1, height: 14, backgroundColor: colors.border }} />
-            </React.Fragment>
-          );
-        })}
-
         {allProjects.length > 0 && (
           <Button
             label={allProjectsCollapsed ? "Expand All" : "Collapse All"}
@@ -3188,7 +3149,7 @@ export const UppidiFleetTreeView: React.FC<UppidiFleetTreeViewProps> = ({
             height={26}
           />
         </View>
-      </Row>
+      </MetricsBar>
 
       {/* 1. Fleet Front Desk Hero (Elevated at Top of All) — singleton (#470) */}
       <FrontDeskHero

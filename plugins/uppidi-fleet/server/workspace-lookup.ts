@@ -257,7 +257,9 @@ export function resolveWorkspaceForRepo(
       if (existsSync(w.cwd)) {
         score += 10;
       }
-    } catch {}
+    } catch (err) {
+      console.warn(`[uppidi-fleet:workspace-lookup] disk existence check failed:`, err);
+    }
 
     scoredCandidates.push({
       workspace: w,

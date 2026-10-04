@@ -9,6 +9,7 @@ import { agentsPayload, installPayloads } from "./testing/fleet-fixtures.js";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const surface = readFileSync(join(HERE, "surface.tsx"), "utf8");
 const tree = readFileSync(join(HERE, "tree-view.tsx"), "utf8");
+const bar = readFileSync(join(HERE, "metrics-bar.tsx"), "utf8");
 const searchInputSource = readFileSync(
   join(HERE, "../../../packages/paseo-plugin-helper/src/client/components/SearchInput.tsx"),
   "utf8",
@@ -64,22 +65,20 @@ describe("search input height matches the filter-row pills (#645)", () => {
 
   it("keeps the neighbouring chips and preset buttons in their compact anatomy", () => {
     // If either side grows, the height match below would let the search box
-    // grow with it — so the chips themselves are pinned first.
+    // grow with it — so the chips themselves are pinned first. The chip
+    // anatomy lives in the shared bar both surfaces render.
     for (const token of [
       "fontSize: 11",
       'fontWeight: "700", fontSize: 12',
       "paddingHorizontal: 8",
       "paddingVertical: 3",
+      "gap: 5",
     ]) {
-      assert.ok(surface.includes(token), `queue chip is missing ${token}`);
+      assert.ok(bar.includes(token), `queue chip is missing ${token}`);
     }
     assert.ok(
       surface.includes('size="sm"'),
       "the queue preset buttons must stay size sm",
-    );
-    assert.ok(
-      tree.includes("gap: 5"),
-      "the fleet chips must keep their compact gap",
     );
   });
 

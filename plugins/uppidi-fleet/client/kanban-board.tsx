@@ -7,10 +7,10 @@ import {
   Row,
   StatusDot,
   SearchInput,
-  usePluginTheme,
   InteractiveRow,
 } from "paseo-plugin-helper/client";
 import { HostScroll } from "paseo-plugin-helper/ui";
+import { useFleetTheme } from "./theme.js";
 import type { UppidiIssue, AttentionLabel, KanbanColumnId } from "../shared/contracts.js";
 
 export interface KanbanColumnDef {
@@ -160,7 +160,7 @@ export function KanbanCard({
   onDragStart,
   onDragEnd,
 }: KanbanCardProps) {
-  const { colors, typography } = usePluginTheme();
+  const { colors, typography } = useFleetTheme();
   const transitions = getColumnTransitions(columnId);
   const attention = ATTENTION_CONFIG[issue.attention] ?? { label: "Agent", variant: "neutral" };
   const isWeb = Platform.OS === "web";
@@ -173,12 +173,16 @@ export function KanbanCard({
     if (e && e.dataTransfer && e.nativeEvent && !e.nativeEvent.dataTransfer) {
       try {
         e.nativeEvent.dataTransfer = e.dataTransfer;
-      } catch {}
+      } catch (err) {
+        console.error("[uppidi-fleet] kanban drag-and-drop:", err);
+      }
     }
     if (e && !e.dataTransfer && e.nativeEvent?.dataTransfer) {
       try {
         e.dataTransfer = e.nativeEvent.dataTransfer;
-      } catch {}
+      } catch (err) {
+        console.error("[uppidi-fleet] kanban drag-and-drop:", err);
+      }
     }
     const dts = new Set<any>();
     if (e?.dataTransfer) dts.add(e.dataTransfer);
@@ -202,8 +206,8 @@ export function KanbanCard({
   };
 
   const cardStyle: Record<string, any> = {
-    backgroundColor: colors.surface0 ?? "#18181b",
-    borderColor: colors.border ?? "#3f3f46",
+    backgroundColor: colors.surface0,
+    borderColor: colors.border,
     borderWidth: 1,
     borderRadius: 8,
     padding: 10,
@@ -235,7 +239,7 @@ export function KanbanCard({
           >
             <Text
               style={{
-                color: colors.accent ?? "#38bdf8",
+                color: colors.accent,
                 fontWeight: "700",
                 fontSize: 12,
               }}
@@ -257,7 +261,7 @@ export function KanbanCard({
         <Text
           numberOfLines={3}
           style={{
-            color: colors.foreground ?? "#f4f4f5",
+            color: colors.foreground,
             fontWeight: "600",
             fontSize: 13,
             lineHeight: 18,
@@ -274,7 +278,7 @@ export function KanbanCard({
             <Badge label={issue.branch} variant="neutral" size="sm" />
           )}
           {issue.comments !== undefined && issue.comments > 0 && (
-            <Text style={{ color: colors.foregroundMuted ?? "#a1a1aa", ...typography.caption, fontSize: 11 }}>
+            <Text style={{ color: colors.foregroundMuted, ...typography.caption, fontSize: 11 }}>
               💬 {issue.comments}
             </Text>
           )}
@@ -291,7 +295,7 @@ export function KanbanCard({
           marginTop: 2,
           paddingTop: 6,
           borderTopWidth: 1,
-          borderTopColor: colors.border ?? "#3f3f46",
+          borderTopColor: colors.border,
         }}
       >
         {transitions.map((t) => (
@@ -354,7 +358,7 @@ export function UppidiFleetKanbanBoard({
   onFilterQueryChange,
   isLoading = false,
 }: UppidiFleetKanbanBoardProps) {
-  const { colors, typography } = usePluginTheme();
+  const { colors, typography } = useFleetTheme();
   const [internalQuery, setInternalQuery] = useState("");
   const [transitioningIssueId, setTransitioningIssueId] = useState<number | null>(null);
   const [dragOverColumn, setDragOverColumn] = useState<KanbanColumnId | null>(null);
@@ -411,7 +415,9 @@ export function UppidiFleetKanbanBoard({
     if (e?.nativeEvent?.preventDefault) {
       try {
         e.nativeEvent.preventDefault();
-      } catch {}
+      } catch (err) {
+        console.error("[uppidi-fleet] kanban drag-and-drop:", err);
+      }
     }
     const dts = new Set<any>();
     if (e?.dataTransfer) dts.add(e.dataTransfer);
@@ -419,7 +425,9 @@ export function UppidiFleetKanbanBoard({
     for (const dt of dts) {
       try {
         dt.dropEffect = "move";
-      } catch {}
+      } catch (err) {
+        console.error("[uppidi-fleet] kanban drag-and-drop:", err);
+      }
     }
     if (dragOverColumn !== colId) {
       setDragOverColumn(colId);
@@ -431,7 +439,9 @@ export function UppidiFleetKanbanBoard({
     if (e?.nativeEvent?.preventDefault) {
       try {
         e.nativeEvent.preventDefault();
-      } catch {}
+      } catch (err) {
+        console.error("[uppidi-fleet] kanban drag-and-drop:", err);
+      }
     }
     const dts = new Set<any>();
     if (e?.dataTransfer) dts.add(e.dataTransfer);
@@ -439,7 +449,9 @@ export function UppidiFleetKanbanBoard({
     for (const dt of dts) {
       try {
         dt.dropEffect = "move";
-      } catch {}
+      } catch (err) {
+        console.error("[uppidi-fleet] kanban drag-and-drop:", err);
+      }
     }
     setDragOverColumn(colId);
   };
@@ -458,13 +470,17 @@ export function UppidiFleetKanbanBoard({
     if (e?.nativeEvent?.preventDefault) {
       try {
         e.nativeEvent.preventDefault();
-      } catch {}
+      } catch (err) {
+        console.error("[uppidi-fleet] kanban drag-and-drop:", err);
+      }
     }
     e.stopPropagation?.();
     if (e?.nativeEvent?.stopPropagation) {
       try {
         e.nativeEvent.stopPropagation();
-      } catch {}
+      } catch (err) {
+        console.error("[uppidi-fleet] kanban drag-and-drop:", err);
+      }
     }
     setDragOverColumn(null);
 
@@ -491,7 +507,9 @@ export function UppidiFleetKanbanBoard({
             if (issueToTransition) break;
           }
         }
-      } catch {}
+      } catch (err) {
+        console.error("[uppidi-fleet] kanban drag-and-drop:", err);
+      }
     }
 
     if (!issueToTransition) {
@@ -539,8 +557,8 @@ export function UppidiFleetKanbanBoard({
               gap="xs"
               align="center"
               style={{
-                backgroundColor: colors.surface1 ?? "#27272a",
-                borderColor: colors.border ?? "#3f3f46",
+                backgroundColor: colors.surface1,
+                borderColor: colors.border,
                 borderWidth: 1,
                 borderRadius: 6,
                 paddingHorizontal: 8,
@@ -548,10 +566,10 @@ export function UppidiFleetKanbanBoard({
               }}
             >
               <StatusDot variant={col.tone === "accent" ? "info" : col.tone} />
-              <Text style={{ color: colors.foregroundMuted ?? "#a1a1aa", ...typography.caption, fontSize: 11 }}>
+              <Text style={{ color: colors.foregroundMuted, ...typography.caption, fontSize: 11 }}>
                 {col.title}:
               </Text>
-              <Text style={{ color: colors.foreground ?? "#f4f4f5", fontWeight: "700", fontSize: 11 }}>
+              <Text style={{ color: colors.foreground, fontWeight: "700", fontSize: 11 }}>
                 {issuesByColumn[col.id].length}
               </Text>
             </Row>
@@ -582,11 +600,11 @@ export function UppidiFleetKanbanBoard({
             width: 290,
             minWidth: 260,
             backgroundColor: isOver
-              ? (colors.surface2 ?? "#333338")
-              : (colors.surface1 ?? "#27272a"),
+              ? (colors.surface2)
+              : (colors.surface1),
             borderColor: isOver
-              ? (colors.accent ?? "#38bdf8")
-              : (colors.border ?? "#3f3f46"),
+              ? (colors.accent)
+              : (colors.border),
             borderWidth: isOver ? 2 : 1,
             borderStyle: isOver ? "dashed" : "solid",
             borderRadius: 8,
@@ -611,12 +629,12 @@ export function UppidiFleetKanbanBoard({
                 paddingBottom: 8,
                 marginBottom: 8,
                 borderBottomWidth: 1,
-                borderBottomColor: colors.border ?? "#3f3f46",
+                borderBottomColor: colors.border,
               }}
             >
               <Row align="center" gap="xs">
                 <StatusDot variant={col.tone === "accent" ? "info" : col.tone} />
-                <Text style={{ color: colors.foreground ?? "#f4f4f5", fontWeight: "600", fontSize: 13 }}>
+                <Text style={{ color: colors.foreground, fontWeight: "600", fontSize: 13 }}>
                   {col.title}
                 </Text>
               </Row>
@@ -634,7 +652,7 @@ export function UppidiFleetKanbanBoard({
             >
               <Text
                 style={{
-                  color: colors.foregroundMuted ?? "#a1a1aa",
+                  color: colors.foregroundMuted,
                   ...typography.caption,
                   fontSize: 12,
                 }}

@@ -2277,6 +2277,61 @@ export class HookRouter {
     const details = ciFailureDetailsFromPayload(body);
     if (!details) {
       return { acted: false, reason: "missing run or repository in payload" };
+    }
+
+    const host = resolveForgejoHost();
+    const token = await this.resolveApiToken(host);
+
+    const existing = await this.findOpenCiFailureIssue(details.repo, details.title, host, token);
+    if (existing != null) {
+      this.log(`[info] ci failure: open issue already exists for ${details.title} (${details.repo}#${existing})`);
+      return { acted: false, reason: `open issue already exists: ${details.repo}#${existing}`, createdIssue: null };
+    }
+
+    const create = await forgejoApiRequest<any>(
+      "POST",
+      `/api/v1/repos/${details.repo}/issues`,
+      {
+        title: details.title,
+        body: formatCiFailureBody(details),
+        labels: [...CI_FAILURE_LABELS],
+      },
+      { host, token },
+    );
+    if (create.outcome !== "ok") {
+      const detail = create.error;
+      this.log(`[warn] ci failure: failed to create issue in ${details.repo}: ${detail}`);
+      return { acted: false, reason: `issue create failed: ${detail}` };
+    }
+    const createdIssue = typeof create.data?.number === "number" ? create.data.number : null;
+    this.log(`[info] ci failure: created issue ${details.repo}#${createdIssue} for ${details.title}`);
+    return { acted: true, reason: "ci run failed", createdIssue };
+  }
+
+  /**
+   * Dedup lookup (#865): find an open issue in `repo` whose title exactly
+   * matches the CI failure title. Returns the issue number, or null.
+   */
+  private async findOpenCiFailureIssue(
+    repo: string,
+    title: string,
+    host: string,
+    token: string | null,
+  ): Promise<number | null> {
+    const res = await forgejoApiGet<Array<{ number: number; title: string }>>(
+      `/api/v1/repos/${repo}/issues?state=open&limit=50`,
+      { host, token },
+    );
+    if (res.outcome !== "ok") {
+      const detail = res.error;
+      this.log(`[warn] ci failure: could not list open issues in ${repo}: ${detail}`);
+      return null;
+    }
+    const match = (res.data ?? []).find((issue) => issue.title === title);
+    return match?.number ?? null;
+  }
+
+  /**
    * Seed a newly created repository with the canonical label catalogue and the
    * standard fleet onboarding issue. Idempotent: an existing Issue #1 short-
    * circuits creation, and label reconciliation only creates or updates.
@@ -2293,10 +2348,6 @@ export class HookRouter {
     const host = resolveForgejoHost();
     const token = await this.resolveApiToken(host);
 
-    const existing = await this.findOpenCiFailureIssue(details.repo, details.title, host, token);
-    if (existing != null) {
-      this.log(`[info] ci failure: open issue already exists for ${details.title} (${details.repo}#${existing})`);
-      return { acted: false, reason: `open issue already exists: ${details.repo}#${existing}`, createdIssue: null };
     const catalogueRes = await forgejoApiGet<{ manifest_version?: number; labels?: any[] }>(
       REPO_ONBOARDING_CATALOGUE_PATH,
       { host, token },
@@ -2341,11 +2392,6 @@ export class HookRouter {
 
     const create = await forgejoApiRequest<any>(
       "POST",
-      `/api/v1/repos/${details.repo}/issues`,
-      {
-        title: details.title,
-        body: formatCiFailureBody(details),
-        labels: [...CI_FAILURE_LABELS],
       `/api/v1/repos/${repo}/issues`,
       {
         title: REPO_ONBOARDING_ISSUE_TITLE,
@@ -2356,35 +2402,6 @@ export class HookRouter {
     );
     if (create.outcome !== "ok") {
       const detail = create.error;
-      this.log(`[warn] ci failure: failed to create issue in ${details.repo}: ${detail}`);
-      return { acted: false, reason: `issue create failed: ${detail}` };
-    }
-    const createdIssue = typeof create.data?.number === "number" ? create.data.number : null;
-    this.log(`[info] ci failure: created issue ${details.repo}#${createdIssue} for ${details.title}`);
-    return { acted: true, reason: "ci run failed", createdIssue };
-  }
-
-  /**
-   * Dedup lookup (#865): find an open issue in `repo` whose title exactly
-   * matches the CI failure title. Returns the issue number, or null.
-   */
-  private async findOpenCiFailureIssue(
-    repo: string,
-    title: string,
-    host: string,
-    token: string | null,
-  ): Promise<number | null> {
-    const res = await forgejoApiGet<Array<{ number: number; title: string }>>(
-      `/api/v1/repos/${repo}/issues?state=open&limit=50`,
-      { host, token },
-    );
-    if (res.outcome !== "ok") {
-      const detail = res.error;
-      this.log(`[warn] ci failure: could not list open issues in ${repo}: ${detail}`);
-      return null;
-    }
-    const match = (res.data ?? []).find((issue) => issue.title === title);
-    return match?.number ?? null;
       this.log(`[warn] repo onboarding: failed to create ${repo}#${issueNumber}: ${detail}`);
       return {
         acted: false,
@@ -2632,10 +2649,14 @@ export class HookRouter {
             if (parsed && typeof parsed.key === "string" && parsed.key.trim()) {
               set.add(parsed.key.trim());
             }
-          } catch {}
+          } catch (err) {
+            this.log(`[warn] state read/parse failed (hook-router.ts:2259): ${err}`);
+          }
         }
       }
-    } catch {}
+    } catch (err) {
+      this.log(`[warn] state read/parse failed (hook-router.ts:2262): ${err}`);
+    }
 
     for (const key of this.queues.keys()) {
       if (key !== "frontdesk") {
@@ -3333,7 +3354,9 @@ export class HookRouter {
           }
         }
       }
-    } catch {}
+    } catch (err) {
+      this.log(`[warn] state read/parse failed (hook-router.ts:2960): ${err}`);
+    }
     return active;
   }
 
@@ -3350,10 +3373,14 @@ export class HookRouter {
             if (parsed && typeof parsed.agentId === "string" && parsed.agentId.trim()) {
               ids.add(parsed.agentId.trim());
             }
-          } catch {}
+          } catch (err) {
+            this.log(`[warn] state read/parse failed (hook-router.ts:2977): ${err}`);
+          }
         }
       }
-    } catch {}
+    } catch (err) {
+      this.log(`[warn] state read/parse failed (hook-router.ts:2980): ${err}`);
+    }
     return Array.from(ids);
   }
 
@@ -3380,10 +3407,14 @@ export class HookRouter {
                 recordsMap.set(canonical, rec);
               }
             }
-          } catch {}
+          } catch (err) {
+            this.log(`[warn] defensive failed (hook-router.ts:3007): ${err}`);
+          }
         }
       }
-    } catch {}
+    } catch (err) {
+      this.log(`[warn] defensive failed (hook-router.ts:3010): ${err}`);
+    }
     return Array.from(recordsMap.values()).sort((a, b) => a.key.localeCompare(b.key));
   }
 
@@ -4393,7 +4424,9 @@ export class HookRouter {
       if (existsSync(target)) {
         try {
           unlinkSync(target);
-        } catch {}
+        } catch (err) {
+          this.log(`[warn] file purge/delete failed (hook-router.ts:4020): ${err}`);
+        }
       }
       return;
     }
@@ -4497,7 +4530,9 @@ export class HookRouter {
         unlinkSync(target);
         count++;
       }
-    } catch {}
+    } catch (err) {
+      this.log(`[warn] file purge/delete failed (hook-router.ts:4124): ${err}`);
+    }
     this.queues.delete(key);
     this.busyQueues.delete(key);
     this.busyAttempts.delete(key);
@@ -4524,7 +4559,9 @@ export class HookRouter {
         try {
           unlinkSync(p);
           count++;
-        } catch {}
+        } catch (err) {
+          this.log(`[warn] file purge/delete failed (hook-router.ts:4151): ${err}`);
+        }
       }
     }
 
@@ -4550,10 +4587,14 @@ export class HookRouter {
           try {
             unlinkSync(join(this.stateDir, file));
             count++;
-          } catch {}
+          } catch (err) {
+            this.log(`[warn] file purge/delete failed (hook-router.ts:4177): ${err}`);
+          }
         }
       }
-    } catch {}
+    } catch (err) {
+      this.log(`[warn] file purge/delete failed (hook-router.ts:4180): ${err}`);
+    }
     this.log(`[info] Purged all orchestrators (${count} file(s) removed)`);
     return count;
   }
@@ -4567,7 +4608,9 @@ export class HookRouter {
           unlinkSync(target);
           count++;
         }
-      } catch {}
+      } catch (err) {
+        this.log(`[warn] file purge/delete failed (hook-router.ts:4194): ${err}`);
+      }
     }
     try {
       if (existsSync(this.queueDir)) {
@@ -4576,11 +4619,15 @@ export class HookRouter {
             try {
               unlinkSync(join(this.queueDir, file));
               count++;
-            } catch {}
+            } catch (err) {
+              this.log(`[warn] file purge/delete failed (hook-router.ts:4203): ${err}`);
+            }
           }
         }
       }
-    } catch {}
+    } catch (err) {
+      this.log(`[warn] file purge/delete failed (hook-router.ts:4207): ${err}`);
+    }
     for (const timer of this.backoffTimers.values()) {
       clearTimeout(timer);
     }
@@ -4632,7 +4679,9 @@ export class HookRouter {
           unlinkSync(target);
           fileRemoved = true;
         }
-      } catch {}
+      } catch (err) {
+        this.log(`[warn] file purge/delete failed (hook-router.ts:4259): ${err}`);
+      }
 
       const jsonlTarget = join(this.queueDir, `${sanitizeKey(key)}.jsonl`);
       try {
@@ -4640,7 +4689,9 @@ export class HookRouter {
           unlinkSync(jsonlTarget);
           fileRemoved = true;
         }
-      } catch {}
+      } catch (err) {
+        this.log(`[warn] file purge/delete failed (hook-router.ts:4267): ${err}`);
+      }
     }
 
     this.log(`[info] Purged queue for ${rawKey}: ${purgedMessages} message(s) purged, fileRemoved=${fileRemoved}`);
@@ -4795,7 +4846,9 @@ export class HookRouter {
         for (const off of unsubs) {
           try {
             off();
-          } catch {}
+          } catch (err) {
+            this.log(`[warn] lifecycle unsubscribe failed (hook-router.ts:4422): ${err}`);
+          }
         }
       };
     }
@@ -5889,9 +5942,13 @@ export function getFleetRosterInfo(): {
           if (parsed && typeof parsed.key === "string" && parsed.key.trim()) {
             enrolledSet.add(parsed.key.trim());
           }
-        } catch {}
+        } catch (err) {
+          console.warn(`[uppidi-fleet:hook-router] state read/parse failed (hook-router.ts:5516): ${err}`);
+        }
       }
-    } catch {}
+    } catch (err) {
+      console.warn(`[uppidi-fleet:hook-router] state read/parse failed (hook-router.ts:5518): ${err}`);
+    }
   }
 
   const repoQueuedHooks: Record<string, number> = {};
@@ -5919,9 +5976,13 @@ export function getFleetRosterInfo(): {
               repoQueuedHooks[key] = parsed.length;
               enrolledSet.add(key);
             }
-          } catch {}
+          } catch (err) {
+            console.warn(`[uppidi-fleet:hook-router] state read/parse failed (hook-router.ts:5546): ${err}`);
+          }
         }
-      } catch {}
+      } catch (err) {
+        console.warn(`[uppidi-fleet:hook-router] state read/parse failed (hook-router.ts:5548): ${err}`);
+      }
     }
   }
 

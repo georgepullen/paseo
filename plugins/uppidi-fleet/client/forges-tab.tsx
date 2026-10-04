@@ -13,7 +13,6 @@ import {
   Row,
   Stack,
   ModalBody,
-  usePluginTheme,
   useRpcQuery,
   getClientHost,
   TicketLifecycleView,
@@ -24,6 +23,7 @@ import {
   ScopedLabelGroup,
   InteractiveRow,
 } from "paseo-plugin-helper/client";
+import { useFleetTheme } from "./theme.js";
 import { defineContract } from "paseo-plugin-helper/shared";
 import { z } from "zod";
 import { isRepoMatching } from "../shared/sort-filter.js";
@@ -99,7 +99,13 @@ class SafeWorkspaceBoundary extends React.Component<
   static getDerivedStateFromError() {
     return { hasError: true };
   }
-  componentDidCatch() {}
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    // The boundary renders null on failure, so without this log a broken
+    // workspace watcher would blank the directory with no trace at all.
+    console.error(
+      `[uppidi-fleet] SafeWorkspaceBoundary caught an error (componentStack: ${errorInfo?.componentStack ?? "n/a"}): ${error?.message ?? String(error)}`,
+    );
+  }
   render() {
     if (this.state.hasError) return null;
     return this.props.children;
@@ -146,7 +152,7 @@ function ForgeIssuesViewInner({
   selectedRepo: controlledSelectedRepo,
   onSelectRepo,
 }: ForgeIssuesViewProps) {
-  const { colors } = usePluginTheme();
+  const { colors } = useFleetTheme();
   const { Icon } = getClientHost();
   const [searchQuery, setSearchQuery] = useState("");
 

@@ -20,7 +20,7 @@ describe("fleet state filter row folded into the header (#645 follow-up)", () =>
         `state "${id}" must remain filterable`,
       );
     }
-    assert.ok(src.includes("setStateFilter(id)"), "the header chips must still drive the filter");
+    assert.ok(src.includes("onSelect={setStateFilter}"), "the header chips must still drive the filter");
   });
 
   it("keeps the controls that shared the deleted row", () => {
@@ -42,7 +42,7 @@ describe("fleet state filter row folded into the header (#645 follow-up)", () =>
 
   it("still hides a zero Failed chip, as the badge did", () => {
     assert.ok(
-      /count === 0 && id === "failed"/.test(src),
+      /hideZeroIds=\{\["failed"\]\}/.test(src),
       "a zero Failed chip must stay hidden",
     );
   });

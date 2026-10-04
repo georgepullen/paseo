@@ -1374,10 +1374,14 @@ export async function handleFleetResetState(
             try {
               fs.unlinkSync(join(legacyBoardStateDir, file));
               boardStateFiles++;
-            } catch {}
+            } catch (err) {
+              console.warn(`[uppidi-fleet:agents] file delete failed:`, err);
+            }
           }
         }
-      } catch {}
+      } catch (err) {
+        console.warn(`[uppidi-fleet:agents] file delete failed:`, err);
+      }
     }
 
     // 3. Clear queues on router and on disk
@@ -1433,10 +1437,14 @@ export async function handleFleetResetState(
                 if (parsed && typeof parsed.agentId === "string" && parsed.agentId.trim()) {
                   orchestratorIds.add(parsed.agentId.trim());
                 }
-              } catch {}
+              } catch (err) {
+                console.warn(`[uppidi-fleet:agents] state read/parse failed:`, err);
+              }
             }
           }
-        } catch {}
+        } catch (err) {
+          console.warn(`[uppidi-fleet:agents] state read/parse failed:`, err);
+        }
       }
 
       // Also check active Paseo agents to catch any running orchestrator
@@ -1447,7 +1455,9 @@ export async function handleFleetResetState(
             orchestratorIds.add(a.id);
           }
         }
-      } catch {}
+      } catch (err) {
+        console.warn(`[uppidi-fleet:agents] live agent fetch failed:`, err);
+      }
 
       const resetNotice =
         "[uppidi-fleet] Fleet state reset: cache, board-state, and event queues have been purged by operator. " +
@@ -1458,7 +1468,9 @@ export async function handleFleetResetState(
         if (router && typeof (router as any).deliverMessage === "function") {
           try {
             sent = await router.deliverMessage(orchId, resetNotice, { noWait: true, steer: true });
-          } catch {}
+          } catch (err) {
+            console.warn(`[uppidi-fleet:agents] message delivery failed:`, err);
+          }
         }
         if (!sent) {
           try {
@@ -2277,7 +2289,9 @@ export async function resolveRepoWorkspace(
         return { cwd: match.cwd || match.path, workspaceId: resolvedWorkspaceId };
       }
     }
-  } catch {}
+  } catch (err) {
+    console.warn(`[uppidi-fleet:agents] workspace resolution failed:`, err);
+  }
 
   // 2. Try matching against existing agents
   if (context) {
@@ -2289,7 +2303,9 @@ export async function resolveRepoWorkspace(
       if (matching?.cwd && fs.existsSync(matching.cwd)) {
         return { cwd: matching.cwd, workspaceId: (matching as any).workspaceId };
       }
-    } catch {}
+    } catch (err) {
+      console.warn(`[uppidi-fleet:agents] live agent fetch failed:`, err);
+    }
   }
 
   // 3. Fall back to standard ~/code/<repoBasename> path if it exists
@@ -2523,7 +2539,9 @@ export async function handleUppidiFrontDeskActivity(
         const live = await fetchPaseoAgents(context);
         const fd = live.find((a) => a.category === "front-desk" && a.status !== "closed" && a.status !== "failed");
         if (fd) targetAgentId = fd.id;
-      } catch {}
+      } catch (err) {
+        console.warn(`[uppidi-fleet:agents] live agent fetch failed:`, err);
+      }
     }
 
     if (!targetAgentId) {
@@ -2670,7 +2688,9 @@ export async function handleUppidiFrontDeskActivity(
           agentStatus = agentStatus || match.status;
           agentMode = agentMode || match.deterministicState;
         }
-      } catch {}
+      } catch (err) {
+        console.warn(`[uppidi-fleet:agents] live agent fetch failed:`, err);
+      }
     }
 
     const signalCount = items.filter(isSignalActivityItem).length;
@@ -2717,7 +2737,9 @@ export async function handleUppidiFrontDeskPrompt(
         const live = await fetchPaseoAgents(context);
         const fd = live.find((a) => a.category === "front-desk" && a.status !== "closed" && a.status !== "failed");
         if (fd) targetAgentId = fd.id;
-      } catch {}
+      } catch (err) {
+        console.warn(`[uppidi-fleet:agents] live agent fetch failed:`, err);
+      }
     }
 
     if (!targetAgentId) {
@@ -2730,7 +2752,9 @@ export async function handleUppidiFrontDeskPrompt(
     if (router && typeof (router as any).deliverMessage === "function") {
       try {
         sent = await router.deliverMessage(targetAgentId, prompt, { steer: true, noWait: true });
-      } catch {}
+      } catch (err) {
+        console.warn(`[uppidi-fleet:agents] message delivery failed:`, err);
+      }
     }
 
     if (!sent) {

@@ -33,11 +33,14 @@ import {
   TextInput,
   TicketLifecycleView,
   NewIssueComposer,
-  usePluginTheme,
   useRpcQuery,
   useRpcMutation,
   usePluginSettings,
+  defaultDarkTheme,
 } from "paseo-plugin-helper/client";
+import { HostThemeProvider } from "paseo-plugin-helper/ui";
+import { useFleetTheme } from "./theme.js";
+import { MetricsBar } from "./metrics-bar.js";
 import {
   uppidiFleetSettingsContract,
   uppidiIssuesContract,
@@ -207,7 +210,7 @@ function FleetStatusNotice({
   fleetStatus?: UppidiFleetStatus;
   error?: string;
 }) {
-  const { colors, typography, getStatusColor } = usePluginTheme();
+  const { colors, typography, getStatusColor } = useFleetTheme();
   if (!fleetStatus || fleetStatus === "ok") return null;
   const notice = FLEET_STATUS_NOTICE[fleetStatus];
   return (
@@ -229,7 +232,7 @@ function FleetStatusNotice({
 
 /** Per-query provenance, so a red or partial fleet can be diagnosed from the panel. */
 function RunnerSourceList({ sources }: { sources: UppidiRunnerSource[] }) {
-  const { colors, typography } = usePluginTheme();
+  const { colors, typography } = useFleetTheme();
   if (sources.length === 0) return null;
   return (
     <View style={{ gap: 2 }}>
@@ -257,7 +260,7 @@ function LocalRunnerGroup({
   runners: UppidiLocalRunner[];
   sourceError?: string;
 }) {
-  const { colors, typography } = usePluginTheme();
+  const { colors, typography } = useFleetTheme();
   return (
     <View style={{ gap: "xxs", marginTop: 4 }}>
       <Text style={{ color: colors.foregroundMuted, ...typography.caption }}>
@@ -284,7 +287,7 @@ function LocalRunnerGroup({
 }
 
 export function UppidiBrandMark({ size = 20, color }: { size?: number; color?: string }) {
-  const { colors } = usePluginTheme();
+  const { colors } = useFleetTheme();
   return (
     <ForgeIcon
       host="forge.mrs.uppidi.com"
@@ -354,7 +357,7 @@ export function UppidiTopHeaderBar({
   permissionAttentionCount = 0,
   inputAttentionCount = 0,
 }: UppidiTopHeaderBarProps) {
-  const { colors, typography } = usePluginTheme();
+  const { colors, typography } = useFleetTheme();
   const routerBadge = resolveRouterStatusBadge(isConnected, isServiceRunning);
   const attentionCount = permissionAttentionCount + inputAttentionCount;
 
@@ -471,14 +474,14 @@ export interface AttentionAgentCardProps {
  * the Front Desk adjudication command rendered for one-click copy.
  */
 export function AttentionAgentCard({ agent, onOpen }: AttentionAgentCardProps) {
-  const { colors, typography } = usePluginTheme();
+  const { colors, typography } = useFleetTheme();
   const permissions = agent.pendingPermissions ?? [];
   const hasPermission = permissions.length > 0;
   const reason = getAgentAttentionReason(agent);
   const tone: "warning" | "danger" = hasPermission ? "danger" : "warning";
   const accentColor = hasPermission
-    ? colors.statusDanger ?? "#ef4444"
-    : colors.statusWarning ?? "#f59e0b";
+    ? colors.statusDanger
+    : colors.statusWarning;
 
   return (
     <AttentionBeacon
@@ -571,12 +574,12 @@ const TEARDOWN_TARGETS: Array<{
  * final confirmation button.
  */
 export function TeardownModal({ visible, onClose, onConfirm, isProcessing }: TeardownModalProps) {
-  const { colors, typography } = usePluginTheme();
+  const { colors, typography } = useFleetTheme();
   const [selectedTargets, setSelectedTargets] = useState<Set<"workers" | "orchestrators" | "frontdesk">>(new Set());
   const [confirmText, setConfirmText] = useState("");
 
   const isArmed = confirmText.trim().toUpperCase() === "TEARDOWN" && selectedTargets.size > 0;
-  const dangerColor = colors.statusDanger ?? "#ef4444";
+  const dangerColor = colors.statusDanger;
 
   const toggleTarget = (id: "workers" | "orchestrators" | "frontdesk") => {
     setSelectedTargets((prev) => {
@@ -701,8 +704,8 @@ export interface ResetStateModalProps {
  * Purges stale board state, issue cache, and queue files, and notifies orchestrators.
  */
 export function ResetStateModal({ visible, onClose, onConfirm, isProcessing = false }: ResetStateModalProps) {
-  const { colors, typography } = usePluginTheme();
-  const warningColor = colors.statusWarning ?? "#f59e0b";
+  const { colors, typography } = useFleetTheme();
+  const warningColor = colors.statusWarning;
 
   return (
     <Modal
@@ -753,7 +756,7 @@ export function ResetStateModal({ visible, onClose, onConfirm, isProcessing = fa
 }
 
 export function UppidiFleetSurface(props: PluginSurfaceProps) {
-  const { colors, typography } = usePluginTheme();
+  const { colors, typography } = useFleetTheme();
   const toast = useToast();
   const { settings, updateSettings, isUpdating: isUpdatingSettings } = usePluginSettings(uppidiFleetSettingsContract);
   const [activeTab, setActiveTab] = useState<SurfaceTab>("tree");
@@ -1282,6 +1285,7 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
   }, [rawCandidates, metricPreset, metricQuery, metricSortField, metricSortDir]);
 
   return (
+    <HostThemeProvider theme={props.theme ?? defaultDarkTheme}>
     <ModalBody
       headerMode="pinned"
       header={
@@ -2032,158 +2036,50 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
           )}
 
           {/* Dense Metrics Bar (#424) */}
-          <Row
-            wrap
-            gap="xs"
-            align="center"
-            style={{
-              backgroundColor: colors.surface1 ?? "rgba(255,255,255,0.03)",
-              paddingHorizontal: 6,
-              paddingVertical: 4,
-              borderRadius: 6,
-              borderWidth: 1,
-              borderColor: colors.border ?? "transparent",
-            }}
+          <MetricsBar
+            chips={[
+              {
+                id: "all",
+                label: "Open issues",
+                count: issuesData?.openCount ?? rawIssues.length,
+                icon: "CircleDot",
+                tone: "accent",
+                alwaysToned: true,
+              },
+              {
+                id: "needs-you",
+                label: "Needs your attention",
+                count: issuesData?.needsYouCount ?? 0,
+                icon: "Bot",
+                tone: "statusWarning",
+                countTone: "statusWarning",
+              },
+              {
+                id: "triage-review",
+                label: "Awaiting review",
+                count: issuesData?.reviewCount ?? 0,
+                icon: "GitPullRequest",
+                tone: "accent",
+                countTone: "accent",
+              },
+              ...EXTRA_METRIC_PRESETS.map(({ id, label, icon, tone }) => ({
+                id,
+                label,
+                count: presetCounts[id],
+                icon,
+                tone,
+              })),
+            ]}
+            selectedId={filter}
+            onSelect={(id) => setFilter(id as IssuePreset)}
+            colors={colors}
+            typography={typography}
           >
-            <InteractiveRow
-              onPress={() => setFilter("all")}
-              style={{
-                flexDirection: "row",
-                alignItems: "center",
-                gap: 5,
-                paddingHorizontal: 8,
-                paddingVertical: 3,
-                borderRadius: 4,
-                backgroundColor: filter === "all" ? (colors.surface2 ?? "rgba(255,255,255,0.08)") : "transparent",
-              }}
-              pressedOpacity={0.7}
-              accessibilityRole="button"
-              accessibilityLabel="Filter all open issues"
-            >
-              <Icon name="CircleDot" size={13} color={colors.accent} />
-              <Text style={{ color: colors.foregroundMuted, ...typography.caption, fontSize: 11 }}>
-                Open issues:
-              </Text>
-              <Text style={{ color: colors.foreground, fontWeight: "700", fontSize: 12 }}>
-                {issuesData?.openCount ?? rawIssues.length}
-              </Text>
-            </InteractiveRow>
-
-            <View style={{ width: 1, height: 14, backgroundColor: colors.border }} />
-
-            <InteractiveRow
-              onPress={() => setFilter("needs-you")}
-              style={{
-                flexDirection: "row",
-                alignItems: "center",
-                gap: 5,
-                paddingHorizontal: 8,
-                paddingVertical: 3,
-                borderRadius: 4,
-                backgroundColor: filter === "needs-you" ? (colors.surface2 ?? "rgba(255,255,255,0.08)") : "transparent",
-              }}
-              pressedOpacity={0.7}
-              accessibilityRole="button"
-              accessibilityLabel="Filter needs your attention"
-            >
-              <Icon
-                name="Bot"
-                size={13}
-                color={(issuesData?.needsYouCount ?? 0) > 0 ? (colors.statusWarning ?? "#f59e0b") : colors.foregroundMuted}
-              />
-              <Text style={{ color: colors.foregroundMuted, ...typography.caption, fontSize: 11 }}>
-                Needs your attention:
-              </Text>
-              <Text
-                style={{
-                  color: (issuesData?.needsYouCount ?? 0) > 0 ? (colors.statusWarning ?? "#f59e0b") : colors.foreground,
-                  fontWeight: "700",
-                  fontSize: 12,
-                }}
-              >
-                {issuesData?.needsYouCount ?? 0}
-              </Text>
-            </InteractiveRow>
-
-            <View style={{ width: 1, height: 14, backgroundColor: colors.border }} />
-
-            <InteractiveRow
-              onPress={() => setFilter("triage-review")}
-              style={{
-                flexDirection: "row",
-                alignItems: "center",
-                gap: 5,
-                paddingHorizontal: 8,
-                paddingVertical: 3,
-                borderRadius: 4,
-                backgroundColor: filter === "triage-review" ? (colors.surface2 ?? "rgba(255,255,255,0.08)") : "transparent",
-              }}
-              pressedOpacity={0.7}
-              accessibilityRole="button"
-              accessibilityLabel="Filter awaiting review"
-            >
-              <Icon
-                name="GitPullRequest"
-                size={13}
-                color={(issuesData?.reviewCount ?? 0) > 0 ? (colors.accent ?? "#38bdf8") : colors.foregroundMuted}
-              />
-              <Text style={{ color: colors.foregroundMuted, ...typography.caption, fontSize: 11 }}>
-                Awaiting review:
-              </Text>
-              <Text
-                style={{
-                  color: (issuesData?.reviewCount ?? 0) > 0 ? (colors.accent ?? "#38bdf8") : colors.foreground,
-                  fontWeight: "700",
-                  fontSize: 12,
-                }}
-              >
-                {issuesData?.reviewCount ?? 0}
-              </Text>
-            </InteractiveRow>
-
-            {/* The presets this bar did not previously cover (#645). The filter
-                row below carried all six; three had no metric here, so removing
-                it would have made them reachable only by scrolling back. */}
-            <View style={{ width: 1, height: 14, backgroundColor: colors.border }} />
-
-            {EXTRA_METRIC_PRESETS.map(({ id, label, icon, tone }) => (
-              <InteractiveRow
-                key={id}
-                onPress={() => setFilter(id)}
-                style={{
-                  flexDirection: "row",
-                  alignItems: "center",
-                  gap: 5,
-                  paddingHorizontal: 8,
-                  paddingVertical: 3,
-                  borderRadius: 4,
-                  backgroundColor:
-                    filter === id ? (colors.surface2 ?? "rgba(255,255,255,0.08)") : "transparent",
-                }}
-                pressedOpacity={0.7}
-                accessibilityRole="button"
-                accessibilityLabel={`Filter ${label}`}
-              >
-                <Icon
-                  name={icon}
-                  size={13}
-                  color={presetCounts[id] > 0 ? (colors[tone] ?? colors.accent) : colors.foregroundMuted}
-                />
-                <Text style={{ color: colors.foregroundMuted, ...typography.caption, fontSize: 11 }}>
-                  {label}:
-                </Text>
-                <Text style={{ color: colors.foreground, fontWeight: "700", fontSize: 12 }}>
-                  {presetCounts[id]}
-                </Text>
-              </InteractiveRow>
-            ))}
-
             <View style={{ flex: 1 }} />
-
             <Text style={{ color: colors.foregroundMuted, ...typography.caption, fontSize: 10 }}>
               {selectedRepo === "all" ? "All Repositories" : `Repo: ${selectedRepo}`}
             </Text>
-          </Row>
+          </MetricsBar>
 
           {/* Work Queue (Full Width) (#425) */}
           <Card variant="elevated" style={{ width: "100%" }}>
@@ -2197,8 +2093,8 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
                     gap="xxs"
                     align="center"
                     style={{
-                      backgroundColor: colors.surface1 ?? "#18181b",
-                      borderColor: colors.border ?? "#27272a",
+                      backgroundColor: colors.surface1,
+                      borderColor: colors.border,
                       borderWidth: 1,
                       borderRadius: 6,
                       padding: 2,
@@ -2477,11 +2373,12 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
         isProcessing={isResettingState}
       />
     </ModalBody>
+    </HostThemeProvider>
   );
 }
 
 function Metric({ label, value, detail, icon }: { label: string; value: string; detail: string; icon: string }) {
-  const { colors, typography } = usePluginTheme();
+  const { colors, typography } = useFleetTheme();
   return (
     <Card variant="elevated">
       <CardHeader title={label} value={value} icon={icon} />

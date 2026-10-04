@@ -441,6 +441,7 @@ describe("uppidi-fleet client entry contract", () => {
   describe("Cockpit density, unified header, and modal selection (#425, #424)", () => {
     const surfacePath = path.resolve(__dirname, "surface.tsx");
     const surfaceSource = fs.readFileSync(surfacePath, "utf8");
+    const barSource = fs.readFileSync(path.resolve(__dirname, "metrics-bar.tsx"), "utf8");
 
     it("verifies default navigation tab is tree and tab ordering (#425)", () => {
       // 1. Default activeTab is 'tree'
@@ -649,32 +650,39 @@ describe("uppidi-fleet client entry contract", () => {
     });
 
     it("verifies dense metrics bar strip (#424)", () => {
-      // Must contain all 3 issue backlog metrics in horizontal strip
+      // Must contain all 3 issue backlog metrics in horizontal strip. The
+      // labels live on the surface's chip list; the shared bar renders the
+      // colon, so the pinned anatomy is checked there.
       assert.match(
         surfaceSource,
-        /Open issues:/,
-        "dense metrics bar must include 'Open issues:'",
+        /label: "Open issues"/,
+        "dense metrics bar must include 'Open issues'",
       );
       assert.match(
         surfaceSource,
-        /Needs your attention:/,
-        "dense metrics bar must include 'Needs your attention:'",
+        /label: "Needs your attention"/,
+        "dense metrics bar must include 'Needs your attention'",
       );
       assert.match(
         surfaceSource,
-        /Awaiting review:/,
-        "dense metrics bar must include 'Awaiting review:'",
+        /label: "Awaiting review"/,
+        "dense metrics bar must include 'Awaiting review'",
+      );
+      assert.match(
+        barSource,
+        /\{chip\.label\}:/,
+        "the shared bar must render the chip label with a colon",
       );
 
       // Must support click-to-filter
       assert.match(
         surfaceSource,
-        /setFilter\(\s*["']needs-you["']\s*\)/,
+        /onSelect=\{\(id\) => setFilter\(id as IssuePreset\)\}/,
         "dense metrics bar must support click-to-filter for needs-you (operator attention)",
       );
       assert.match(
         surfaceSource,
-        /setFilter\(\s*["']triage-review["']\s*\)/,
+        /id: "triage-review"/,
         "dense metrics bar must support click-to-filter for triage-review",
       );
     });

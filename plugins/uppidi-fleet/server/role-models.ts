@@ -13,7 +13,10 @@ import type {
 
 const execFileAsync = promisify(execFile);
 
-const CONFIG_PATH = join(homedir(), ".paseo", "uppidi-fleet-role-models.json");
+const CONFIG_PATH = join(
+  homedir(),
+  process.env.UPPIDI_FLEET_ROLE_MODELS_CONFIG || "uppidi-fleet-role-models.json"
+);
 
 export const DEFAULT_ROLE_MODELS: Record<string, RoleModelConfig> = {
   "front-desk": {

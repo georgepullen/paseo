@@ -37,7 +37,9 @@ export function defaultMetricsFilePath(context?: any): string {
             const p = res.trim();
             return p.endsWith(".json") ? p : path.join(p, "metrics.json");
           }
-        } catch {}
+        } catch (err) {
+          console.warn(`[uppidi-fleet:metrics] storage provider failed:`, err);
+        }
       }
       if (typeof storage.filePath === "string" && storage.filePath.trim()) {
         return storage.filePath.trim();
@@ -49,7 +51,9 @@ export function defaultMetricsFilePath(context?: any): string {
         try {
           const res = storage.getFilePath("metrics.json");
           if (typeof res === "string" && res.trim()) return res.trim();
-        } catch {}
+        } catch (err) {
+          console.warn(`[uppidi-fleet:metrics] storage provider failed:`, err);
+        }
       }
     }
   }
@@ -621,7 +625,12 @@ export async function migrateLegacyMetrics(
     try {
       await fs.access(targetPath);
       return false;
-    } catch {}
+    } catch {
+      // Expected ENOENT: the target does not exist yet, so fall through and
+      // migrate the legacy file below. Only a non-ENOENT failure is worth
+      // surfacing, and fs.access cannot distinguish them — the migrate step
+      // reports a real failure if the legacy read/write throws.
+    }
 
     const legacyRaw = await fs.readFile(legacyPath, "utf-8");
     const parsed = JSON.parse(legacyRaw);

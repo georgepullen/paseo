@@ -13,10 +13,10 @@ import {
   type SelectOption,
   Stack,
   TextInput,
-  usePluginTheme,
   useRpcQuery,
   useRpcMutation,
 } from "paseo-plugin-helper/client";
+import { useFleetTheme } from "./theme.js";
 import {
   uppidiFleetToolListContract,
   uppidiFleetToolExecuteContract,
@@ -28,7 +28,7 @@ export interface UppidiFleetToolingProps {
 }
 
 export function UppidiFleetToolingView({ initialTool }: UppidiFleetToolingProps) {
-  const { colors, typography } = usePluginTheme();
+  const { colors, typography } = useFleetTheme();
   const toast = useToast();
 
   const toolListQuery = useRpcQuery(uppidiFleetToolListContract, {});
