@@ -668,6 +668,31 @@ const PARTS = [
     note: "The largest file in the client half and still fully deterministic: it displays whatever the server classified. Displaying an LLM's state is not being one.",
   },
   {
+    file: `${PLUGIN}/client/metrics-bar.tsx`,
+    part: "Shared metrics bar: chip anatomy, selection, zero-count hiding, theme-driven colors",
+    layer: "client",
+    label: DETERMINISTIC,
+    anchors: { exports: ["MetricsBar", "MetricsBarChip", "MetricsBarProps"] },
+    evidence: [
+      [`metrics-bar.tsx:55-66`, "container fill, border, radius and padding from theme colors"],
+      [`metrics-bar.tsx:69-74`, "zero-count hide, selection and tone derivation are boolean arithmetic"],
+      [`metrics-bar.tsx:92-98`, "icon/label/count render from props, no model call"],
+    ],
+    note: "Pure presentational component shared by the Work Queue and Agents & Fleet surfaces (#645). Renders counts computed elsewhere; same props, same chips.",
+  },
+  {
+    file: `${PLUGIN}/client/theme.ts`,
+    part: "Fleet theme accessor: host colors plus plugin typography scale",
+    layer: "client",
+    label: DETERMINISTIC,
+    anchors: { exports: ["FleetTheme", "useFleetTheme"] },
+    evidence: [
+      [`theme.ts:27-36`, "colors and status helpers from useHostTheme, typography from usePluginTheme"],
+      [`theme.ts:14-25`, "no computed-style scraping, no fallback hex chains"],
+    ],
+    note: "Thin hook composing two theme providers. Same host/plugin theme in, same FleetTheme out; no inference.",
+  },
+  {
     file: `${PLUGIN}/client/testing/fleet-fixtures.ts`,
     part: "Static fleet fixtures for client tests",
     layer: "client",
