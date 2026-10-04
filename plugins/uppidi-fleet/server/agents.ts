@@ -55,6 +55,7 @@ import type { WorkspaceProjectMap } from "../shared/contracts.js";
 import { isAgentEligibleForBulkArchive, isRepoMatching } from "../shared/sort-filter.js";
 import {
   appendHookLog,
+  formatFleetTeardownNotice,
   getActiveHookRouter,
   getFleetRosterInfo,
   loadRouterConfig,
@@ -1104,6 +1105,31 @@ export async function handleFleetTeardown(
     const tornDown = { workers: 0, orchestrators: 0, frontdesk: 0 };
     const errors: string[] = [];
 
+    const router = getActiveHookRouter();
+
+    // Notify remaining registered groups BEFORE archiving/culling (#872).
+    // Delivered via the hook-router queue so the payload survives teardown.
+    // Preview counts are derived from the agents about to be culled.
+    const previewCounts = {
+      workers: agentsToTeardown.filter((a) => a.category === "worker").length,
+      orchestrators: agentsToTeardown.filter((a) => a.category === "orchestrator").length,
+      frontdesk: agentsToTeardown.filter((a) => a.category === "front-desk").length,
+    };
+    const teardownNotice = formatFleetTeardownNotice(input.targets, previewCounts);
+    let teardownQueuedKeys: string[] = [];
+    let teardownDelivered = 0;
+    if (router) {
+      try {
+        const broadcast = await router.broadcastTeardownNotice(teardownNotice, {
+          targets: input.targets,
+        });
+        teardownQueuedKeys = broadcast.queuedKeys;
+        teardownDelivered = broadcast.delivered;
+      } catch (err: any) {
+        errors.push(`Failed to broadcast teardown notice: ${err?.message || String(err)}`);
+      }
+    }
+
     for (const agent of agentsToTeardown) {
       const success = await archiveAgentById(agent.id, context);
       if (success) {
@@ -1114,8 +1140,6 @@ export async function handleFleetTeardown(
         errors.push(`Failed to archive agent ${agent.id} (${agent.name})`);
       }
     }
-
-    const router = getActiveHookRouter();
     const home = process.env.HOME ?? os.homedir();
     const persistedDir = getPersistedStateDir();
     const pluginDataDir = join(home, ".paseo", "plugin-data", "xpufx", "uppidi-fleet");
@@ -1262,14 +1286,67 @@ export async function handleFleetTeardown(
       }
     }
 
+    // Reconcile router registry + queue states to teardown status (#872):
+    // release stale locks, suppress false amnesia/lock alerts for culled ids,
+    // and persist the teardown stamp.
+    if (router) {
+      try {
+        const culledIds = agentsToTeardown.map((a) => a.id);
+        if (typeof (router as any).markFleetTeardown === "function") {
+          (router as any).markFleetTeardown(input.targets, culledIds);
+        }
+        // Ensure the pre-cull broadcast survives the queue purge above for
+        // remaining groups. `frontdesk` is exempt from QUEUE_UNORCHESTRATED, so
+        // it doubles as the audit trail when everything was culled.
+        const survivingFrontDesk = !targetSet.has("frontdesk") && teardownQueuedKeys.includes("frontdesk");
+        const survivingOrchestrators = !targetSet.has("orchestrators")
+          ? teardownQueuedKeys.filter((k) => k !== "frontdesk")
+          : [];
+        if (survivingFrontDesk || survivingOrchestrators.length > 0) {
+          for (const key of survivingOrchestrators) {
+            try {
+              if ((router as any).getQueue(key).length === 0) {
+                (router as any).enqueue(key, teardownNotice, true);
+              }
+            } catch {}
+          }
+          try {
+            if (survivingFrontDesk && (router as any).getQueue("frontdesk").length === 0) {
+              (router as any).enqueue("frontdesk", teardownNotice, true);
+            }
+          } catch {}
+        } else if (isGeneralTeardown) {
+          try {
+            (router as any).enqueue("frontdesk", teardownNotice, true);
+            teardownQueuedKeys = ["frontdesk"];
+          } catch {}
+        }
+      } catch (err: any) {
+        errors.push(`Failed to reconcile teardown router state: ${err?.message || String(err)}`);
+      }
+    }
+
     const totalTornDown = tornDown.workers + tornDown.orchestrators + tornDown.frontdesk;
 
     let message = "";
     if (totalTornDown === 0 && agentsToTeardown.length === 0) {
       message = "No agents found matching the selected teardown targets";
+      if (teardownQueuedKeys.length > 0) {
+        message += `; notified ${teardownQueuedKeys.length} group(s) via hook-router queue`;
+      }
     } else {
       message = `Torn down ${totalTornDown} agent(s) — ${tornDown.workers} workers, ${tornDown.orchestrators} orchestrators, ${tornDown.frontdesk} frontdesk`;
+      if (teardownQueuedKeys.length > 0 || teardownDelivered > 0) {
+        message += `; notified ${teardownQueuedKeys.length} group(s) via hook-router queue`;
+      }
     }
+
+    try {
+      appendHookLog(
+        `[info] [fleet-teardown] targets=${input.targets.join(",")} tornDown=${totalTornDown} ` +
+          `queued=${teardownQueuedKeys.join(",") || "none"} delivered=${teardownDelivered}`
+      );
+    } catch {}
 
     return {
       ok: errors.length === 0 || totalTornDown > 0,

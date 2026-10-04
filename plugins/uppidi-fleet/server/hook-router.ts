@@ -1763,6 +1763,29 @@ export function stableId(key: string, msg: string): string {
   return h.digest("hex").slice(0, 16);
 }
 
+/**
+ * Deterministic fleet-teardown broadcast payload (#872). Pure so tests can
+ * assert notify-before-cull ordering without touching I/O. Delivered via the
+ * hook-router queue so it survives the subsequent archive/cull.
+ */
+export function formatFleetTeardownNotice(
+  targets: string[],
+  counts?: { workers?: number; orchestrators?: number; frontdesk?: number },
+): string {
+  const sorted = [...targets].sort();
+  const scope = sorted.length > 0 ? sorted.join(", ") : "fleet";
+  const detail =
+    counts !== undefined
+      ? ` (${counts.workers ?? 0} workers, ${counts.orchestrators ?? 0} orchestrators, ${counts.frontdesk ?? 0} frontdesk targeted)`
+      : "";
+  return (
+    `[Fleet Teardown] TEARDOWN initiated for ${scope}${detail}. ` +
+    `Remaining Front Desk and orchestrator groups: finish in-flight handoffs, ` +
+    `do not rely on culled agents, and refresh fleet state. ` +
+    `This notice was queued before archiving so it survives teardown.`
+  );
+}
+
 const MAX_LOG_LINES = 1000;
 const logBuffer: string[] = [];
 
@@ -1823,6 +1846,10 @@ export class HookRouter {
   public readonly frontDeskThrottleMs: number;
   private lastDeliveryTimes = new Map<string, number>();
   public latestAgentMap: Map<string, WatchdogAgent> | null = null;
+  /** Teardown reconciliation state (#872): last teardown stamp + suppressed ids. */
+  public lastTeardownAt: number | null = null;
+  public lastTeardownTargets: string[] = [];
+  private tornDownAgentIds = new Set<string>();
   private watchdogTimer: NodeJS.Timeout | null = null;
   private boardSweepTimer: NodeJS.Timeout | null = null;
   public readonly options?: HookRouterOptions;
@@ -3625,6 +3652,10 @@ export class HookRouter {
 
     if (agentMap) {
       for (const agent of agentMap.values()) {
+        // Legitimate teardown must not raise amnesia/lock/permission alerts
+        // (#872): culled agents are suppressed even if a stale snapshot still
+        // lists them.
+        if (this.isTeardownSuppressedAgent(agent.id)) continue;
         if (agent.pendingPermissions && agent.pendingPermissions.length > 0) {
           const perm = agent.pendingPermissions[0] || {};
           const reqId = perm.id || perm.requestId;
@@ -3669,6 +3700,7 @@ export class HookRouter {
       const taxonomyHandled = new Set<string>();
       for (const agent of agentMap.values()) {
         if (agent.archivedAt) continue;
+        if (this.isTeardownSuppressedAgent(agent.id)) continue;
         const assessment = assessAgentHealth(agent.id, agent, diskMetadata?.get(agent.id), now, {
           cancellations,
           cancellationRecencySeconds: opts.cancellationRecencySeconds,
@@ -3787,6 +3819,8 @@ export class HookRouter {
       for (const record of orchRecords) {
         const { key, agentId } = record;
         if (!agentId) continue;
+        // Suppressed when the orchestrator was legitimately culled (#872).
+        if (this.isTeardownSuppressedAgent(agentId)) continue;
         const agent = agentMap.get(agentId);
         if (!agent) {
           anomalies.push({ type: "ORCHESTRATOR_MISSING", key, agentId });
@@ -4537,10 +4571,26 @@ export class HookRouter {
     this.busyQueues.delete(key);
     this.busyAttempts.delete(key);
     this.draining.delete(key);
+    this.droppedCount.delete(key);
+    this.pausedQueues.delete(key);
     const timer = this.backoffTimers.get(key);
     if (timer) {
       clearTimeout(timer);
       this.backoffTimers.delete(key);
+    }
+    // Drop coalesced/dedup state so a torn-down scope never retains a stale
+    // lock that suppresses future legitimate traffic (#872).
+    for (const bkey of Array.from(this.coalesceBuffers.keys())) {
+      if (bkey === key || bkey.startsWith(`${key}#`)) {
+        const entry = this.coalesceBuffers.get(bkey);
+        if (entry?.timer) clearTimeout(entry.timer);
+        this.coalesceBuffers.delete(bkey);
+      }
+    }
+    for (const skey of Array.from(this.sosStates.keys())) {
+      if (skey === key || skey.startsWith(`${key}#`)) {
+        this.sosStates.delete(skey);
+      }
     }
     return count;
   }
@@ -4579,6 +4629,12 @@ export class HookRouter {
 
   public clearAllOrchestrators(): number {
     let count = 0;
+    // Capture registered keys before unlinking so in-memory locks for those
+    // scopes can be released as well (#872: no stale locks).
+    let registeredKeys: string[] = [];
+    try {
+      registeredKeys = this.listOrchestratorRecords().map((r) => r.key);
+    } catch {}
     try {
       if (existsSync(this.stateDir)) {
         const files = readdirSync(this.stateDir);
@@ -4594,6 +4650,30 @@ export class HookRouter {
       }
     } catch (err) {
       this.log(`[warn] file purge/delete failed (hook-router.ts:4180): ${err}`);
+    }
+    for (const key of registeredKeys) {
+      this.busyQueues.delete(key);
+      this.busyAttempts.delete(key);
+      this.draining.delete(key);
+      this.droppedCount.delete(key);
+      this.pausedQueues.delete(key);
+      const timer = this.backoffTimers.get(key);
+      if (timer) {
+        clearTimeout(timer);
+        this.backoffTimers.delete(key);
+      }
+      for (const bkey of Array.from(this.coalesceBuffers.keys())) {
+        if (bkey === key || bkey.startsWith(`${key}#`)) {
+          const entry = this.coalesceBuffers.get(bkey);
+          if (entry?.timer) clearTimeout(entry.timer);
+          this.coalesceBuffers.delete(bkey);
+        }
+      }
+      for (const skey of Array.from(this.sosStates.keys())) {
+        if (skey === key || skey.startsWith(`${key}#`)) {
+          this.sosStates.delete(skey);
+        }
+      }
     }
     this.log(`[info] Purged all orchestrators (${count} file(s) removed)`);
     return count;
@@ -4636,8 +4716,148 @@ export class HookRouter {
     this.draining.clear();
     this.queues.clear();
     this.busyAttempts.clear();
+    this.droppedCount.clear();
+    this.pausedQueues.clear();
+    for (const entry of this.coalesceBuffers.values()) {
+      if (entry?.timer) clearTimeout(entry.timer);
+    }
+    this.coalesceBuffers.clear();
+    this.sosStates.clear();
     this.log(`[info] Purged all queues (${count} file(s) removed)`);
     return count;
+  }
+
+  /**
+   * Fleet-teardown reconciliation (#872): record the teardown stamp, suppress
+   * future false amnesia/lock alerts for the culled agent ids, release any
+   * remaining stale locks, and invalidate cached agent state.
+   */
+  public teardownStatusPath(): string {
+    return join(dirname(this.stateDir), "teardown-status.json");
+  }
+
+  public markFleetTeardown(targets: string[], tornDownAgentIds: string[] = []): void {
+    const now = Date.now();
+    this.lastTeardownAt = now;
+    this.lastTeardownTargets = [...targets].sort();
+    // Persist the teardown stamp so registry + queue status surfaces reflect
+    // teardown across restarts (#872).
+    try {
+      mkdirSync(dirname(this.teardownStatusPath()), { recursive: true });
+      const payload = { at: now, iso: new Date(now).toISOString(), targets: this.lastTeardownTargets };
+      const tmp = `${this.teardownStatusPath()}.${process.pid}.${Date.now()}.tmp`;
+      writeFileSync(tmp, JSON.stringify(payload, null, 2), "utf8");
+      renameSync(tmp, this.teardownStatusPath());
+    } catch {}
+    for (const id of tornDownAgentIds) {
+      if (id) this.tornDownAgentIds.add(id);
+    }
+    // Bound the suppression set so long-lived routers never leak memory.
+    if (this.tornDownAgentIds.size > 500) {
+      const trimmed = Array.from(this.tornDownAgentIds).slice(-500);
+      this.tornDownAgentIds = new Set(trimmed);
+    }
+    // Drop watchdog cooldown entries for culled agents so a stale alert key
+    // can never re-fire after legitimate teardown.
+    for (const key of Array.from(this.watchdogAlerts.keys())) {
+      for (const id of tornDownAgentIds) {
+        if (id && key.includes(id)) {
+          this.watchdogAlerts.delete(key);
+          break;
+        }
+      }
+    }
+    // Invalidate cached live state for culled agents; a full reset when the
+    // teardown covered orchestrators/frontdesk avoids ghost busy flags.
+    if (this.latestAgentMap) {
+      for (const id of tornDownAgentIds) {
+        this.latestAgentMap.delete(id);
+      }
+      if (targets.includes("orchestrators") || targets.includes("frontdesk")) {
+        // Keep the map object but drop any entry that no longer resolves to a
+        // registered orchestrator/frontdesk — stale running flags are the
+        // classic source of false TURN_CONCURRENCY_LOCK after teardown.
+        const liveOrchestratorIds = new Set(this.listOrchestratorAgentIds());
+        const frontDeskId = this.readFrontDesk()?.agentId ?? null;
+        if (frontDeskId) liveOrchestratorIds.add(frontDeskId);
+        for (const cachedId of Array.from(this.latestAgentMap.keys())) {
+          if (tornDownAgentIds.includes(cachedId)) continue;
+          // Only prune orchestrator/frontdesk-scoped entries; workers are
+          // ephemeral and already removed above when culled.
+          if (!liveOrchestratorIds.has(cachedId)) {
+            const entry = this.latestAgentMap.get(cachedId);
+            const role = String((entry as any)?.role ?? "").toLowerCase();
+            const title = String((entry as any)?.title ?? (entry as any)?.name ?? "").toLowerCase();
+            if (role === "orchestrator" || title.includes("orchestrator") || title.includes("front desk")) {
+              this.latestAgentMap.delete(cachedId);
+            }
+          }
+        }
+      }
+    }
+    this.log(
+      `[info] Fleet teardown reconciled: targets=${this.lastTeardownTargets.join(",") || "none"} ` +
+        `tornDown=${tornDownAgentIds.length} agent(s), stale locks released`,
+    );
+  }
+
+  /** True when an agent id was legitimately culled by fleet teardown (#872). */
+  public isTeardownSuppressedAgent(agentId: string): boolean {
+    if (!agentId) return false;
+    return this.tornDownAgentIds.has(agentId);
+  }
+
+  /** Teardown stamp reflected across registry + queue status surfaces (#872). */
+  public getTeardownStatus(): { at: number | null; targets: string[] } {
+    return { at: this.lastTeardownAt, targets: [...this.lastTeardownTargets] };
+  }
+
+  /**
+   * Broadcast a teardown notice via the persistent hook-router queue so it
+   * survives the subsequent archive/cull (#872). Enqueues to Front Desk and
+   * every registered orchestrator scope with SOS priority, then best-effort
+   * direct-delivers. Returns the queue keys notified.
+   */
+  public async broadcastTeardownNotice(
+    notice: string,
+    opts: { targets?: string[] } = {},
+  ): Promise<{ queuedKeys: string[]; delivered: number }> {
+    const queuedKeys: string[] = [];
+    let delivered = 0;
+    const frontDesk = this.readFrontDesk();
+    const orchestrators = this.listOrchestratorRecords();
+    const targetSet = new Set(opts.targets ?? []);
+    // Remaining groups only (#872): skip scopes being culled so we never leave
+    // an orphaned queue behind (which would trip QUEUE_UNORCHESTRATED). The
+    // caller re-enqueues an audit copy to `frontdesk` after the cull when the
+    // teardown covers everything, and `frontdesk` is exempt from that alert.
+    const includeFrontDesk = !targetSet.has("frontdesk");
+    const includeOrchestrators = !targetSet.has("orchestrators");
+    if (includeFrontDesk && frontDesk?.agentId) {
+      try {
+        this.enqueue("frontdesk", notice, true);
+        if (!queuedKeys.includes("frontdesk")) queuedKeys.push("frontdesk");
+      } catch {}
+      try {
+        const ok = await this.deliverMessage(frontDesk.agentId, notice, { noWait: true, steer: true });
+        if (ok) delivered++;
+      } catch {}
+    }
+    if (includeOrchestrators) {
+      for (const rec of orchestrators) {
+        if (!rec.agentId || !rec.key) continue;
+        try {
+          this.enqueue(rec.key, notice, true);
+          if (!queuedKeys.includes(rec.key)) queuedKeys.push(rec.key);
+        } catch {}
+        try {
+          const ok = await this.deliverMessage(rec.agentId, notice, { noWait: true, steer: true });
+          if (ok) delivered++;
+        } catch {}
+      }
+    }
+    this.log(`[info] Fleet teardown broadcast queued for ${queuedKeys.length} scope(s), delivered to ${delivered} agent(s)`);
+    return { queuedKeys, delivered };
   }
 
   public purgeQueue(repo: string): { ok: boolean; repo: string; purgedMessages: number; fileRemoved: boolean; error?: string } {
@@ -5125,6 +5345,7 @@ export class HookRouter {
       paused: Array.from(this.pausedQueues),
       totalQueued,
       repoCount: allKeys.size,
+      teardown: { at: this.lastTeardownAt, targets: [...this.lastTeardownTargets] },
     };
   }
 
