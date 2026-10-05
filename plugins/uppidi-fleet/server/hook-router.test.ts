@@ -23,7 +23,6 @@ import {
   getActiveHookRouter,
   setActiveHookRouter,
   getAvailableNetworkInterfaces,
-  getRouterConfigPath,
   loadRouterConfig,
   saveRouterConfig,
   configureHookService,
@@ -95,6 +94,21 @@ import {
 import { setFetchForTest, setTokenResolverForTest } from "./forgejo-api.js";
 import { setMetricsFilePathForTest } from "./metrics.js";
 import type { IssuesCheckIo } from "./issues-check.js";
+import { getUppidiFleetSettingsStorage, resetUppidiFleetSettingsStorageInstance } from "./settings.js";
+
+/** Drop the persisted plugin settings so each test starts from schema defaults. */
+function clearSettingsStorage(): void {
+  try {
+    rmSync(getUppidiFleetSettingsStorage().filePath, { force: true });
+  } catch {
+    // ignore missing file
+  }
+  resetUppidiFleetSettingsStorageInstance();
+}
+
+beforeEach(() => {
+  clearSettingsStorage();
+});
 
 function failingBoardIo(error: string): IssuesCheckIo {
   return {
@@ -1110,44 +1124,19 @@ describe("hook-router network interfaces and listen address configuration (#427)
     assert.ok(ifaces.includes("0.0.0.0"), "Must include 0.0.0.0");
   });
 
-  it("isolates default config path in test environment unless FORGE_HOOK_CONFIG is set", () => {
-    const originalEnv = process.env.NODE_ENV;
-    const originalConfig = process.env.FORGE_HOOK_CONFIG;
-    try {
-      process.env.NODE_ENV = "test";
-      delete process.env.FORGE_HOOK_CONFIG;
-      assert.equal(getRouterConfigPath(), "");
+  it("saves and loads router configuration through plugin settings", () => {
+    saveRouterConfig({ host: "0.0.0.0", port: 9199 });
 
-      process.env.FORGE_HOOK_CONFIG = "/custom/path/router-config.json";
-      assert.equal(getRouterConfigPath(), "/custom/path/router-config.json");
-    } finally {
-      process.env.NODE_ENV = originalEnv;
-      if (originalConfig !== undefined) {
-        process.env.FORGE_HOOK_CONFIG = originalConfig;
-      } else {
-        delete process.env.FORGE_HOOK_CONFIG;
-      }
-    }
-  });
-
-  it("saves and loads router configuration safely", () => {
-    const configPath = join(tmpDir, "router-config.json");
-    assert.deepEqual(loadRouterConfig(configPath), {});
-
-    saveRouterConfig({ host: "0.0.0.0", port: 9199 }, configPath);
-    assert.ok(existsSync(configPath));
-
-    const loaded = loadRouterConfig(configPath);
+    const loaded = loadRouterConfig();
     assert.equal(loaded.host, "0.0.0.0");
     assert.equal(loaded.port, 9199);
   });
 
   it("initializes HookRouter with persisted configuration", () => {
-    const configPath = join(tmpDir, "router-config.json");
-    saveRouterConfig({ host: "0.0.0.0", port: 8200 }, configPath);
+    saveRouterConfig({ host: "0.0.0.0", port: 8200 });
 
     const router = new HookRouter(null, {
-      configPath,
+      isTestMode: false,
       queueDir: join(tmpDir, "queues"),
       stateDir: join(tmpDir, "state"),
     });
@@ -1159,11 +1148,9 @@ describe("hook-router network interfaces and listen address configuration (#427)
   });
 
   it("reconfigures host and port, saves config, and restarts listener", async () => {
-    const configPath = join(tmpDir, "router-config.json");
     const router = new HookRouter(null, {
       host: "127.0.0.1",
       port: 0, // dynamic port for testing
-      configPath,
       queueDir: join(tmpDir, "queues"),
       stateDir: join(tmpDir, "state"),
     });
@@ -1185,7 +1172,7 @@ describe("hook-router network interfaces and listen address configuration (#427)
     assert.equal(configureResult.restarted, true);
     assert.equal(router.isListening(), true);
 
-    const savedConfig = loadRouterConfig(configPath);
+    const savedConfig = loadRouterConfig();
     assert.equal(savedConfig.host, "127.0.0.1");
 
     await router.stop();
@@ -1193,11 +1180,9 @@ describe("hook-router network interfaces and listen address configuration (#427)
   });
 
   it("configureHookService and getHookServiceStatus report accurate configuration and interfaces", async () => {
-    const configPath = join(tmpDir, "router-config.json");
     const router = new HookRouter(null, {
       host: "127.0.0.1",
       port: 0,
-      configPath,
       queueDir: join(tmpDir, "queues"),
       stateDir: join(tmpDir, "state"),
     });
@@ -1213,7 +1198,6 @@ describe("hook-router network interfaces and listen address configuration (#427)
       host: "127.0.0.1",
       port: 8888,
       restart: false,
-      configPath,
     });
 
     assert.equal(configResult.ok, true);
@@ -1230,13 +1214,11 @@ describe("hook-router per-repository muting circuit breaker and fleet roster (#4
   let tmpDir: string;
   let queueDir: string;
   let stateDir: string;
-  let configPath: string;
 
   beforeEach(() => {
     tmpDir = mkdtempSync(join(tmpdir(), "uppidi-fleet-mute-test-"));
     queueDir = join(tmpDir, "queues");
     stateDir = join(tmpDir, "state");
-    configPath = join(tmpDir, "router-config.json");
   });
 
   afterEach(() => {
@@ -1245,9 +1227,8 @@ describe("hook-router per-repository muting circuit breaker and fleet roster (#4
     } catch {}
   });
 
-  it("manages and persists mutedRepos and enrolledRepos in router config", () => {
+  it("manages and persists mutedRepos and enrolledRepos in plugin settings", () => {
     const router = new HookRouter(null, {
-      configPath,
       queueDir,
       stateDir,
       port: 0,
@@ -1262,7 +1243,7 @@ describe("hook-router per-repository muting circuit breaker and fleet roster (#4
     assert.deepEqual(router.getMutedRepos(), ["xpufx-org/paseo"]);
 
     // Verify config persisted
-    const saved = loadRouterConfig(configPath);
+    const saved = loadRouterConfig();
     assert.deepEqual(saved.mutedRepos, ["xpufx-org/paseo"]);
 
     // Toggle mute off
@@ -1309,7 +1290,6 @@ describe("hook-router per-repository muting circuit breaker and fleet roster (#4
     } as unknown as PluginServerContext;
 
     const router = new HookRouter(mockServer, {
-      configPath,
       queueDir,
       stateDir,
       port: 0,
@@ -1348,7 +1328,6 @@ describe("hook-router per-repository muting circuit breaker and fleet roster (#4
 
   it("getQueuesOverview and getStatusOverview report enrolled repositories even when queue depth is 0 (#448)", () => {
     const router = new HookRouter(null, {
-      configPath,
       queueDir,
       stateDir,
       port: 0,
@@ -1369,7 +1348,6 @@ describe("hook-router per-repository muting circuit breaker and fleet roster (#4
 
   it("getFleetRosterInfo reports enrolled repos, muted repos, and queue depths", () => {
     const router = new HookRouter(null, {
-      configPath,
       queueDir,
       stateDir,
       port: 0,

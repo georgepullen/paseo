@@ -75,65 +75,28 @@ export function getAvailableNetworkInterfaces(): string[] {
   return Array.from(result);
 }
 
-export function getRouterConfigPath(): string {
-  if (process.env.NODE_ENV === "test" && !process.env.FORGE_HOOK_CONFIG) {
-    return "";
+export function loadRouterConfig(): RouterConfig {
+  try {
+    const settings = getUppidiFleetSettingsStorage().read();
+    return {
+      host: settings.hookHost,
+      port: settings.hookPort,
+      mutedRepos: settings.mutedRepos,
+      enrolledRepos: settings.enrolledRepos,
+    };
+  } catch {
+    return {};
   }
-  if (process.env.FORGE_HOOK_CONFIG) {
-    return process.env.FORGE_HOOK_CONFIG;
-  }
-  const home = process.env.HOME ?? os.homedir();
-  const scopedPath = join(home, ".paseo", "plugin-data", "xpufx", "uppidi-fleet", "router-config.json");
-  if (existsSync(scopedPath)) return scopedPath;
-  const legacyPath = join(home, ".config", "uppidi-fleet", "router-config.json");
-  if (existsSync(legacyPath)) return legacyPath;
-  return scopedPath;
 }
 
-export function loadRouterConfig(customPath?: string): RouterConfig {
-  const configPath = customPath ?? getRouterConfigPath();
-  if (configPath && existsSync(configPath)) {
-    try {
-      const raw = readFileSync(configPath, "utf8");
-      const parsed = JSON.parse(raw);
-      if (parsed && typeof parsed === "object") {
-        return {
-          host: typeof parsed.host === "string" && parsed.host.trim() ? parsed.host.trim() : undefined,
-          port: typeof parsed.port === "number" && !isNaN(parsed.port) ? parsed.port : undefined,
-          mutedRepos: Array.isArray(parsed.mutedRepos) ? parsed.mutedRepos.filter((r: unknown) => typeof r === "string") : undefined,
-          enrolledRepos: Array.isArray(parsed.enrolledRepos) ? parsed.enrolledRepos.filter((r: unknown) => typeof r === "string") : undefined,
-        };
-      }
-    } catch {
-      // ignore corrupted config file
-    }
-  }
-  return {};
-}
-
-export function saveRouterConfig(config: RouterConfig, customPath?: string): void {
-  const configPath = customPath ?? getRouterConfigPath();
-  if (!configPath) return;
-  const dir = dirname(configPath);
-  mkdirSync(dir, { recursive: true });
-  const existing = loadRouterConfig(configPath);
-  const merged: RouterConfig = {
-    ...existing,
-    ...config,
-    mutedRepos: config.mutedRepos !== undefined ? config.mutedRepos : existing.mutedRepos,
-    enrolledRepos: config.enrolledRepos !== undefined ? config.enrolledRepos : existing.enrolledRepos,
-  };
-  const tmp = `${configPath}.${process.pid}.${Date.now()}.tmp`;
-  writeFileSync(tmp, JSON.stringify(merged, null, 2), "utf8");
-  renameSync(tmp, configPath);
-
+export function saveRouterConfig(config: RouterConfig): void {
   try {
     const storage = getUppidiFleetSettingsStorage();
     const updateData: Record<string, any> = {};
-    if (merged.host !== undefined) updateData.hookHost = merged.host;
-    if (merged.port !== undefined) updateData.hookPort = merged.port;
-    if (merged.enrolledRepos !== undefined) updateData.enrolledRepos = merged.enrolledRepos;
-    if (merged.mutedRepos !== undefined) updateData.mutedRepos = merged.mutedRepos;
+    if (config.host !== undefined) updateData.hookHost = config.host;
+    if (config.port !== undefined) updateData.hookPort = config.port;
+    if (config.enrolledRepos !== undefined) updateData.enrolledRepos = config.enrolledRepos;
+    if (config.mutedRepos !== undefined) updateData.mutedRepos = config.mutedRepos;
     if (Object.keys(updateData).length > 0) {
       storage.update((prev) => ({ ...prev, ...updateData }));
     }
@@ -145,7 +108,6 @@ export function saveRouterConfig(config: RouterConfig, customPath?: string): voi
 export interface HookRouterOptions {
   port?: number;
   host?: string;
-  configPath?: string;
   queueDir?: string;
   stateDir?: string;
   metricsFilePath?: string;
@@ -2271,7 +2233,6 @@ export class HookRouter {
   public configuredHost: string;
   public boundPort = 0;
   public boundHost = "";
-  public readonly configPath?: string;
   public readonly queueDir: string;
   public readonly stateDir: string;
   public readonly secret?: string;
@@ -2330,8 +2291,7 @@ export class HookRouter {
   constructor(server?: PluginServerContext | null, options?: HookRouterOptions) {
     this.server = server ?? null;
     this.options = options;
-    this.configPath = options?.configPath;
-    const persisted = loadRouterConfig(this.configPath);
+    const persisted = loadRouterConfig();
     const settings = (() => {
       try {
         return getUppidiFleetSettingsStorage().read();
@@ -2344,7 +2304,7 @@ export class HookRouter {
     const isTestMode =
       options?.isTestMode !== undefined
         ? options.isTestMode
-        : (process.env.NODE_ENV === "test" && !process.env.FORGE_HOOK_CONFIG && !options?.configPath);
+        : process.env.NODE_ENV === "test";
     this.isTestMode = Boolean(options?.isTestMode ?? (process.env.NODE_ENV === "test" || isTestMode));
 
     // Direct-action guards (#847) are opt-in under test so existing webhook
@@ -3236,13 +3196,10 @@ export class HookRouter {
   }
 
   private saveConfigState(): void {
-    saveRouterConfig(
-      {
-        mutedRepos: Array.from(this.mutedRepos),
-        enrolledRepos: Array.from(this.enrolledRepos),
-      },
-      this.configPath
-    );
+    saveRouterConfig({
+      mutedRepos: Array.from(this.mutedRepos),
+      enrolledRepos: Array.from(this.enrolledRepos),
+    });
   }
 
   public get port(): number {
@@ -6518,13 +6475,10 @@ export class HookRouter {
     const updatedPort =
       options.port !== undefined && options.port > 0 ? options.port : this.configuredPort;
 
-    saveRouterConfig(
-      {
-        host: updatedHost,
-        port: updatedPort,
-      },
-      this.configPath,
-    );
+    saveRouterConfig({
+      host: updatedHost,
+      port: updatedPort,
+    });
 
     this.configuredHost = updatedHost;
     this.configuredPort = updatedPort;
@@ -6954,7 +6908,7 @@ export function getHookRouterInfo(): HookInfoOutput {
 export function getHookServiceStatus(): HookServiceStatusOutput {
   const router = getActiveHookRouter();
   const listening = router ? router.isListening() : false;
-  const persisted = loadRouterConfig(router?.configPath);
+  const persisted = loadRouterConfig();
   const configuredPort = router
     ? router.configuredPort
     : (persisted.port ?? Number(process.env.FORGE_HOOK_PORT ?? process.env.HOOK_PORT ?? 8099));
@@ -6986,18 +6940,17 @@ export async function configureHookService(input: {
   host?: string;
   port?: number;
   restart?: boolean;
-  configPath?: string;
 }): Promise<HookServiceConfigOutput> {
   try {
     let router = getActiveHookRouter();
     if (!router) {
-      const persisted = loadRouterConfig(input.configPath);
+      const persisted = loadRouterConfig();
       const configuredHost =
         input.host?.trim() || persisted.host || process.env.FORGE_HOOK_HOST || "127.0.0.1";
       const configuredPort =
         input.port || persisted.port || Number(process.env.FORGE_HOOK_PORT ?? process.env.HOOK_PORT ?? 8099);
 
-      saveRouterConfig({ host: configuredHost, port: configuredPort }, input.configPath);
+      saveRouterConfig({ host: configuredHost, port: configuredPort });
 
       appendHookLog(`[info] Saved hook router configuration: host=${configuredHost}, port=${configuredPort}`);
       return {
@@ -7031,7 +6984,7 @@ export async function configureHookService(input: {
     const msg = err instanceof Error ? err.message : String(err);
     appendHookLog(`[error] Failed to configure hook router: ${msg}`);
     const router = getActiveHookRouter();
-    const persisted = loadRouterConfig(router?.configPath ?? input.configPath);
+    const persisted = loadRouterConfig();
     const cfgHost = router?.configuredHost ?? input.host ?? persisted.host ?? "127.0.0.1";
     const cfgPort = router?.configuredPort ?? input.port ?? persisted.port ?? 8099;
     return {

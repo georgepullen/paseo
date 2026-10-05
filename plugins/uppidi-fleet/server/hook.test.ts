@@ -19,8 +19,6 @@ import {
 } from "./hook-router.js";
 import {
   getUppidiFleetSettingsStorage,
-  migrateLegacyConfigIfNeeded,
-  getLegacyRouterConfig,
 } from "./settings.js";
 import { writeFileSync, mkdtempSync, rmSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -374,24 +372,17 @@ describe("uppidi-fleet hook server handlers", () => {
     assert.equal(status.capabilities.xCommsInstalled, false);
   });
 
-  it("persists hook configuration into plugin settings and migrates legacy config (#444)", async () => {
+  it("persists hook configuration into plugin settings (#444)", async () => {
     const tmpDir = mkdtempSync(join(tmpdir(), "uppidi-settings-test-"));
     try {
-      const legacyPath = join(tmpDir, "legacy-router-config.json");
-      writeFileSync(
-        legacyPath,
-        JSON.stringify({
-          host: "192.168.1.50",
-          port: 8123,
-          enrolledRepos: ["xpufx-org/paseo"],
-          mutedRepos: ["xpufx-org/muted"],
-        }),
-        "utf8",
-      );
-
       const storage = getUppidiFleetSettingsStorage({ baseDir: tmpDir });
-      const migrated = migrateLegacyConfigIfNeeded(storage, legacyPath);
-      assert.equal(migrated, true);
+      storage.update((prev) => ({
+        ...prev,
+        hookHost: "192.168.1.50",
+        hookPort: 8123,
+        enrolledRepos: ["xpufx-org/paseo"],
+        mutedRepos: ["xpufx-org/muted"],
+      }));
 
       const loaded = storage.read();
       assert.equal(loaded.hookHost, "192.168.1.50");

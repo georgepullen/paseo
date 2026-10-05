@@ -2280,7 +2280,7 @@ function writePersistedOrchestrator(repo: string, agentId: string): void {
 }
 
 function enrollPersistedRepo(repo: string): void {
-  if (process.env.NODE_ENV === "test" && !process.env.FORGE_HOOK_CONFIG) {
+  if (process.env.NODE_ENV === "test") {
     return;
   }
   const config = loadRouterConfig();

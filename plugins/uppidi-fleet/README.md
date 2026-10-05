@@ -431,9 +431,8 @@ do not need a systemd unit or a separate bridge for the plugin's own queueing.
 ### 7.1 Listen address
 
 - Default: `127.0.0.1:8099`.
-- Configurable three ways, in precedence order: RPC options → plugin settings
-  (`hookHost` / `hookPort`, edited in the Cockpit **Settings** tab) → legacy
-  file (`~/.config/uppidi-fleet/router-config.json`) → environment
+- Configurable in precedence order: RPC options → plugin settings
+  (`hookHost` / `hookPort`, edited in the Cockpit **Settings** tab) → environment
   (`FORGE_HOOK_HOST`, `FORGE_HOOK_PORT` / `HOOK_PORT`).
 - On `EADDRINUSE` the router logs a warning and stands down, assuming an
   external service owns the port. Do not run two listeners on the same port and
@@ -956,7 +955,6 @@ these gaps yourself.
 
 | Path | What lives there |
 | --- | --- |
-| `~/.config/uppidi-fleet/router-config.json` | Legacy/compat router host, port, enrolled & muted repos. |
 | `~/.config/uppidi-fleet/queues/` | Persisted per-repo webhook queues. |
 | `~/.paseo/forgejo-hook/orchestrators/<key>.json` | Repo → orchestrator agent id. |
 | `~/.paseo/forgejo-hook/frontdesk.json` | Front Desk agent id (watchdog recipient; resolved via fallbacks — see [§7.7.3](#773-recipient-routing--delivery)). |
@@ -968,7 +966,7 @@ these gaps yourself.
 | `<repo-root>/.agents/skills/` | The fleet's operational skills, at the repository root (outside the plugin package). |
 
 Environment variables: `FORGE_HOOK_HOST`, `FORGE_HOOK_PORT`/`HOOK_PORT`,
-`FORGE_HOOK_SECRET` (stored, unenforced), `FORGE_HOOK_CONFIG`,
+`FORGE_HOOK_SECRET` (stored, unenforced),
 `HOOK_QUEUE_DIR`, `HOOK_STATE_DIR`, `FORGE_HOOK_URL`, `FORGEJO_HOST`,
 `FORGEJO_TOKEN`/`GITEA_TOKEN`, `HOOK_COALESCE_DISABLE`, `HOOK_DEBOUNCE_MS`,
 `HOOK_COALESCE_MAX`, `HOOK_COALESCE_WINDOW_MAX_MS`, `WATCHDOG_INTERVAL_MS`,
@@ -1134,8 +1132,8 @@ resolve persisted state via `getPersistedStateDir()` with the same
 in the live `~/.paseo/forgejo-hook/` tree and hijack real webhook routing until
 pruned by hand. The shipped suite already sets
 `HOOK_STATE_DIR=$TMPDIR/paseo-fleet-test-<pid>` when unset — keep that pattern
-in any new test that imports these modules. Test runs also skip router-config
-enrollment persistence unless `FORGE_HOOK_CONFIG` is set.
+in any new test that imports these modules. Test runs also skip enrollment
+persistence.
 
 ## 13.3 Watchdog cross-reference & the `finished` exclusion
 

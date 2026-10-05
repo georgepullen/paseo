@@ -20,7 +20,6 @@ import {
   configureHookService,
   getActiveHookRouter,
   getHookRouterInfo,
-  loadRouterConfig,
 } from "./hook-router.js";
 import { getUppidiFleetSettingsStorage } from "./settings.js";
 import { isPluginInstalled } from "paseo-plugin-helper/server";
@@ -45,7 +44,6 @@ export type HookEndpointSource =
   | "env"
   | "active-router"
   | "plugin-settings"
-  | "router-config"
   | "default";
 
 export interface ResolvedHookEndpoint {
@@ -82,10 +80,10 @@ function parseEndpointUrl(raw: string): { host: string; port: number; baseUrl: s
 /**
  * Resolves the hook router endpoint (#464, #903) into host/port/baseUrl plus the
  * rung that supplied it. This is the chain the Front Desk intro prompt reads and
- * that `resolveHookUrl` delegates to for the router/settings/config rungs:
+ * that `resolveHookUrl` delegates to for the router/settings rungs:
  * explicit argument, `FORGE_HOOK_URL`, the active router's bound/configured
- * address, plugin settings, the persisted router config, then the loopback
- * default. Wildcard binds map to 127.0.0.1.
+ * address, plugin settings, then the loopback default. Wildcard binds map to
+ * 127.0.0.1.
  */
 export function resolveHookEndpoint(provided?: string): ResolvedHookEndpoint {
   if (provided && typeof provided === "string" && provided.trim()) {
@@ -117,17 +115,6 @@ export function resolveHookEndpoint(provided?: string): ResolvedHookEndpoint {
     }
   } catch {
     // ignore storage read failures
-  }
-
-  try {
-    const persisted = loadRouterConfig();
-    const port = persisted.port;
-    const persistedUrl = formatHookUrl(persisted.host ?? DEFAULT_HOOK_HOST, port);
-    if (persistedUrl && port !== undefined) {
-      return { host: loopbackHost(persisted.host ?? DEFAULT_HOOK_HOST), port, baseUrl: persistedUrl, source: "router-config" };
-    }
-  } catch {
-    // ignore config read failures
   }
 
   return { host: DEFAULT_HOOK_HOST, port: DEFAULT_HOOK_PORT, baseUrl: FALLBACK_HOOK_URL, source: "default" };

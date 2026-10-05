@@ -231,11 +231,9 @@ operator; do not silently re-route.
 ### 5.3 The hook host resolution chain
 `scripts/frontdesk-info` performs and prints this chain deterministically. Always
 use `scripts/frontdesk-info` to obtain the active hook address (`.hook.endpoint.baseUrl`);
-never attempt to read configuration files on disk directly (`settings.json` or
-`router-config.json`):
+never attempt to read configuration files on disk directly (`settings.json`):
 1. Plugin settings (`hookHost` / `hookPort` from daemon plugin configuration)
-2. Router config (`host` / `port` fallback)
-3. Default port `8099`; host falls back to `127.0.0.1`
+2. Default port `8099`; host falls back to `127.0.0.1`
 
 Loopback answers **only** if the router is actually bound to `127.0.0.1`. On
 the current fleet deployment it is not. See the paseo repo's `docs/plugins.md` §9.
@@ -378,7 +376,6 @@ Each rule is verified against this repo's code or the orchestrator skill.
 | `~/.paseo/forgejo-hook/queue/` | Per-repo delivery queues | `GET /queues`, `GET /status` |
 | `~/.paseo/forgejo-hook.secret` | Shared webhook secret | Server-side only (never accessed by agents) |
 | `~/.paseo/plugin-data/<namespace>/uppidi-fleet/settings.json` | Plugin settings (`hookHost`/`hookPort`) | Resolved automatically by `scripts/frontdesk-info` |
-| `~/.config/uppidi-fleet/router-config.json` | Router config fallback | Resolved automatically by `scripts/frontdesk-info` |
 | `~/.paseo/agents/*/<id>.json` | Persisted per-agent metadata | `paseo ls --json`, `scripts/agent-health-check` |
 | `~/.paseo/model-health.json` | Model circuit-breaker cache | `scripts/paseo-probe status` |
 | `~/.config/systemd/user/forgejo-hook.service` | Global daemon lifecycle unit | Host administration only |

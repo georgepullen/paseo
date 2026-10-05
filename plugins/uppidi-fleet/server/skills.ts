@@ -195,7 +195,7 @@ export function setSkillsBaseDirForTest(baseDir: string | null): void {
 function resolveStorageBaseDir(options?: SkillStorageOptions): string | undefined {
   if (options?.baseDir) return options.baseDir;
   if (skillsBaseDirOverride !== null) return skillsBaseDirOverride;
-  if (process.env.NODE_ENV === "test" && !process.env.FORGE_HOOK_CONFIG) {
+  if (process.env.NODE_ENV === "test") {
     return path.join(os.tmpdir(), `paseo-uppidi-fleet-test-${process.pid}`);
   }
   return undefined;

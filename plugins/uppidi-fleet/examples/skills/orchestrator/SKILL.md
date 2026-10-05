@@ -304,7 +304,7 @@ Board ranking, triage, and dispatch are the Orchestrator's responsibility (worke
      ```
      Use `.identity.liveFrontDeskId` (not `registeredFrontDeskId`) for the escalation target, since `liveFrontDeskId` is the id that can actually receive a `paseo send`. When the registry is healthy, `liveFrontDeskId == registeredFrontDeskId`.
      Check `.identity.discrepancy`: if non-null, surface it prominently rather than proceeding silently. A mismatch means the registration is broken and someone should know before, not after, a failed send.
-     Do not inspect `frontdesk.json`, `settings.json`, or `router-config.json` directly on disk.
+     Do not inspect `frontdesk.json` or `settings.json` directly on disk.
   2. If a live Front Desk exists (`liveFrontDeskId` is non-null), dispatch the escalation:
      ```bash
      paseo send --steer --no-wait <liveFrontDeskId> "Issue https://forge.example.com/<repo>/issues/<n> needs operator attention: <concise question/action required>"

@@ -271,7 +271,7 @@ The bundled Forgejo webhook router ([`plugins/uppidi-forge/server/hook-router.ts
   When the router has not been started it is null-safe: `running:false`, `url:null`, `frontDeskAgentId:null`, empty repo list.
 - `uppidi-fleet.hook-status` — same in-process source; reports the live front desk record, paused queues, and totals. Use it when you also want queue state.
 
-Agents with MCP access should call one of these. Neither handler parses `settings.json` or `router-config.json`.
+Agents with MCP access should call one of these. Neither handler parses `settings.json`.
 
 **HTTP fallback (agents without the plugin's MCP).** Once you know the deployment address (one-time, human-provided at onboarding — see the note below), probe the router directly:
 
@@ -287,7 +287,7 @@ curl -fsS "http://<hook-host>:<port>/enrolled"  # canonical enrolled repository 
 If `/health` times out on your first guess, do not retry against loopback blindly — **ask the operator** which interface the router binds, or call `uppidi-fleet.hook.info` and use the returned `url`.
 
 > [!NOTE]
-> **Operators/debugging only — agents must not parse these files.** The router's bind address *does* originate from `hookHost` / `hookPort` in `~/.paseo/plugin-data/xpufx/uppidi-fleet/settings.json` (migrated from the legacy `~/.config/uppidi-fleet/router-config.json`). These are **writable runtime state**, not a discovery API: reading them races with live reconfiguration, and an agent that can write them can silently redirect the router. The plugin runtime ID is `uppidi-fleet` (declared in `paseo-plugin.json`), so the data directory is `uppidi-fleet` even though the source tree directory is `uppidi-forge`. Environment overrides (`FORGE_HOOK_HOST`, `FORGE_HOOK_PORT` / `HOOK_PORT`) are read by the plugin subprocess at startup. Use the RPC/`GET /info` path instead.
+> **Operators/debugging only — agents must not parse these files.** The router's bind address *does* originate from `hookHost` / `hookPort` in `~/.paseo/plugin-data/xpufx/uppidi-fleet/settings.json`. These are **writable runtime state**, not a discovery API: reading them races with live reconfiguration, and an agent that can write them can silently redirect the router. The plugin runtime ID is `uppidi-fleet` (declared in `paseo-plugin.json`), so the data directory is `uppidi-fleet` even though the source tree directory is `uppidi-forge`. Environment overrides (`FORGE_HOOK_HOST`, `FORGE_HOOK_PORT` / `HOOK_PORT`) are read by the plugin subprocess at startup. Use the RPC/`GET /info` path instead.
 
 ### 9.2 Offline registry files (operator-readable state)
 

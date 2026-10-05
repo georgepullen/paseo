@@ -15,6 +15,17 @@ import {
   getActiveHookRouter,
   clearHookLogs,
 } from "./hook-router.js";
+import { getUppidiFleetSettingsStorage, resetUppidiFleetSettingsStorageInstance } from "./settings.js";
+
+/** Drop the persisted plugin settings so each test starts from schema defaults. */
+function clearSettingsStorage(): void {
+  try {
+    rmSync(getUppidiFleetSettingsStorage().filePath, { force: true });
+  } catch {
+    // ignore missing file
+  }
+  resetUppidiFleetSettingsStorageInstance();
+}
 
 interface JsonLike {
   json: () => Promise<unknown>;
@@ -33,21 +44,18 @@ describe("uppidi-fleet repos handler (#867)", () => {
   let tempDir: string;
   let queueDir: string;
   let stateDir: string;
-  let configPath: string;
 
   beforeEach(() => {
     tempDir = mkdtempSync(join(tmpdir(), "fleet-repos-test-"));
     queueDir = join(tempDir, "queues");
     stateDir = join(tempDir, "state");
-    configPath = join(tempDir, "router.json");
-    process.env.FORGE_HOOK_CONFIG = configPath;
+    clearSettingsStorage();
   });
 
   afterEach(async () => {
     setFetchForTest(null);
     setTokenResolverForTest(null);
     delete process.env.FORGEJO_HOST;
-    delete process.env.FORGE_HOOK_CONFIG;
 
     const router = getActiveHookRouter();
     if (router) {
@@ -62,7 +70,6 @@ describe("uppidi-fleet repos handler (#867)", () => {
 
   it("lists repos from Forgejo with enrollment, mute, and queue status", async () => {
     const router = new HookRouter(null, {
-      configPath,
       queueDir,
       stateDir,
       port: 0,
@@ -182,7 +189,6 @@ describe("uppidi-fleet repos handler (#867)", () => {
 
   it("enrolls and unenrolls repositories via active HookRouter", async () => {
     const router = new HookRouter(null, {
-      configPath,
       queueDir,
       stateDir,
       port: 0,
