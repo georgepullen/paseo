@@ -14,6 +14,9 @@ boards, and router health — in one place.
 > components and occasional intervention by humans. All features may not work
 > 100% reliably.
 
+[![Forgejo orchestration architecture (light variant)](screenshots/forgejo-orchestration-light.png)](screenshots/forgejo-orchestration-light.png)
+*Forgejo orchestration architecture — light variant.*
+
 [![Uppidi Fleet Cockpit — full surface: agent tree, board, queues, and router health](screenshots/fleet-main.png)](screenshots/fleet-main.png)
 *Uppidi Fleet Cockpit — full surface: agent tree, board, queues, and router health.*
 
@@ -51,7 +54,6 @@ which pieces you must supply because the plugin does not ship them ([§10](#10-g
 
 ## Table of contents
 
-1. [The concept in one picture](#1-the-concept-in-one-picture)
 2. [Prerequisites](#2-prerequisites)
 3. [Install the plugin](#3-install-the-plugin)
 4. [The Cockpit surface](#4-the-cockpit-surface)
@@ -67,49 +69,6 @@ which pieces you must supply because the plugin does not ship them ([§10](#10-g
 14. [License](#14-license)
 
 ---
-
-## 1. The concept in one picture
-
-[![Forgejo orchestration architecture (dark variant)](screenshots/forgejo-orchestration-dark.png)](screenshots/forgejo-orchestration-dark.png)
-*Forgejo orchestration architecture — dark variant.*
-
-[![Forgejo orchestration architecture (light variant)](screenshots/forgejo-orchestration-light.png)](screenshots/forgejo-orchestration-light.png)
-*Forgejo orchestration architecture — light variant.*
-
-```
-  Forgejo board (source of truth)
-  ┌───────────────────────────────────────────────────────────────┐
-  │ issues · PRs · comments · scoped labels                       │
-  │   state/  priority/  attention/  spec/  target/  verify/      │
-  └───────────────────────────────┬───────────────────────────────┘
-                                  │ webhooks (POST /forgejo)
-                                  ▼
-  ┌───────────────────────────────────────────────────────────────┐
-  │ bundled hook router  (server/hook-router.ts)                  │
-  │   classify: routine repo events → that repo's Orchestrator    │
-  │             frontdesk events    → Front Desk                  │
-  └───────────────┬───────────────────────────────┬───────────────┘
-                  │ per-repo queue                │ frontdesk queue
-        routine repo events            frontdesk-directed events
-        (attention/*, comments,        (attention/frontdesk,
-         labels, PRs, pushes)           attention/2-user, /frontdesk)
-                  │                               │
-                  ▼                               ▼
-  ┌───────────────────────────────┐   ┌───────────────────────────┐
-  │ Orchestrator (one per repo)   │   │ Front Desk (operator      │
-  │ triage · shape · dispatch ·   │   │ liaison + triage intake)  │
-  │ review · merge                │   └─────────────▲─────────────┘
-  └───────────────┬───────────────┘                 │ operator chat
-                  │ dispatch                        │
-                  ▼                             operator
-  ┌───────────────────────────────┐
-  │ coding workers (ephemeral)    │
-  │ one isolated worktree each    │
-  └───────────────────────────────┘
-
-  Cockpit UI (Paseo sidebar + workspace panel): agent tree, board, queues, router
-  health, role models, and Front Desk / orchestrator spawn controls.
-```
 
 Four moving parts:
 
