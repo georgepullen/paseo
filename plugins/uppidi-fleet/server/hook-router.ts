@@ -24,7 +24,7 @@ import { appendRollupReceipt } from "./metrics.js";
 import { createDefaultIssuesCheckIo, runIssuesCheck, type IssuesCheckIo } from "./issues-check.js";
 import { resolveWorkspaceForRepo, type ResolvedWorkspace } from "./workspace-lookup.js";
 import { isRepoMatching } from "../shared/sort-filter.js";
-
+import { DEFAULT_ROLE_MODELS, loadSavedRoleModels } from "./role-models.js";
 
 export interface RouterConfig {
   host?: string;
@@ -159,6 +159,12 @@ export interface HookRouterOptions {
   closeGuardAcceptedLabels?: string[];
   /** Shared agent account treated as automated. Defaults to `xpufx`. */
   sharedActor?: string;
+  /** Explicit circuit breaker cache path; defaults to ~/.paseo/model-health.json */
+  circuitBreakerPath?: string;
+  modelHealthPath?: string;
+  /** Ordered model fallback list for orchestrator provision (#890). */
+  orchestratorModelFallback?: string[];
+  modelFallbackList?: string[];
   spawnAgent?: (opts: {
     title: string;
     prompt: string;
@@ -800,6 +806,9 @@ export interface WatchdogAgent {
   labels?: Record<string, string> | null;
   pendingPermissions?: WatchdogPermission[] | null;
   archivedAt?: string | null;
+  config?: { provider?: string | null; model?: string | null; [key: string]: unknown } | null;
+  recentTimeline?: string[] | string | null;
+  timeline?: unknown;
 }
 
 export interface WatchdogAnomaly {
@@ -845,6 +854,11 @@ export interface WatchdogAuditOptions {
   diskMetadata?: Map<string, WatchdogAgentDisk> | null;
   /** Cancellation-timeout markers keyed by agent id; loaded from logs when omitted. */
   cancellations?: Map<string, number | null> | null;
+  /** Recent timeline provider-retry errors keyed by agent id (#890). */
+  timelineErrors?: Map<string, string[] | string> | null;
+  /** Explicit circuit breaker cache path; defaults to ~/.paseo/model-health.json */
+  circuitBreakerPath?: string;
+  modelHealthPath?: string;
   /** Perform the 4-step active recovery pipeline (default: true). */
   recover?: boolean;
   steerMessage?: string;
@@ -917,7 +931,7 @@ const TURN_LOCK_MARKERS = [
   "concurrent turn",
   "turn concurrency",
 ];
-const QUOTA_MARKERS = [
+export const QUOTA_MARKERS = [
   "quota",
   "rate limit",
   "rate_limit",
@@ -929,6 +943,9 @@ const QUOTA_MARKERS = [
   "model unavailable",
   "usage limit",
   "upgrade to pro",
+  "usage exceeded",
+  "free usage",
+  "subscribe to",
 ];
 const TRANSIENT_MARKERS = [
   "fetch failed",
@@ -1063,11 +1080,61 @@ export function detectStaleErrorGhosting(liveStatus: unknown, lastError: unknown
   return Boolean(String(lastError ?? "").trim());
 }
 
-/** Taxonomy 6: fatal provider/quota error (not a recoverable transient). */
-export function detectProviderQuotaExhaustion(lastError: unknown): boolean {
+/**
+ * Scan recent timeline text or entries for provider retry errors indicating quota exhaustion (#890).
+ * Specifically handles lines like: `[Error] provider-retry: Provider retry (attempt 1): Free usage exceeded, subscribe to Go`.
+ */
+export function findProviderRetryQuotaError(recentTimeline: unknown): string | null {
+  if (!recentTimeline) return null;
+  const lines: string[] = [];
+  if (typeof recentTimeline === "string") {
+    lines.push(...recentTimeline.split("\n"));
+  } else if (Array.isArray(recentTimeline)) {
+    for (const item of recentTimeline) {
+      if (typeof item === "string") {
+        lines.push(item);
+      } else if (item && typeof item === "object") {
+        const text =
+          (item as any).message ??
+          (item as any).text ??
+          (item as any).detail ??
+          (item as any).error ??
+          "";
+        if (typeof text === "string" && text) {
+          lines.push(text);
+        }
+      }
+    }
+  }
+
+  for (const line of lines) {
+    const raw = String(line ?? "").trim();
+    if (!raw) continue;
+    const lower = raw.toLowerCase();
+    const isRetryOrError =
+      lower.includes("provider-retry") ||
+      lower.includes("provider retry") ||
+      lower.includes("[error]") ||
+      lower.includes("error:");
+    if (!isRetryOrError) continue;
+    if (hasMarker(lower, TRANSIENT_MARKERS)) continue;
+    if (hasMarker(lower, QUOTA_MARKERS)) {
+      return raw;
+    }
+  }
+  return null;
+}
+
+/** Taxonomy 6: fatal provider/quota error (not a recoverable transient). Checks lastError and recent timeline (#890). */
+export function detectProviderQuotaExhaustion(lastError: unknown, recentTimeline?: unknown): boolean {
   const text = String(lastError ?? "").toLowerCase();
-  if (!text || hasMarker(text, TRANSIENT_MARKERS)) return false;
-  return hasMarker(text, QUOTA_MARKERS);
+  if (text && !hasMarker(text, TRANSIENT_MARKERS) && hasMarker(text, QUOTA_MARKERS)) {
+    return true;
+  }
+  if (recentTimeline) {
+    return Boolean(findProviderRetryQuotaError(recentTimeline));
+  }
+  return false;
 }
 
 /**
@@ -1232,6 +1299,9 @@ export interface WatchdogAgentDisk {
   updatedAt?: string | null;
   archivedAt?: string | null;
   labels?: Record<string, string> | null;
+  provider?: string | null;
+  model?: string | null;
+  recentTimeline?: string[] | string | null;
 }
 
 export function defaultAgentsDir(): string {
@@ -1284,6 +1354,9 @@ export function loadAgentDiskMetadata(agentsDir: string): Map<string, WatchdogAg
         updatedAt: parsed.updatedAt ?? null,
         labels: parsed.labels && typeof parsed.labels === "object" ? parsed.labels : null,
         archivedAt: parsed.archivedAt ?? null,
+        provider: parsed.provider ?? parsed.config?.provider ?? null,
+        model: parsed.model ?? parsed.config?.model ?? null,
+        recentTimeline: parsed.recentTimeline ?? parsed.timeline ?? null,
       });
     } catch {
       // ignore corrupt metadata files
@@ -1411,6 +1484,257 @@ export function scanCancellationTimeouts(
   return latest;
 }
 
+/**
+ * Scan daemon log paths for provider retry quota exhaustion lines keyed by agentId (#890).
+ */
+export function scanTimelineRetryErrors(
+  logPaths: readonly string[],
+): Map<string, string[]> {
+  const result = new Map<string, string[]>();
+  for (const path of logPaths) {
+    let content: string;
+    try {
+      content = readFileSync(path, "utf8");
+    } catch {
+      continue;
+    }
+    for (const line of content.split("\n")) {
+      const lower = line.toLowerCase();
+      if (!lower.includes("provider-retry") && !lower.includes("provider retry") && !lower.includes("[error]")) {
+        continue;
+      }
+      if (hasMarker(lower, TRANSIENT_MARKERS) || !hasMarker(lower, QUOTA_MARKERS)) {
+        continue;
+      }
+      let agentId: string | null = null;
+      try {
+        const payload = JSON.parse(line);
+        if (payload && typeof payload === "object") {
+          agentId = typeof payload.agentId === "string" ? payload.agentId : null;
+        }
+      } catch {
+        // non-JSON log line
+      }
+      if (!agentId) {
+        const match = /"agentId"\s*:\s*"([^"]+)"/.exec(line);
+        agentId = match?.[1] ?? null;
+      }
+      if (!agentId) continue;
+      const list = result.get(agentId) ?? [];
+      list.push(line.trim());
+      result.set(agentId, list);
+    }
+  }
+  return result;
+}
+
+// ---------------------------------------------------------------------------
+// Model Health Circuit Breaker & Fallback Chain (#890)
+//
+// Maintains the shared ~/.paseo/model-health.json circuit breaker cache
+// compatible with paseo-probe, and resolves fallback model chains.
+// ---------------------------------------------------------------------------
+
+export function defaultCircuitBreakerPath(): string {
+  if (process.env.NODE_ENV === "test" && !process.env.MODEL_HEALTH_PATH) {
+    return join(os.tmpdir(), `paseo-model-health-test-${process.pid}.json`);
+  }
+  return process.env.MODEL_HEALTH_PATH || join(process.env.HOME || os.homedir(), ".paseo", "model-health.json");
+}
+
+export interface ModelHealthEntry {
+  key: string;
+  provider: string;
+  model: string;
+  status: "healthy" | "quota_exhausted" | "rate_limited" | "transient_degradation" | "unconfigured" | "unknown_error";
+  error: string | null;
+  cooldown_until: number;
+  last_checked: number;
+  source?: string;
+  remaining_cooldown_sec?: number;
+  cached?: boolean;
+}
+
+export function modelKey(provider: string, model?: string | null): string {
+  const p = String(provider ?? "").trim();
+  const m = String(model ?? "").trim();
+  if (!m) return p;
+  if (p && m.startsWith(`${p}/`)) return m;
+  return `${p}/${m}`;
+}
+
+export function parseModelKey(input: string): { provider: string; model: string } {
+  const str = String(input ?? "").trim();
+  const slashIdx = str.indexOf("/");
+  if (slashIdx === -1) {
+    return { provider: str, model: "" };
+  }
+  return {
+    provider: str.slice(0, slashIdx),
+    model: str.slice(slashIdx + 1),
+  };
+}
+
+export function readModelHealthCache(
+  cachePath: string = defaultCircuitBreakerPath(),
+): Record<string, ModelHealthEntry> {
+  try {
+    if (!existsSync(cachePath)) return {};
+    const content = readFileSync(cachePath, "utf8");
+    return JSON.parse(content || "{}");
+  } catch {
+    return {};
+  }
+}
+
+export function writeModelHealthCache(
+  data: Record<string, ModelHealthEntry>,
+  cachePath: string = defaultCircuitBreakerPath(),
+): void {
+  try {
+    const dir = dirname(cachePath);
+    if (!existsSync(dir)) {
+      mkdirSync(dir, { recursive: true });
+    }
+    const tempPath = `${cachePath}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
+    writeFileSync(tempPath, JSON.stringify(data, null, 2), "utf8");
+    try {
+      renameSync(tempPath, cachePath);
+    } catch {
+      writeFileSync(cachePath, JSON.stringify(data, null, 2), "utf8");
+      try {
+        unlinkSync(tempPath);
+      } catch {}
+    }
+  } catch {
+    // Ignore cache write errors
+  }
+}
+
+export function getCachedModelHealth(
+  key: string,
+  cachePath: string = defaultCircuitBreakerPath(),
+  nowSec: number = Math.floor(Date.now() / 1000),
+): ModelHealthEntry | null {
+  const cache = readModelHealthCache(cachePath);
+  const entry = cache[key];
+  if (!entry) return null;
+  if (entry.cooldown_until && entry.cooldown_until > nowSec) {
+    return {
+      ...entry,
+      key,
+      cached: true,
+      remaining_cooldown_sec: entry.cooldown_until - nowSec,
+    };
+  }
+  return null;
+}
+
+export function recordModelQuotaFailure(
+  provider: string,
+  model: string,
+  errorText: string,
+  cachePath: string = defaultCircuitBreakerPath(),
+  cooldownSec: number = 3600,
+  nowSec: number = Math.floor(Date.now() / 1000),
+): ModelHealthEntry {
+  let p = provider?.trim() || "";
+  let m = model?.trim() || "";
+  if (!p && m.includes("/")) {
+    const parsed = parseModelKey(m);
+    p = parsed.provider;
+    m = parsed.model;
+  }
+  const key = modelKey(p, m);
+  const entry: ModelHealthEntry = {
+    key,
+    provider: p,
+    model: m,
+    status: "quota_exhausted",
+    error: errorText,
+    cooldown_until: nowSec + cooldownSec,
+    last_checked: nowSec,
+    source: "watchdog_quota_circuit_breaker",
+  };
+  const cache = readModelHealthCache(cachePath);
+  cache[key] = entry;
+  writeModelHealthCache(cache, cachePath);
+  return entry;
+}
+
+/**
+ * Resolve the orchestrator model from explicit inputs or the configured fallback chain,
+ * skipping any candidate currently cooling down in the circuit breaker cache (#890).
+ */
+export function resolveOrchestratorModel(
+  options: {
+    requestedProvider?: string;
+    requestedModel?: string;
+    fallbackList?: readonly string[];
+    circuitBreakerPath?: string;
+    nowSec?: number;
+  } = {},
+): { provider: string; model: string; key: string } {
+  const circuitBreakerPath =
+    options.circuitBreakerPath !== undefined
+      ? options.circuitBreakerPath
+      : process.env.NODE_ENV === "test" && !process.env.MODEL_HEALTH_PATH
+        ? null
+        : defaultCircuitBreakerPath();
+  const nowSec = options.nowSec ?? Math.floor(Date.now() / 1000);
+
+  // 1. Build ordered candidate list
+  let configuredFallbacks: string[] = [];
+  if (options.fallbackList && options.fallbackList.length > 0) {
+    configuredFallbacks = [...options.fallbackList];
+  } else {
+    const orchRole = loadSavedRoleModels()?.orchestrator ?? DEFAULT_ROLE_MODELS.orchestrator;
+    configuredFallbacks = [orchRole.primaryModel, ...(orchRole.fallbackGroup ?? [])];
+  }
+
+  const rawCandidates: string[] = [];
+  if (options.requestedModel?.trim()) {
+    const reqM = options.requestedModel.trim();
+    const reqP = options.requestedProvider?.trim() || "";
+    const reqKey = reqP ? modelKey(reqP, reqM) : reqM;
+    rawCandidates.push(reqKey);
+  }
+  rawCandidates.push(...configuredFallbacks);
+
+  // Deduplicate candidates preserving order
+  const candidates: string[] = [];
+  const seen = new Set<string>();
+  for (const c of rawCandidates) {
+    const trimmed = c.trim();
+    if (trimmed && !seen.has(trimmed)) {
+      seen.add(trimmed);
+      candidates.push(trimmed);
+    }
+  }
+
+  // 2. Filter out cooling down / quota exhausted candidates
+  for (const candidate of candidates) {
+    const health = circuitBreakerPath ? getCachedModelHealth(candidate, circuitBreakerPath, nowSec) : null;
+    if (!health || health.status !== "quota_exhausted") {
+      const parsed = parseModelKey(candidate);
+      return {
+        key: candidate,
+        provider: parsed.provider,
+        model: parsed.model,
+      };
+    }
+  }
+
+  // 3. If all candidates are cooling down, fall back to first candidate
+  const fallback = candidates[0] || "antigravity-acp/gemini-3.8-flash-low";
+  const parsed = parseModelKey(fallback);
+  return {
+    key: fallback,
+    provider: parsed.provider,
+    model: parsed.model,
+  };
+}
+
 export interface WatchdogAssessment {
   agentId: string;
   name: string | null;
@@ -1441,10 +1765,12 @@ export function assessAgentHealth(
     activeWorkers?: number;
     assumePendingWork?: boolean;
     runningStaleSeconds?: number;
+    recentTimeline?: string | unknown[] | null;
+    timelineErrors?: Map<string, string[] | string> | null;
   } = {},
 ): WatchdogAssessment {
   const liveStatus = String(live?.status ?? disk?.lastStatus ?? "").toLowerCase();
-  const lastError = live?.lastError ?? disk?.lastError ?? "";
+  const rawLastError = live?.lastError ?? disk?.lastError ?? "";
   const requiresAttention = Boolean(live?.requiresAttention ?? disk?.requiresAttention);
   const attentionReason = live?.attentionReason ?? disk?.attentionReason ?? null;
   const lastActivityAt = disk?.lastActivityAt ?? live?.lastActivityAt ?? disk?.updatedAt ?? live?.updatedAt ?? null;
@@ -1454,11 +1780,27 @@ export function assessAgentHealth(
   const staleSeconds = options.runningStaleSeconds ?? DEFAULT_RUNNING_STALE_SECONDS;
   const recencySeconds = options.cancellationRecencySeconds ?? DEFAULT_CANCELLATION_RECENCY_SECONDS;
 
+  const agentTimeline =
+    options.recentTimeline ??
+    options.timelineErrors?.get(agentId) ??
+    (live as any)?.recentTimeline ??
+    (live as any)?.timeline ??
+    (disk as any)?.recentTimeline ??
+    (disk as any)?.timeline ??
+    null;
+
+  const quotaDetected = detectProviderQuotaExhaustion(rawLastError, agentTimeline);
+  const timelineQuotaError =
+    quotaDetected && !String(rawLastError ?? "").trim()
+      ? findProviderRetryQuotaError(agentTimeline)
+      : null;
+  const lastError = timelineQuotaError ?? rawLastError;
+
   // An ACP attention error with no disk error is the legacy spelling of a turn
   // lock; keep recovering it even though the status is not literally "error".
   const turnLock =
-    detectTurnConcurrencyLock(liveStatus, lastError) ||
-    (!String(lastError ?? "").trim() && requiresAttention && attentionReason === "error");
+    detectTurnConcurrencyLock(liveStatus, rawLastError) ||
+    (!String(rawLastError ?? "").trim() && requiresAttention && attentionReason === "error");
 
   const cancellationTimeout = detectCancellationTimeout(
     agentId,
@@ -1466,7 +1808,7 @@ export function assessAgentHealth(
     liveStatus,
     now,
     recencySeconds,
-    lastError,
+    rawLastError,
     lastActivityAt,
     lastHandledCancellationAt,
   );
@@ -1482,15 +1824,15 @@ export function assessAgentHealth(
     TURN_CANCELLATION_TIMEOUT: cancellationTimeout,
     IDLE_POST_ERROR_AMNESIA: detectIdlePostErrorAmnesia(
       liveStatus,
-      lastError,
+      rawLastError,
       requiresAttention,
       attentionReason,
       activeWorkers,
       options.assumePendingWork ?? false,
     ),
     ZOMBIE_HUNG_TURN: detectZombieHungTurn(liveStatus, lastActivityAt, now, staleSeconds),
-    STALE_ERROR_GHOSTING: detectStaleErrorGhosting(liveStatus, lastError),
-    PROVIDER_QUOTA_EXHAUSTION: detectProviderQuotaExhaustion(lastError),
+    STALE_ERROR_GHOSTING: detectStaleErrorGhosting(liveStatus, rawLastError),
+    PROVIDER_QUOTA_EXHAUSTION: quotaDetected,
   };
 
   const taxonomy = archived ? [] : WATCHDOG_TAXONOMY.filter((name) => checks[name]);
@@ -3237,9 +3579,17 @@ export class HookRouter {
       };
     }
 
+    const circuitBreakerPath = this.options?.circuitBreakerPath ?? this.options?.modelHealthPath;
+    const fallbackList = this.options?.orchestratorModelFallback ?? this.options?.modelFallbackList;
+    const resolvedModel = resolveOrchestratorModel({
+      requestedProvider: input.provider,
+      requestedModel: input.model,
+      fallbackList,
+      circuitBreakerPath,
+    });
     const targetMode = input.mode?.trim() || "yolo";
-    const targetProvider = input.provider?.trim() || "antigravity-acp";
-    const targetModel = input.model?.trim() || undefined;
+    const targetProvider = resolvedModel.provider;
+    const targetModel = resolvedModel.model || undefined;
     const title = `Orchestrator · ${canonicalKey}`;
     const prompt = `You are the project orchestrator for ${repo}. Follow the orchestrator skill to coordinate tasks, supervise worker agents, and manage pull requests and issues.`;
     const labels: Record<string, string> = {
@@ -3661,6 +4011,14 @@ export class HookRouter {
               defaultDaemonLogPaths(opts.daemonLogDir ?? join(process.env.HOME ?? os.homedir(), ".paseo")),
             )
           : null;
+    const timelineErrors =
+      opts.timelineErrors !== undefined
+        ? opts.timelineErrors
+        : readLogs
+          ? scanTimelineRetryErrors(
+              defaultDaemonLogPaths(opts.daemonLogDir ?? join(process.env.HOME ?? os.homedir(), ".paseo")),
+            )
+          : null;
 
     const frontDeskId = opts.frontDeskId ?? this.readFrontDesk()?.agentId ?? null;
     const orchRecords = opts.orchestratorRecords ?? this.listOrchestratorRecords();
@@ -3722,9 +4080,54 @@ export class HookRouter {
           activeWorkers: countActiveWorkers(agentMap, agent.id, diskMetadata),
           assumePendingWork: opts.assumePendingWork,
           runningStaleSeconds: opts.runningStaleSeconds,
+          timelineErrors,
         });
         if (assessment.healthy) continue;
         taxonomyHandled.add(agent.id);
+
+        if (assessment.taxonomy.includes("PROVIDER_QUOTA_EXHAUSTION")) {
+          let provider =
+            (agent as any).provider ??
+            (agent as any).config?.provider ??
+            diskMetadata?.get(agent.id)?.provider ??
+            "";
+          let model =
+            (agent as any).model ??
+            (agent as any).config?.model ??
+            diskMetadata?.get(agent.id)?.model ??
+            "";
+          if (!provider && model.includes("/")) {
+            const parsed = parseModelKey(model);
+            provider = parsed.provider;
+            model = parsed.model;
+          }
+          if (!provider && !model) {
+            const orchRec = orchRecords.find((r) => r.agentId === agent.id);
+            if (orchRec) {
+              const defaultOrch = loadSavedRoleModels()?.orchestrator ?? DEFAULT_ROLE_MODELS.orchestrator;
+              const parsed = parseModelKey(defaultOrch.primaryModel);
+              provider = parsed.provider;
+              model = parsed.model;
+            }
+          }
+          const explicitCircuitBreakerPath =
+            opts.circuitBreakerPath ??
+            opts.modelHealthPath ??
+            this.options?.circuitBreakerPath ??
+            this.options?.modelHealthPath;
+          const shouldWriteBreaker =
+            explicitCircuitBreakerPath !== undefined ||
+            (opts.agentMap === undefined && process.env.NODE_ENV !== "test") ||
+            Boolean(process.env.MODEL_HEALTH_PATH);
+          if (shouldWriteBreaker && (provider || model)) {
+            recordModelQuotaFailure(
+              provider,
+              model,
+              assessment.lastError,
+              explicitCircuitBreakerPath ?? defaultCircuitBreakerPath(),
+            );
+          }
+        }
 
         // Recovery and alerts share the watchdog cooldown so a persistently
         // wedged agent is not stop/steered on every audit tick.
@@ -3854,7 +4257,7 @@ export class HookRouter {
           const errMsg = rawErr || "unknown error";
           anomalies.push({ type: "AGENT_ERROR", key, agentId, error: errMsg });
 
-          const isUnrecoverable = /usage limit|quota|upgrade to pro|rate limit/i.test(errMsg);
+          const isUnrecoverable = /usage limit|quota|upgrade to pro|rate limit|usage exceeded|free usage|subscribe to/i.test(errMsg);
           const isTurnLock =
             /foreground turn is already active/i.test(errMsg) ||
             (!rawErr && agent.requiresAttention && agent.attentionReason === "error");

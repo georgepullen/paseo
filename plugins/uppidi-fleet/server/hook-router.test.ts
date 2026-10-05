@@ -42,6 +42,12 @@ import {
   detectZombieHungTurn,
   detectStaleErrorGhosting,
   detectProviderQuotaExhaustion,
+  findProviderRetryQuotaError,
+  scanTimelineRetryErrors,
+  recordModelQuotaFailure,
+  getCachedModelHealth,
+  resolveOrchestratorModel,
+  QUOTA_MARKERS,
   assessAgentHealth,
   planWatchdogRecovery,
   clearAgentDiskFields,
@@ -2567,6 +2573,284 @@ describe("fleet agent health taxonomy classifier (#529)", () => {
     assert.equal(detectProviderQuotaExhaustion("fetch failed: ECONNRESET"), false);
     assert.equal(detectProviderQuotaExhaustion("spawn ENOENT"), false);
     assert.equal(detectProviderQuotaExhaustion(""), false);
+  });
+
+  it("classifies provider quota exhaustion with new markers and timeline retry lines (#890)", () => {
+    // 1. New quota markers in lastError
+    assert.equal(detectProviderQuotaExhaustion("Free usage exceeded, subscribe to Go"), true);
+    assert.equal(detectProviderQuotaExhaustion("Provider retry (attempt 1): Free usage exceeded, subscribe to Go"), true);
+    assert.equal(detectProviderQuotaExhaustion("usage exceeded"), true);
+    assert.equal(detectProviderQuotaExhaustion("please subscribe to pro"), true);
+
+    // Verify QUOTA_MARKERS export
+    assert.ok(QUOTA_MARKERS.includes("usage exceeded"));
+    assert.ok(QUOTA_MARKERS.includes("free usage"));
+    assert.ok(QUOTA_MARKERS.includes("subscribe to"));
+
+    // 2. Timeline error detection when lastError is empty
+    const timelineString =
+      "[Thought] analyzing ticket\n" +
+      "[Error] provider-retry: Provider retry (attempt 1): Free usage exceeded, subscribe to Go\n" +
+      "[Thought] still waiting";
+    assert.equal(detectProviderQuotaExhaustion("", timelineString), true);
+    assert.equal(detectProviderQuotaExhaustion(null, timelineString), true);
+    assert.equal(findProviderRetryQuotaError(timelineString), "[Error] provider-retry: Provider retry (attempt 1): Free usage exceeded, subscribe to Go");
+
+    // Timeline array of objects or strings
+    const timelineArray = [
+      { type: "thought", text: "thinking" },
+      { type: "error", message: "provider-retry: Provider retry (attempt 1): Free usage exceeded, subscribe to Go" },
+    ];
+    assert.equal(detectProviderQuotaExhaustion("", timelineArray), true);
+
+    // Clean timeline without quota error
+    const cleanTimeline = [
+      { type: "thought", text: "thinking" },
+      { type: "tool", text: "[run] git status" },
+    ];
+    assert.equal(detectProviderQuotaExhaustion("", cleanTimeline), false);
+  });
+
+  it("fuses timeline retry lines into assessAgentHealth and classifies quota exhaustion (#890)", () => {
+    const retryLine = "[Error] provider-retry: Provider retry (attempt 1): Free usage exceeded, subscribe to Go";
+    const assessment = assessAgentHealth(
+      "agent-quota-1",
+      {
+        id: "agent-quota-1",
+        status: "running",
+        lastError: "",
+        recentTimeline: retryLine,
+      },
+      null,
+      now,
+    );
+
+    assert.deepEqual(assessment.taxonomy, ["PROVIDER_QUOTA_EXHAUSTION"]);
+    assert.equal(assessment.healthy, false);
+    assert.equal(assessment.severities.PROVIDER_QUOTA_EXHAUSTION, "high");
+    assert.equal(assessment.lastError, retryLine);
+    assert.equal(assessment.details.PROVIDER_QUOTA_EXHAUSTION, retryLine);
+
+    // Plan recovery blocks auto-steer
+    const plan = planWatchdogRecovery(assessment.taxonomy);
+    assert.equal(plan.steer, false);
+    assert.equal(plan.blockedReason, "provider/quota exhaustion requires operator circuit-break");
+  });
+
+  it("scans daemon logs for provider-retry quota exhaustion lines (#890)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "paseo-quota-test-"));
+    try {
+      const log = join(dir, "daemon.log");
+      writeFileSync(
+        log,
+        `${JSON.stringify({ agentId: "agent-quota-a", msg: "[Error] provider-retry: Free usage exceeded, subscribe to Go" })}\n` +
+        `plain line [Error] provider-retry: Provider retry (attempt 1): Free usage exceeded, subscribe to Go "agentId":"agent-quota-b"\n` +
+        `${JSON.stringify({ agentId: "agent-transient", msg: "[Error] provider-retry: fetch failed: ECONNRESET" })}\n`,
+      );
+      const errors = scanTimelineRetryErrors([log]);
+      assert.ok(errors.has("agent-quota-a"));
+      assert.ok(errors.has("agent-quota-b"));
+      assert.equal(errors.has("agent-transient"), false);
+      assert.match(errors.get("agent-quota-a")![0], /Free usage exceeded/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("records quota failure into circuit breaker and getCachedModelHealth reads it (#890)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "paseo-cb-test-"));
+    try {
+      const cbPath = join(dir, "model-health.json");
+      const entry = recordModelQuotaFailure(
+        "opencode",
+        "muse-spark-1.3-contributor-free",
+        "Free usage exceeded, subscribe to Go",
+        cbPath,
+        3600,
+        1000,
+      );
+      assert.equal(entry.status, "quota_exhausted");
+      assert.equal(entry.key, "opencode/muse-spark-1.3-contributor-free");
+
+      const cached = getCachedModelHealth("opencode/muse-spark-1.3-contributor-free", cbPath, 1500);
+      assert.ok(cached);
+      assert.equal(cached?.status, "quota_exhausted");
+      assert.equal(cached?.remaining_cooldown_sec, 3100);
+
+      // Past cooldown returns null
+      const expired = getCachedModelHealth("opencode/muse-spark-1.3-contributor-free", cbPath, 5000);
+      assert.equal(expired, null);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("resolveOrchestratorModel skips cooling down models in fallback chain (#890)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "paseo-fallback-test-"));
+    try {
+      const cbPath = join(dir, "model-health.json");
+      // Record primary model as exhausted
+      recordModelQuotaFailure(
+        "antigravity-acp",
+        "gemini-3.8-flash-low",
+        "quota exceeded",
+        cbPath,
+        3600,
+        1000,
+      );
+
+      const resolved = resolveOrchestratorModel({
+        fallbackList: [
+          "antigravity-acp/gemini-3.8-flash-low",
+          "codex/gpt-5.6-luna",
+          "uppidi/opencode-go/deepseek-v4.1-flash",
+        ],
+        circuitBreakerPath: cbPath,
+        nowSec: 1500,
+      });
+
+      // Should skip antigravity-acp/gemini-3.8-flash-low and pick codex/gpt-5.6-luna
+      assert.equal(resolved.key, "codex/gpt-5.6-luna");
+      assert.equal(resolved.provider, "codex");
+      assert.equal(resolved.model, "gpt-5.6-luna");
+
+      // Now record codex as exhausted too
+      recordModelQuotaFailure(
+        "codex",
+        "gpt-5.6-luna",
+        "rate limit 429",
+        cbPath,
+        3600,
+        1000,
+      );
+
+      const resolvedTier3 = resolveOrchestratorModel({
+        fallbackList: [
+          "antigravity-acp/gemini-3.8-flash-low",
+          "codex/gpt-5.6-luna",
+          "uppidi/opencode-go/deepseek-v4.1-flash",
+        ],
+        circuitBreakerPath: cbPath,
+        nowSec: 1500,
+      });
+
+      assert.equal(resolvedTier3.key, "uppidi/opencode-go/deepseek-v4.1-flash");
+      assert.equal(resolvedTier3.provider, "uppidi");
+      assert.equal(resolvedTier3.model, "opencode-go/deepseek-v4.1-flash");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("runWatchdogAudit records quota failure into circuit breaker and suppresses steer (#890)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "paseo-watchdog-cb-"));
+    try {
+      const cbPath = join(dir, "model-health.json");
+      const agentMap = new Map<string, WatchdogAgent>([
+        [
+          "agent-quota-exhausted",
+          {
+            id: "agent-quota-exhausted",
+            title: "Orchestrator · xpufx-org/paseo",
+            status: "running",
+            lastError: "",
+            provider: "opencode",
+            model: "muse-spark-1.3-contributor-free",
+            recentTimeline: "[Error] provider-retry: Provider retry (attempt 1): Free usage exceeded, subscribe to Go",
+          },
+        ],
+      ]);
+
+      let steerAttempted = false;
+      let alertDelivered: string | null = null;
+      const testRouter = new HookRouter(null, {
+        isTestMode: true,
+        circuitBreakerPath: cbPath,
+      });
+
+      const result = await testRouter.runWatchdogAudit({
+        now,
+        agentMap,
+        frontDeskId: "front-desk-1",
+        deliver: async (_target, msg, opts) => {
+          if (opts?.steer) steerAttempted = true;
+          alertDelivered = msg;
+          return true;
+        },
+        circuitBreakerPath: cbPath,
+      });
+
+      // 1. Anomaly was classified as PROVIDER_QUOTA_EXHAUSTION
+      const quotaAnomaly = result.anomalies.find((a) => a.type === "PROVIDER_QUOTA_EXHAUSTION");
+      assert.ok(quotaAnomaly);
+      assert.equal(quotaAnomaly?.agentId, "agent-quota-exhausted");
+
+      // 2. Steer was NOT attempted (suppressed)
+      assert.equal(steerAttempted, false);
+
+      // 3. Front Desk received circuit-break alert
+      assert.ok(alertDelivered);
+      assert.match(alertDelivered!, /Circuit-break: no auto-steer; operator required/);
+
+      // 4. Circuit breaker record was written to cbPath
+      const cached = getCachedModelHealth("opencode/muse-spark-1.3-contributor-free", cbPath, Math.floor(now / 1000));
+      assert.ok(cached);
+      assert.equal(cached?.status, "quota_exhausted");
+      assert.match(cached?.error ?? "", /Free usage exceeded/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("ensureOrchestrator falls back to healthy model when configured primary is cooling down (#890)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "paseo-ensure-cb-"));
+    try {
+      const cbPath = join(dir, "model-health.json");
+      // Mark primary model as cooling down in circuit breaker
+      recordModelQuotaFailure(
+        "antigravity-acp",
+        "gemini-3.8-flash-low",
+        "quota exceeded",
+        cbPath,
+        3600,
+        Math.floor(Date.now() / 1000),
+      );
+
+      const spawned: any[] = [];
+      const testRouter = new HookRouter(null, {
+        isTestMode: true,
+        circuitBreakerPath: cbPath,
+        orchestratorModelFallback: [
+          "antigravity-acp/gemini-3.8-flash-low",
+          "codex/gpt-5.6-luna",
+          "uppidi/opencode-go/deepseek-v4.1-flash",
+        ],
+        workspacesData: [
+          {
+            workspaceId: "ws-test",
+            cwd: dir,
+            displayName: "Paseo",
+            isolation: "local",
+            projectKey: "remote:forge.mrs.uppidi.com:222/xpufx-org/paseo",
+          },
+        ],
+        spawnAgent: async (opts) => {
+          spawned.push(opts);
+          return { id: "agent-fallback-orch" };
+        },
+      });
+
+      const res = await testRouter.ensureOrchestrator({ repo: "xpufx-org/paseo" });
+      assert.equal(res.ok, true);
+      assert.equal(res.agentId, "agent-fallback-orch");
+
+      // Verified it bypassed cooling-down antigravity-acp and chose codex/gpt-5.6-luna
+      assert.equal(spawned.length, 1);
+      assert.equal(spawned[0].provider, "codex");
+      assert.equal(spawned[0].model, "gpt-5.6-luna");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("fuses live and disk signals into an ordered assessment", () => {
