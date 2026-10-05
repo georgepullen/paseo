@@ -1200,17 +1200,93 @@ export interface ChildWakeupAssessment {
   scope?: string;
 }
 
+/** Explicit label keys a health canary may carry instead of a probe title (#895). */
+const PROBE_AGENT_LABEL_KEYS = ["paseo.probe", "paseo.canary", "probe", "canary"] as const;
+
+/** Titles `paseo run <ping>` derives for the model health canaries (#891/#895). */
+const PROBE_AGENT_TITLES = new Set([
+  "ping",
+  "probe",
+  "health probe",
+  "health canary",
+  "model probe",
+]);
+
+/**
+ * True when the agent is an orchestrator peer rather than a delegated worker
+ * (#895). Two-tier spawn authority means orchestrators are Front Desk's peers
+ * even when the daemon stamps a `paseo.parent-agent-id` on them.
+ */
+export function isOrchestratorAgent(
+  agent: Pick<WatchdogAgent, "role" | "labels">,
+): boolean {
+  const labels = agent.labels ?? {};
+  const role = String(agent.role ?? labels.role ?? "").trim().toLowerCase();
+  if (role === "orchestrator") return true;
+  return String(labels.category ?? "").trim().toLowerCase() === "orchestrator";
+}
+
+/**
+ * True when the agent is a model health canary rather than a worker (#891).
+ * Probes run `paseo run ... ping` with no labels, so the derived `ping` title
+ * is the convention; an explicit probe label also matches.
+ */
+export function isProbeAgent(
+  agent: Pick<WatchdogAgent, "title" | "name" | "labels">,
+): boolean {
+  const labels = agent.labels ?? {};
+  for (const key of PROBE_AGENT_LABEL_KEYS) {
+    const value = labels[key];
+    if (value === undefined || value === null) continue;
+    const normalized = String(value).trim().toLowerCase();
+    if (normalized && normalized !== "false") return true;
+  }
+  const title = String(agent.title ?? agent.name ?? "").trim().toLowerCase();
+  if (!title) return false;
+  return PROBE_AGENT_TITLES.has(title) || /^ping\s*[:(]/.test(title);
+}
+
+export interface ChildWakeupContext {
+  /** Registered Front Desk agent id; the desk is a liaison, never a worker parent (#895). */
+  frontDeskId?: string | null;
+}
+
+/**
+ * True when a parent-labelled agent is a worker whose lifecycle may wake its
+ * parent (#537). Orchestrator peers, Front Desk's own children, and health
+ * canaries never produce a wake pulse, so the desk is never steered as if it
+ * were a worker parent (#895).
+ */
+export function isChildWakeupCandidate(
+  child: WatchdogAgent,
+  context: ChildWakeupContext = {},
+): boolean {
+  if (!child || child.archivedAt) return false;
+  const parentId = child.labels?.["paseo.parent-agent-id"]?.trim();
+  if (!parentId) return false;
+  if (isOrchestratorAgent(child)) return false;
+  if (isProbeAgent(child)) return false;
+  if (context.frontDeskId && parentId === context.frontDeskId) return false;
+  return true;
+}
+
 /**
  * Classifies a single child agent into at most one wakeup transition (#537).
  * Blocked (permission / input) wins over error over completion. Benign idle
  * children carrying no attention flag are treated as completed, matching the
- * "child completed" contract.
+ * "child completed" contract. Orchestrator peers, Front Desk's children, and
+ * health canaries are excluded (#895).
  */
 export function assessChildWakeup(
   agentId: string,
   agent: WatchdogAgent,
+  context: ChildWakeupContext = {},
 ): ChildWakeupAssessment | null {
   if (!agent || agent.archivedAt) return null;
+  if (isOrchestratorAgent(agent)) return null;
+  if (isProbeAgent(agent)) return null;
+  const parentId = agent.labels?.["paseo.parent-agent-id"]?.trim();
+  if (context.frontDeskId && parentId === context.frontDeskId) return null;
   const status = String(agent.status ?? "").toLowerCase();
   const permissions = agent.pendingPermissions ?? [];
   const reason = agent.attentionReason ?? null;
@@ -3678,7 +3754,12 @@ export class HookRouter {
           }
           args.push("--json", prompt);
 
-          const { stdout } = await execFileAsync("paseo", args, { timeout: 15000 });
+          // Spawn as a top-level peer: dropping the inherited PASEO_AGENT_ID
+          // stops `paseo run` persisting `paseo.parent-agent-id` at creation
+          // time, before the watchdog can observe a Front Desk parent (#895).
+          const spawnEnv = { ...process.env };
+          delete spawnEnv.PASEO_AGENT_ID;
+          const { stdout } = await execFileAsync("paseo", args, { timeout: 15000, env: spawnEnv });
           try {
             const parsed = JSON.parse(stdout);
             agentId = parsed?.id ?? parsed?.agentId ?? (typeof parsed === "string" ? parsed : null);
@@ -4177,10 +4258,13 @@ export class HookRouter {
         for (const child of agentMap.values()) {
           const parentId = child.labels?.["paseo.parent-agent-id"]?.trim();
           if (!parentId) continue;
+          // #895: never wake a parent for an orchestrator peer, a health
+          // canary, or any child of the Front Desk. The desk is a liaison.
+          if (!isChildWakeupCandidate(child, { frontDeskId })) continue;
           const parent = agentMap.get(parentId);
           if (!parent || parent.archivedAt) continue;
 
-          const assessment = assessChildWakeup(child.id, child);
+          const assessment = assessChildWakeup(child.id, child, { frontDeskId });
           if (!assessment) continue;
           if (!this.canWatchdogAlert(assessment.alertKey, now)) continue;
           this.watchdogAlerts.set(assessment.alertKey, now);

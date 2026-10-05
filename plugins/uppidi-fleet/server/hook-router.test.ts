@@ -58,6 +58,9 @@ import {
   countActiveWorkers,
   assessChildWakeup,
   formatChildWakeupMessage,
+  isOrchestratorAgent,
+  isProbeAgent,
+  isChildWakeupCandidate,
   CHILD_WAKEUP_EVENTS,
   labelTriageDecision,
   closeGuardDecision,
@@ -2007,6 +2010,78 @@ describe("reactive child-lifecycle wakeups (#537)", () => {
     const audit = await router.runWatchdogAudit({ agentMap: map, deliver, reloadAgent: async () => ({ ok: true }) });
     assert.equal(audit.anomalies.filter((a) => a.type === "CHILD_WAKEUP").length, 0);
     assert.equal(delivered.length, 0);
+  });
+
+  it("classifies only worker children as wakeup candidates (#895)", () => {
+    const worker: WatchdogAgent = { id: "c", status: "idle", labels: childLabels };
+    assert.equal(isChildWakeupCandidate(worker), true);
+    assert.equal(isChildWakeupCandidate({ ...worker, role: "orchestrator" }), false);
+    assert.equal(isChildWakeupCandidate({ ...worker, labels: { ...childLabels, role: "orchestrator" } }), false);
+    assert.equal(isChildWakeupCandidate({ ...worker, title: "ping" }), false);
+    assert.equal(isChildWakeupCandidate({ ...worker, title: "canary", labels: { ...childLabels, "paseo.probe": "true" } }), false);
+    assert.equal(isChildWakeupCandidate(worker, { frontDeskId: parentId }), false);
+    assert.equal(isChildWakeupCandidate({ ...worker, labels: {} }), false);
+    assert.equal(isOrchestratorAgent({ labels: { category: "orchestrator" } }), true);
+    assert.equal(isProbeAgent({ title: "ping" }), true);
+  });
+
+  it("excludes orchestrator peers from child wakeups (#895)", async () => {
+    const map = new Map<string, WatchdogAgent>([
+      [parentId, parentAgent],
+      [
+        "orch-peer",
+        {
+          id: "orch-peer",
+          title: "Orchestrator · xpufx-org/paseo",
+          status: "idle",
+          role: "orchestrator",
+          labels: childLabels,
+        },
+      ],
+    ]);
+    const audit = await router.runWatchdogAudit({ agentMap: map, deliver, reloadAgent: async () => ({ ok: true }) });
+    assert.equal(audit.anomalies.filter((a) => a.type === "CHILD_WAKEUP").length, 0);
+    assert.equal(delivered.filter((d) => d.msg.includes("Subagent")).length, 0);
+    assert.equal(assessChildWakeup("orch-peer", { id: "orch-peer", role: "orchestrator", status: "idle" }), null);
+  });
+
+  it("excludes children whose parent is the registered Front Desk (#895)", async () => {
+    const frontDeskId = "front-desk-895";
+    const fdChildLabels = { "paseo.parent-agent-id": frontDeskId };
+    const map = new Map<string, WatchdogAgent>([
+      [frontDeskId, { id: frontDeskId, title: "Front Desk", status: "idle" }],
+      ["fd-child", { id: "fd-child", title: "Worker", status: "idle", labels: fdChildLabels }],
+    ]);
+    const audit = await router.runWatchdogAudit({
+      agentMap: map,
+      frontDeskId,
+      deliver,
+      reloadAgent: async () => ({ ok: true }),
+    });
+    assert.equal(audit.anomalies.filter((a) => a.type === "CHILD_WAKEUP").length, 0);
+    assert.equal(delivered.filter((d) => d.msg.includes("Subagent")).length, 0);
+    assert.equal(
+      assessChildWakeup("fd-child", { id: "fd-child", status: "idle", labels: fdChildLabels }, { frontDeskId }),
+      null,
+    );
+  });
+
+  it("excludes ping health canaries from child wakeups (#891/#895)", async () => {
+    const map = new Map<string, WatchdogAgent>([
+      [parentId, parentAgent],
+      ["probe-ping", { id: "probe-ping", title: "ping", status: "idle", labels: childLabels }],
+      [
+        "probe-labelled",
+        { id: "probe-labelled", title: "canary", status: "idle", labels: { ...childLabels, "paseo.probe": "true" } },
+      ],
+    ]);
+    const audit = await router.runWatchdogAudit({ agentMap: map, deliver, reloadAgent: async () => ({ ok: true }) });
+    assert.equal(audit.anomalies.filter((a) => a.type === "CHILD_WAKEUP").length, 0);
+    assert.equal(delivered.filter((d) => d.msg.includes("Subagent")).length, 0);
+    assert.equal(
+      assessChildWakeup("probe-ping", { id: "probe-ping", title: "ping", status: "idle", labels: childLabels }),
+      null,
+    );
   });
 
   it("can be disabled via childWakeups: false", async () => {
