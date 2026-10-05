@@ -33,6 +33,7 @@ export * from "../shared/forge.js";
 export * from "../shared/custom-pills.js";
 export * from "../shared/suppressed.js";
 export * from "../shared/types.js";
+export * from "../shared/tickets.js";
 
 export {
   initClientHelpers,

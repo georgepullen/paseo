@@ -19,7 +19,11 @@
 > the `ui/` adapter layer (`paseo-plugin-helper/ui`) composed with host SDK
 > primitives (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
 > See the [migration guide](docs/client-migration.md). The headless hooks and
-> lifecycle engines in `client/` remain supported until their extraction.
+> lifecycle engines have moved out of the frozen bundle: the registration
+> engines (`registerComposerPill`, `registerSidebarSurface`, `registerWorkspacePanel`,
+> `registerAgentPanel`) plus clipboard/haptics live in
+> `paseo-plugin-helper/lifecycle`, and remain re-exported from `client/` for
+> compatibility.
 >
 > Registration wrappers (`registerSidebarSurface`, `registerWorkspacePanel`,
 > `registerAgentPanel`, `registerComposerPill`) mount the `ui/`
@@ -66,6 +70,8 @@ To guarantee compliance with Paseo's bundler and compiler rules (no Node builtin
 | Subpath | Target Platform | Description | Docs |
 | :--- | :--- | :--- | :--- |
 | `paseo-plugin-helper/client` | React Native | **Deprecated (frozen)** — UI components, visual flair provider, pill engine, panels, React Query hooks | [docs/client.md](docs/client.md) |
+| `paseo-plugin-helper/lifecycle` | React Native | UI-free registration engines (`registerComposerPill`, `registerSidebarSurface`, `registerWorkspacePanel`, `registerAgentPanel`), clipboard, haptics, host theme context | [docs/client-migration.md](docs/client-migration.md) |
+| `paseo-plugin-helper/core` | Universal | Headless client-safe runtime: RPC contracts, query/settings hooks, formatters (no `react-native`, no `node:*`) | [docs/client.md](docs/client.md) |
 | `paseo-plugin-helper/ui` | React Native | Host-delegating UI adapters (`HostModalContent`, `HostScroll`, `HostModalSection`, settings renderer) | [docs/client-migration.md](docs/client-migration.md) |
 | `paseo-plugin-helper/server` | Node.js 20+ | `createPluginLogger`, `resolvePluginVersion`, `stampVersion`, `getSystemMetrics`, `PluginStorage`, `safeSpawn`, `redactSecrets` | [docs/server.md](docs/server.md) |
 | `paseo-plugin-helper/mcp` | Node.js 20+ | Zero-dependency stdio `McpClient`, ring buffer, process tree killer | [docs/mcp.md](docs/mcp.md) |

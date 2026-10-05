@@ -1,23 +1,26 @@
-import { D as DensityStyle, S as SurfaceStyle, o as BadgeSize, p as ButtonProps, q as SpacingValue, V as VisualFlair } from '../recipes-C64NEGKp.js';
-export { A as AttentionBeacon, s as AttentionBeaconMode, u as AttentionBeaconProps, v as AttentionBeaconTone, w as Badge, x as BadgeProps, B as BadgeRecipeOptions, a as BadgeRecipeResult, y as BadgeStyle, z as Button, E as ButtonAttention, b as ButtonRecipeOptions, c as ButtonRecipeResult, F as ButtonSize, G as ButtonVariant, C as CardRecipeOptions, d as CardRecipeResult, H as ElevationLevel, J as ElevationStyle, K as FALLBACK_ACCENT_FOREGROUND, L as HeadingTransform, M as HostFontVariables, N as HostThemeVariables, I as InputRecipeOptions, e as InputRecipeResult, P as PASEO_HOST_CSS_VARIABLES, O as PaseoHostCssVariable, Q as PluginThemeContextValue, R as PluginThemeProvider, U as PluginThemeProviderProps, W as RadiusStyle, X as SpacingKey, T as TabItemRecipeOptions, f as TabItemRecipeResult, g as TabStripRecipeOptions, h as TabStripRecipeResult, i as ThemeInput, Y as TypographyScale, Z as TypographyToken, j as badgeRecipe, k as buttonRecipe, l as cardRecipe, _ as defaultDarkTheme, $ as defaultFlair, a0 as defaultLightTheme, a1 as elevationForPlatform, a2 as getDefaultTheme, m as inputRecipe, a3 as mergeThemeColors, a4 as normalizeBeaconMode, a5 as readHostThemeVariables, a6 as resolveBeaconToneColor, a7 as resolveButtonAttentionMode, a8 as resolveButtonAttentionTone, a9 as resolveElevation, aa as resolveRadius, ab as resolveSpacing, r as resolveThemeColors, ac as resolveTypography, ad as spacing, t as tabItemRecipe, n as tabStripRecipe, ae as useAppearanceScheme, af as usePluginTheme } from '../recipes-C64NEGKp.js';
-import { d as StatusVariant, T as ThemeColors, P as PlatformType, R as ResponsiveLayout } from '../settings-CPUeD-cx.js';
-import React__default, { ReactNode, Ref, ComponentType } from 'react';
+import { D as DensityStyle, S as SurfaceStyle, V as VisualFlair } from '../flair-Bn-9stbh.js';
+export { H as HeadingTransform, R as RadiusStyle, d as defaultFlair, r as resolveRadius } from '../flair-Bn-9stbh.js';
+import { S as StatusVariant, T as ThemeColors, P as PlatformType, R as ResponsiveLayout } from '../types-BKH2AGK1.js';
+import { o as BadgeSize, p as ButtonProps, S as SpacingValue } from '../recipes-CpNBgYyy.js';
+export { A as AttentionBeacon, q as AttentionBeaconMode, s as AttentionBeaconProps, u as AttentionBeaconTone, v as Badge, w as BadgeProps, B as BadgeRecipeOptions, a as BadgeRecipeResult, x as BadgeStyle, y as Button, z as ButtonAttention, b as ButtonRecipeOptions, c as ButtonRecipeResult, D as ButtonSize, E as ButtonVariant, C as CardRecipeOptions, d as CardRecipeResult, F as ElevationLevel, G as ElevationStyle, H as FALLBACK_ACCENT_FOREGROUND, J as HostFontVariables, K as HostThemeVariables, I as InputRecipeOptions, e as InputRecipeResult, P as PASEO_HOST_CSS_VARIABLES, L as PaseoHostCssVariable, M as PluginThemeContextValue, N as PluginThemeProvider, O as PluginThemeProviderProps, Q as SpacingKey, T as TabItemRecipeOptions, f as TabItemRecipeResult, g as TabStripRecipeOptions, h as TabStripRecipeResult, i as ThemeInput, R as TypographyScale, U as TypographyToken, j as badgeRecipe, k as buttonRecipe, l as cardRecipe, V as defaultDarkTheme, W as defaultLightTheme, X as elevationForPlatform, Y as getDefaultTheme, m as inputRecipe, Z as mergeThemeColors, _ as normalizeBeaconMode, $ as readHostThemeVariables, a0 as resolveBeaconToneColor, a1 as resolveButtonAttentionMode, a2 as resolveButtonAttentionTone, a3 as resolveElevation, a4 as resolveSpacing, r as resolveThemeColors, a5 as resolveTypography, a6 as spacing, t as tabItemRecipe, n as tabStripRecipe, a7 as useAppearanceScheme, a8 as usePluginTheme } from '../recipes-CpNBgYyy.js';
+import React__default, { ReactNode, Ref } from 'react';
 import { StyleProp, ViewStyle, TextStyle, GestureResponderEvent, AccessibilityRole, KeyboardTypeOptions, ImageSourcePropType, ScrollView, ImageStyle } from 'react-native';
-import { M as MetricThresholds, b as TruncatePathOptions } from '../formatters-B3gu9GmM.js';
-import { p as HostPillProps, q as ComposerPillRegistrar, P as PluginCleanup, o as HostSurfaceProps, r as HostAgentPanelProps, t as HostWorkspacePanelProps, h as HostToast, u as HostIconProps } from '../host-whQ9H8yb.js';
-export { C as ClientHostDeps, H as HostAgentRef, a as HostAgentUpdate, b as HostAgentsApi, c as HostCopyText, v as HostFlatList, w as HostIcon, d as HostLayout, x as HostModal, y as HostModalContentProps, z as HostModalProps, e as HostRpcContract, A as HostScrollView, B as HostTextInput, f as HostTheme, g as HostThemeColors, i as HostUseRpc, j as HostUseToast, k as getClientHost, l as getOptionalClientHost, m as initClientHelpers, n as isClientHostInitialized, s as selectHostScrollView } from '../host-whQ9H8yb.js';
+import { M as MetricThresholds, b as TruncatePathOptions } from '../formatters-BgjVLUgj.js';
+export { C as ClipboardEnvironment, a as ClipboardTier, b as CopyToClipboardOptions, D as DEFAULT_SIDEBAR_MAX_CONTENT_WIDTH, H as HapticFeedbackType, M as ModalBodyScrollOwner, c as ModalBodyScrollOwnerContext, P as PillIconResolver, d as PillLabelResolver, e as PillLiveContext, f as PillLivePayload, R as RegisterAgentPanelOptions, g as RegisterComposerPillOptions, h as RegisterSidebarSurfaceOptions, i as RegisterWorkspacePanelOptions, j as RenderModalProps, S as SidebarSurfaceRegistrar, W as WorkspacePanelRegistrar, k as clipboardTierOrder, l as copyToClipboard, r as registerAgentPanel, m as registerComposerPill, n as registerSidebarSurface, o as registerWorkspacePanel, p as resolvePillModalScrollable, t as triggerHaptic } from '../haptics-CAej_LXf.js';
 export { C as CommandCenterCapabilities, a as CommandCenterContext, b as CommandCenterItemContribution, c as CommandCenterItemRegistrar, r as registerCommandCenterItem } from '../command-center-DWp1Q_8T.js';
-export { R as REFRESH_INTERVALS, a as RefreshRate, b as RpcMutationOptions, c as RpcQueryOptions, U as UseAutoRefreshQueryOptions, d as UsePluginSettingsOptions, e as UsePluginSettingsResult, f as UseSharedPluginSettingsOptions, n as normalizeSnapshotScope, s as shallowEqualRecord, g as sharedSnapshotKey, h as shouldEmitSnapshotUpdate, u as useAutoRefreshQuery, i as usePluginSettings, j as useRpcMutation, k as useRpcQuery, l as useSharedPluginSettings, m as useSuiteSettings } from '../shared-settings-DAATIU2J.js';
-export { H as HelperSettingsCardProps, a as HelperSettingsField, b as HelperSettingsFieldKind, c as HelperSettingsFieldOverrides, d as HelperSettingsInputProps, e as HelperSettingsRowBaseProps, f as HelperSettingsScreenContribution, g as HelperSettingsScreenRegistrar, h as HelperSettingsSectionProps, i as HelperSettingsSelectComponent, j as HelperSettingsSelectProps, k as HelperSettingsSwitchProps, l as HelperSettingsUiBundle, R as RegisterHelperSettingsScreenOptions, m as contractSchemaToFields, r as registerHelperSettingsScreen } from '../settings-screen-Bpcxrbgd.js';
-import { d as CustomPillState } from '../custom-pills-Dzvi9Vve.js';
-import { a as ForgeMarkInput, F as ForgeKind } from '../forge-B9E0Ueu9.js';
-export { R as ResolvedForgeMark, f as forgeKindFromHost, i as isForgeKind, n as normalizeForgeHost, r as resolveForgeMark } from '../forge-B9E0Ueu9.js';
-import { e as AgentEnvelope, M as IssueComment, n as ForgeAccessState, v as ForgeLabel } from '../tickets-DaCIB2Cg.js';
-import 'zod';
-import '../rpc-D27pph91.js';
-import '@getpaseo/plugin/client';
+export { R as REFRESH_INTERVALS, a as RefreshRate, b as RpcMutationOptions, c as RpcQueryOptions, U as UseAutoRefreshQueryOptions, d as UsePluginSettingsOptions, e as UsePluginSettingsResult, f as UseSharedPluginSettingsOptions, n as normalizeSnapshotScope, s as shallowEqualRecord, g as sharedSnapshotKey, h as shouldEmitSnapshotUpdate, u as useAutoRefreshQuery, i as usePluginSettings, j as useRpcMutation, k as useRpcQuery, l as useSharedPluginSettings, m as useSuiteSettings } from '../shared-settings-BP6iw_JK.js';
+export { H as HelperSettingsCardProps, a as HelperSettingsField, b as HelperSettingsFieldKind, c as HelperSettingsFieldOverrides, d as HelperSettingsInputProps, e as HelperSettingsRowBaseProps, f as HelperSettingsScreenContribution, g as HelperSettingsScreenRegistrar, h as HelperSettingsSectionProps, i as HelperSettingsSelectComponent, j as HelperSettingsSelectProps, k as HelperSettingsSwitchProps, l as HelperSettingsUiBundle, R as RegisterHelperSettingsScreenOptions, m as contractSchemaToFields, r as registerHelperSettingsScreen } from '../settings-screen-DkYEDcbk.js';
+import { q as ComposerPillRegistrar, P as PluginCleanup, u as HostIconProps } from '../host-whQ9H8yb.js';
+export { C as ClientHostDeps, r as HostAgentPanelProps, H as HostAgentRef, a as HostAgentUpdate, b as HostAgentsApi, c as HostCopyText, v as HostFlatList, w as HostIcon, d as HostLayout, x as HostModal, y as HostModalContentProps, z as HostModalProps, p as HostPillProps, e as HostRpcContract, A as HostScrollView, o as HostSurfaceProps, B as HostTextInput, f as HostTheme, g as HostThemeColors, h as HostToast, i as HostUseRpc, j as HostUseToast, t as HostWorkspacePanelProps, k as getClientHost, l as getOptionalClientHost, m as initClientHelpers, n as isClientHostInitialized, s as selectHostScrollView } from '../host-whQ9H8yb.js';
+import { r as CustomPillState, e as AgentEnvelope, T as IssueComment, u as ForgeAccessState, G as ForgeLabel } from '../tickets-cIDmm9to.js';
+import { a as ForgeMarkInput } from '../forge-Cs7Wnmen.js';
+export { F as ForgeKind, R as ResolvedForgeMark, f as forgeKindFromHost, d as forgeMarkSource, i as isForgeKind, n as normalizeForgeHost, r as resolveForgeMark } from '../forge-Cs7Wnmen.js';
 import '@tanstack/query-core';
+import '../rpc-D27pph91.js';
+import 'zod';
 import '@tanstack/react-query';
+import '../settings-CP1gv9q3.js';
+import '@getpaseo/plugin/client';
 
 /**
  * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
@@ -1191,23 +1194,7 @@ interface ModalBodyProps {
     stickToEnd?: boolean;
     scrollRef?: Ref<ScrollView>;
 }
-/**
- * Scroll-ownership signal for `ModalBody`.
- *
- * - `"helper"` — the default; `ModalBody` decides from the surface
- *   (compact/mobile) and `scrollMode`.
- * - `"host"` — an ancestor host view already provides the one scroller
- *   (0.8 composer popovers). `ModalBody` renders plain content.
- * - `"required"` — the ancestor has NO host scroller and the content is
- *   host-sized, so `ModalBody` MUST own the scroll on every surface. Set by
- *   `registerSidebarSurface` (a plugin surface is a full host page whose body
- *   is not wrapped in a host scroller) and by `ModalContent`.
- *
- * Adding the `"required"` member is additive: the existing two values keep
- * their meaning and the default stays `"helper"`.
- */
-type ModalBodyScrollOwner = "helper" | "host" | "required" | "popover";
-declare const ModalBodyScrollOwnerContext: React__default.Context<ModalBodyScrollOwner>;
+
 /**
  * Mobile-safe scrollable body for Paseo <Modal.Content>.
  *
@@ -1424,332 +1411,6 @@ declare function Grid({ children, columns, minColumnWidth, gap, style, testID }:
  * See `docs/client-migration.md`.
  */
 
-interface RenderModalProps<TPayload = any> extends HostPillProps {
-    close: () => void;
-    payload?: TPayload;
-}
-interface PillLiveContext {
-    agentId: string;
-    workspaceId: string;
-}
-interface PillLivePayload {
-    label?: string;
-    icon?: string;
-}
-type PillLabelResolver = (context: PillLiveContext) => string | PillLivePayload | undefined | Promise<string | PillLivePayload | undefined>;
-type PillIconResolver = (context: PillLiveContext) => string | undefined | Promise<string | undefined>;
-/**
- * Single precedence rule for pill modal scroll ownership (#219), shared by
- * the centered and legacy modal wrappers so they cannot disagree.
- * `true` delegates the scroller to the host `<Modal.Content>`; `false`
- * (default) keeps the legacy bounded dialog for `ModalBody`-based content.
- * Either way the wrapper renders exactly one `<Modal.Content>`.
- */
-declare function resolvePillModalScrollable(hostScroll?: boolean): boolean;
-interface RegisterComposerPillOptions<TPayload = any> {
-    /**
-     * Unique ID for the pill (e.g. "paseo-top", "mcp-monitor").
-     */
-    id: string;
-    /**
-     * Title shown in the composer trackbar (keep concise, e.g. "top", "CPU 12%").
-     */
-    title: string;
-    /**
-     * Optional compact title shown in the composer trackbar when screen or track is narrow/mobile
-     * (when `layout.compact` is true). Defaults to `title`.\
-     */
-    compactTitle?: string;
-    /**
-     * Optional custom title shown in the modal header (defaults to `title`).
-     * Useful when the modal needs a full descriptive title (e.g. "Host System Resources").
-     */
-    modalTitle?: string;
-    /**
-     * Lucide icon name for the pill (e.g. "Cpu", "Server", "MessageSquare").
-     */
-    icon?: string;
-    /**
-     * Optional compact Lucide icon name shown when in compact mode. Defaults to `icon`.
-     */
-    compactIcon?: string;
-    /**
-     * Optional custom icon for the modal header. Can be a Lucide icon name string or a JSX element.
-     * If omitted, falls back to `icon`.
-     */
-    modalIcon?: string | ReactNode;
-    /**
-     * Optional visual flair preset or overrides for the plugin's theme.
-     */
-    flair?: Partial<VisualFlair>;
-    /**
-     * Resolves the live pill label (and optionally icon). The host renders the
-     * pill body itself, so this is the only channel for live pill text. Called
-     * once at registration and then every `refreshIntervalMs`. Keep it cheap and
-     * synchronous when possible; async resolvers are awaited. Returning
-     * `undefined` leaves the current label/icon.
-     * Can return a plain string (label) or an object `{ label?: string; icon?: string }`.
-     * Cycle modes can advance rotation state on each call.
-     */
-    resolveLabel?: PillLabelResolver;
-    /**
-     * Optional standalone resolver for the pill icon. Evaluated alongside
-     * `resolveLabel` on each tick.
-     */
-    resolveIcon?: PillIconResolver;
-    /**
-     * Poll interval for `resolveLabel`. Defaults to 5000ms
-     * when `resolveLabel` or `resolveIcon` is set. Set to 0 to resolve once at registration.
-     */
-    refreshIntervalMs?: number;
-    /**
-     * Fixed width, in pixels, for the anchored popover on non-compact hosts.
-     *
-     * Without it the popover is sized from its content, so any content that
-     * reflows (a measured table, a responsive group, a gauge that settles) can
-     * resize the surface under the pointer. Pinning the width makes the frame the
-     * authority and lets the content overflow into its own scroll/clip instead.
-     *
-     * Ignored on compact hosts, where the same content renders in a full-bleed
-     * bottom sheet. Clamped to the window width so a fixed width cannot overflow
-     * a narrow viewport.
-     */
-    popoverWidth?: number;
-    /**
-     * Renders the content inside the pill's surface.
-     * The host owns the surface: with the default `"popover"` presentation it
-     * anchors this output to the pill at the host surface width (expect a
-     * narrow column, not a wide modal; keep content vertically stacked and
-     * reflowing), and with `"centered"` it renders it from the pill's icon.
-     * Live pill text therefore comes from `resolveLabel`, not from this renderer.
-     *
-     * Never render a host `<Modal.Content>` here — use `HostModalSection` from
-     * `paseo-plugin-helper/ui` for fluid content. (`HostModalContent` is only
-     * for plugins that open their OWN host `<Modal>`.)
-     */
-    renderModal?: (props: RenderModalProps<TPayload>) => ReactNode;
-    /**
-     * Host-owned scroll for the centered modal path (#219).
-     * - `false` (default): the wrapper renders
-     *   `<Modal.Content scrollable={false}>` (bounded dialog) and
-     *   `ModalBody`-based content owns the one scroller.
-     * - `true`: the wrapper renders `<Modal.Content scrollable={true}>` so the
-     *   host scrolls, and `renderModal` must provide fluid content with NO
-     *   nested `<Modal.Content>` or scroller (`HostModalSection`).
-     * Exactly one `<Modal.Content>` is rendered in both modes. The popover
-     * path is unaffected (plain host-owned container either way).
-     */
-    hostScroll?: boolean;
-    /**
-     * Makes the pill an action button instead of a tethered popover: pressing it
-     * calls this and the host never mounts a popover. Use it to open a plugin
-     * surface (`openSurface(id)`), which the host renders outside the composer —
-     * an agent-stream re-render of the composer then cannot remount it. Ignored
-     * when unset, in which case `renderModal` renders the popover.
-     */
-    onPress?: () => void | Promise<void>;
-    /**
-     * How an open pill presents.
-     * - `"popover"` (default): the host anchors `renderModal` to the pill. The
-     *   host may remount that subtree on every composer re-render, which can tear
-     *   an open popover down.
-     * - `"centered"`: the host `Modal` is rendered from the pill's always-mounted
-     *   icon and toggled by the pill press, so the surface is not a child of the
-     *   composer popover and a composer re-render does not unmount it.
-     */
-    presentation?: "popover" | "centered";
-    /**
-     * Called when a pill cannot be registered on the current host. Reporting
-     * instead of throwing keeps the rest of the plugin client alive; render the
-     * message in your own panel to make it visible.
-     */
-    onError?: (info: {
-        agentId: string;
-        workspaceId: string;
-        error: Error;
-    }) => void;
-}
-/**
- * Registers an agent-scoped composer pill and modal lifecycle.
- * Manages agent subscription events, unmount cleanup, and pill-to-modal activation.
- */
-declare function registerComposerPill<TPayload = any>(client: ComposerPillRegistrar, options: RegisterComposerPillOptions<TPayload>): PluginCleanup;
-
-/**
- * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
- * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
- * (`paseo-plugin-helper/ui`) composed with host SDK primitives
- * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
- * See `docs/client-migration.md`.
- */
-
-/**
- * Structural registrar interface satisfied by both Paseo v0.7 PluginContext
- * and Paseo v0.8 PluginClientContext.
- */
-interface SidebarSurfaceRegistrar {
-    addSurface(surfaceId: string, Component: ComponentType<HostSurfaceProps>): any;
-    addSidebarItem(contribution: any): any;
-}
-interface RegisterSidebarSurfaceOptions {
-    id: string;
-    title: string;
-    icon: string;
-    Component: ComponentType<HostSurfaceProps>;
-    flair?: VisualFlair;
-    /**
-     * Upper bound (px) on the surface's content column, for readability on very
-     * wide viewports. `false` opts out entirely, for surfaces that are genuinely
-     * canvas-shaped — graph visualisers, wide tables, timeline views — where a
-     * centred column would fight the content rather than help it.
-     *
-     * Defaults to {@link DEFAULT_SIDEBAR_MAX_CONTENT_WIDTH} rather than being
-     * per-call opt-in. Ten call sites already pass a `maxContentWidth` to
-     * `ModalBody` and ignore it in ten others, so making the cap opt-in would
-     * reproduce exactly the inconsistency it is meant to remove — a guard that
-     * only fires where someone remembered it.
-     */
-    maxContentWidth?: number | false;
-}
-/**
- * Default ceiling for a sidebar surface's content column.
- *
- * A sidebar surface is a full host page, so on a wide monitor it stretches
- * edge to edge and line lengths become unreadable. This is a ceiling, not a
- * target: the column stays fluid below it and is centred above it, exactly as
- * `ModalBody`'s own `maxContentWidth` behaves. 1280 is a common wide-viewport
- * breakpoint rather than a number derived from any plugin's content.
- */
-declare const DEFAULT_SIDEBAR_MAX_CONTENT_WIDTH = 1280;
-/**
- * Registers a sidebar icon and corresponding full-page surface in a single call,
- * automatically injecting `<PluginThemeProvider>` with custom visual flair.
- * Works with both Paseo v0.7 PluginContext and Paseo v0.8 PluginClientContext.
- *
- * A sidebar surface is a full host page: Paseo routes to it directly and does
- * NOT wrap the surface body in a host scroller (unlike `<Modal.Content>`, which
- * bounds the dialog and supplies the outer scroll). Any `ModalBody` in the
- * subtree would therefore pick the plain, non-scrolling branch on a
- * non-compact desktop and clip overflowing content — the recurring
- * "plugin page does not scroll" bug. Marking the subtree with the
- * `"required"` scroll-owner context makes every `ModalBody` inside own the
- * scroll on every surface, so plugins inherit working scroll with no
- * per-plugin workaround.
- *
- * Returns an idempotent disposer that removes both the surface and the sidebar
- * item, matching every other helper `add*` registration. Existing callers that
- * ignore the return value are unaffected.
- */
-declare function registerSidebarSurface(plugin: SidebarSurfaceRegistrar, options: RegisterSidebarSurfaceOptions): () => void;
-
-/**
- * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
- * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
- * (`paseo-plugin-helper/ui`) composed with host SDK primitives
- * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
- * See `docs/client-migration.md`.
- */
-
-/**
- * Structural registrar interface satisfied by both Paseo v0.7 PluginContext
- * and Paseo v0.8 PluginClientContext.
- */
-interface WorkspacePanelRegistrar {
-    addWorkspacePanel(contribution: any): any;
-}
-interface RegisterWorkspacePanelOptions {
-    id: string;
-    title: string;
-    icon: string;
-    Component: ComponentType<HostWorkspacePanelProps>;
-    flair?: VisualFlair;
-    /** Host locations in which the panel should be available. */
-    locations?: string[];
-}
-interface RegisterAgentPanelOptions {
-    id: string;
-    title: string;
-    icon: string;
-    Component: ComponentType<HostAgentPanelProps>;
-    flair?: VisualFlair;
-}
-/**
- * Registers a workspace-scoped panel with automatic `<PluginThemeProvider>` injection.
- * Works with both Paseo v0.7 PluginContext and Paseo v0.8 PluginClientContext.
- */
-declare function registerWorkspacePanel(plugin: WorkspacePanelRegistrar, options: RegisterWorkspacePanelOptions): () => void;
-/**
- * Registers an agent-scoped panel with automatic `<PluginThemeProvider>` injection.
- * Works with both Paseo v0.7 PluginContext and Paseo v0.8 PluginClientContext.
- */
-declare function registerAgentPanel(plugin: WorkspacePanelRegistrar, options: RegisterAgentPanelOptions): void;
-
-/**
- * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
- * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
- * (`paseo-plugin-helper/ui`) composed with host SDK primitives
- * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
- * See `docs/client-migration.md`.
- */
-
-interface CopyToClipboardOptions {
-    toast?: HostToast;
-    toastMessage?: string;
-}
-type ClipboardTier = "navigator" | "host" | "rnAsync" | "rnSync" | "execCommand";
-interface ClipboardEnvironment {
-    hasNavigatorClipboard: boolean;
-    hasHostCopyText: boolean;
-    hasRnClipboard: boolean;
-    hasRnSetStringAsync: boolean;
-    isDom: boolean;
-}
-/**
- * Deterministic tier order for an explicit copy.
- *
- * Web's `navigator.clipboard.writeText` is the only API that rejects when the
- * clipboard did not change, so it leads. The synchronous
- * `react-native-web` `Clipboard.setString` reports success even when its
- * `document.execCommand("copy")` fails, which leaves the previous clipboard
- * item in place while the UI claims success (xpufx-org/paseo#278); it is only
- * usable off-DOM (native), where it is the real platform clipboard. The same
- * applies to any `setStringAsync` whose DOM fallback is that unverified
- * `execCommand`. In a DOM the checked `execCommand` fallback is preferred to
- * those unverifiable paths.
- */
-declare function clipboardTierOrder(env: ClipboardEnvironment): ClipboardTier[];
-/**
- * Robust cross-platform clipboard copy helper for Paseo plugins.
- * Works seamlessly across React Native (mobile), web, and desktop.
- *
- * Tier order comes from `clipboardTierOrder`; every tier reports failure
- * honestly so a denied or blocked write never leaves the previous clipboard
- * item behind under a fake success.
- */
-declare function copyToClipboard(text: string, options?: CopyToClipboardOptions): Promise<boolean>;
-
-/**
- * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
- * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
- * (`paseo-plugin-helper/ui`) composed with host SDK primitives
- * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
- * See `docs/client-migration.md`.
- */
-type HapticFeedbackType = "light" | "medium" | "heavy" | "success" | "warning" | "error";
-/**
- * Cross-platform haptic feedback helper for Paseo plugins.
- * Supports web vibration API and graceful fallback when vibration is unavailable.
- */
-declare function triggerHaptic(type?: HapticFeedbackType): boolean;
-
-/**
- * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
- * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
- * (`paseo-plugin-helper/ui`) composed with host SDK primitives
- * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
- * See `docs/client-migration.md`.
- */
-
 interface CustomPillBodyProps {
     state: CustomPillState;
 }
@@ -1814,10 +1475,6 @@ declare function Icon(props: HostIconProps): React__default.JSX.Element;
  * See `docs/client-migration.md`.
  */
 
-/** Inline SVG data URI for a custom mark, tinted with the resolved color. */
-declare function forgeMarkSource(kind: ForgeKind, color: string): {
-    uri: string;
-} | null;
 interface ForgeIconProps extends ForgeMarkInput {
     /** Icon box in points; defaults to 16 to match the host Lucide default. */
     size?: number;
@@ -1884,4 +1541,4 @@ interface TicketLifecycleViewProps {
 }
 declare function TicketLifecycleView({ issueNumber, workspaceId: _workspaceId, directory, remoteUrl, repo: _repo, query, boardLabels, onRefresh, onOpenSettings: _onOpenSettings, children, }: TicketLifecycleViewProps): React__default.JSX.Element;
 
-export { type AboutLink, AboutSection, type AboutSectionProps, ActionBar, type ActionBarProps, AgentEnvelopeCard, BadgeSize, ButtonProps, COMPACT_DESKTOP_TOUCH_TARGET, COMPACT_FORM_FACTOR_WIDTH, Card, CardHeader, type CardHeaderProps, type CardProps, type ClipboardEnvironment, type ClipboardTier, CodeBlock, type CodeBlockProps, Collapsible, type CollapsibleProps, CommandBox, type CommandBoxProps, CommentCard, ComposerPillRegistrar, CopyButton, type CopyButtonFeedback, type CopyButtonProps, type CopyButtonSize, type CopyButtonVariant, type CopyToClipboardOptions, CustomPillBody, type CustomPillBodyProps, CustomPillModalContent, type CustomPillModalContentProps, DEFAULT_SIDEBAR_MAX_CONTENT_WIDTH, type DataColumn, DataTable, type DataTableProps, DensityStyle, EmptyState, type EmptyStateProps, ForgeIcon, type ForgeIconProps, ForgeKind, ForgeMarkInput, FormRow, type FormRowProps, Grid, type GridColumnOptions, type GridProps, type HapticFeedbackType, HighlightedText, type HighlightedTextProps, HostAgentPanelProps, HostIconProps, HostPillProps, HostSurfaceProps, HostToast, HostWorkspacePanelProps, Icon, InlineButton, type InlineButtonProps, InteractiveRow, type InteractiveRowProps, KeyValue, KeyValueGroup, type KeyValueGroupProps, type KeyValueProps, type KeyValueTruncateMode, MarkdownLite, MetricGauge, type MetricGaugeProps, ModalBody, type ModalBodyProps, type ModalBodyScrollOwner, ModalBodyScrollOwnerContext, type ModalBodySize, ModalContent, type ModalContentProps, NewIssueComposer, type PillIconResolver, type PillLabelResolver, type PillLiveContext, type PillLivePayload, PluginCleanup, ProgressBar, type ProgressBarProps, type RegisterAgentPanelOptions, type RegisterComposerPillOptions, type RegisterCustomPillsOptions, type RegisterSidebarSurfaceOptions, type RegisterWorkspacePanelOptions, type RenderModalProps, Responsive, type ResponsiveProps, type ResponsiveSelectOptions, Row, type RowProps, ScopedLabelGroup, SearchInput, type SearchInputProps, SectionHeader, type SectionHeaderProps, Select, type SelectOption, type SelectProps, type SidebarSurfaceRegistrar, SpacingValue, Stack, type StackProps, StatusDot, type StatusDotProps, SurfaceStyle, type TabItem, Tabs, type TabsProps, TextInput, type TextInputProps, TicketLifecycleView, type TicketLifecycleViewProps, Toggle, type ToggleProps, type TruncateMode, TruncatedText, type TruncatedTextProps, type UseResponsiveResult, VStack, VisualFlair, type WorkspacePanelRegistrar, alpha, clipboardTierOrder, copyToClipboard, forgeMarkSource, formatCommandLine, getContrastColor, getLuminance, getStatusColor, getTouchTargetMin, getVariantPalette, isMobilePlatform, registerAgentPanel, registerComposerPill, registerCustomPills, registerSidebarSurface, registerWorkspacePanel, resolveCollapsibleChevron, resolveCollapsibleHeaderBackground, resolveCollapsibleSurface, resolveCopyButtonFeedback, resolveEffectiveCompact, resolveGridColumns, resolvePadding, resolvePillModalScrollable, responsiveSelect, responsiveValue, triggerHaptic, useResponsive };
+export { type AboutLink, AboutSection, type AboutSectionProps, ActionBar, type ActionBarProps, AgentEnvelopeCard, BadgeSize, ButtonProps, COMPACT_DESKTOP_TOUCH_TARGET, COMPACT_FORM_FACTOR_WIDTH, Card, CardHeader, type CardHeaderProps, type CardProps, CodeBlock, type CodeBlockProps, Collapsible, type CollapsibleProps, CommandBox, type CommandBoxProps, CommentCard, ComposerPillRegistrar, CopyButton, type CopyButtonFeedback, type CopyButtonProps, type CopyButtonSize, type CopyButtonVariant, CustomPillBody, type CustomPillBodyProps, CustomPillModalContent, type CustomPillModalContentProps, type DataColumn, DataTable, type DataTableProps, DensityStyle, EmptyState, type EmptyStateProps, ForgeIcon, type ForgeIconProps, ForgeMarkInput, FormRow, type FormRowProps, Grid, type GridColumnOptions, type GridProps, HighlightedText, type HighlightedTextProps, HostIconProps, Icon, InlineButton, type InlineButtonProps, InteractiveRow, type InteractiveRowProps, KeyValue, KeyValueGroup, type KeyValueGroupProps, type KeyValueProps, type KeyValueTruncateMode, MarkdownLite, MetricGauge, type MetricGaugeProps, ModalBody, type ModalBodyProps, type ModalBodySize, ModalContent, type ModalContentProps, NewIssueComposer, PluginCleanup, ProgressBar, type ProgressBarProps, type RegisterCustomPillsOptions, Responsive, type ResponsiveProps, type ResponsiveSelectOptions, Row, type RowProps, ScopedLabelGroup, SearchInput, type SearchInputProps, SectionHeader, type SectionHeaderProps, Select, type SelectOption, type SelectProps, SpacingValue, Stack, type StackProps, StatusDot, type StatusDotProps, SurfaceStyle, type TabItem, Tabs, type TabsProps, TextInput, type TextInputProps, TicketLifecycleView, type TicketLifecycleViewProps, Toggle, type ToggleProps, type TruncateMode, TruncatedText, type TruncatedTextProps, type UseResponsiveResult, VStack, VisualFlair, alpha, formatCommandLine, getContrastColor, getLuminance, getStatusColor, getTouchTargetMin, getVariantPalette, isMobilePlatform, registerCustomPills, resolveCollapsibleChevron, resolveCollapsibleHeaderBackground, resolveCollapsibleSurface, resolveCopyButtonFeedback, resolveEffectiveCompact, resolveGridColumns, resolvePadding, responsiveSelect, responsiveValue, useResponsive };

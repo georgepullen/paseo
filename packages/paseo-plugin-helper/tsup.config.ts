@@ -8,6 +8,7 @@ export default defineConfig({
     "mcp/index": "src/mcp/index.ts",
     "shared/index": "src/shared/index.ts",
     "core/index": "src/core/index.ts",
+    "lifecycle/index": "src/lifecycle/index.ts",
     "ui/index": "src/ui/index.ts",
     "testing/index": "src/testing/index.ts",
     cli: "src/cli/index.ts",

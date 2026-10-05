@@ -69,7 +69,7 @@ a Paseo plugin client may import:
 | `ForgeIcon`, `resolveForgeMark` | Keep from `client/` (pure resolver also in `paseo-plugin-helper/shared`) — no host equivalent yet |
 | `useRpcQuery`, `useRpcMutation`, `useAutoRefreshQuery` | Keep from `client/` — headless hooks, not UI (extraction to `core` tracked separately) |
 | `usePluginSettings`, `useSharedPluginSettings` | Keep from `client/` — headless hooks, not UI |
-| `registerComposerPill`, `registerSidebarSurface`, `registerWorkspacePanel`, `registerAgentPanel`, `registerCommandCenterItem`, `registerCustomPills` | Keep from `client/` — lifecycle engines, not design system (extraction to `core` tracked separately) |
+| `registerComposerPill`, `registerSidebarSurface`, `registerWorkspacePanel`, `registerAgentPanel`, `registerCommandCenterItem`, `registerCustomPills` | Lifecycle engines, not design system — the engines now live in `paseo-plugin-helper/lifecycle` and stay re-exported from `client/` for compatibility |
 | `initClientHelpers` | **Still required** — the `ui/` adapters resolve host components through it |
 
 ---
@@ -217,7 +217,7 @@ initClientHelpers({ Icon, Modal, useRpc, useToast, copyText, ScrollView, TextInp
 5. Swap settings fields to the host `@getpaseo/plugin/client/ui` primitives via `registerHelperSettingsScreen` from `ui/`.
 6. Replace `Row`/`Stack`/`Grid`/`ActionBar`/`FormRow` with plain `View` flexbox; keep `gap` values from the host layout, not a density scale.
 7. Move plugin-specific visuals (badges, gauges, tabs, about sections) into the plugin's own client code — deliberately local, not shared.
-8. Keep the headless hooks (`useRpcQuery`, `usePluginSettings`, …) and lifecycle registrars (`registerComposerPill`, `registerSidebarSurface`, …) importable from `client/` until their extraction to `core` lands.
+8. Keep the headless hooks (`useRpcQuery`, `usePluginSettings`, …) importable from `client/` until their extraction lands. The lifecycle registrars (`registerComposerPill`, `registerSidebarSurface`, …) have moved to `paseo-plugin-helper/lifecycle` (client-safe, no frozen `client/` design system) and are still re-exported from `client/` for compatibility.
 9. Run the plugin's tests; then the repo suite (`npm test` at the root).
 
 ---

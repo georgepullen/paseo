@@ -33,6 +33,7 @@ export * from "../../../../shared/vendor/paseo-plugin-helper/forge";
 export * from "../../../../shared/vendor/paseo-plugin-helper/custom-pills";
 export * from "../../../../shared/vendor/paseo-plugin-helper/suppressed";
 export * from "../../../../shared/vendor/paseo-plugin-helper/types";
+export * from "../../../../shared/vendor/paseo-plugin-helper/tickets";
 
 export {
   initClientHelpers,

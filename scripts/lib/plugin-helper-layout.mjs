@@ -14,31 +14,32 @@
 
 import path from "node:path";
 
-// Per-plugin helper src trees to vendor. "core" and "ui" are client-side
-// exports and are colocated under <plugin>/client/vendor; "mcp" is server-side
-// (node-only) and lands in <plugin>/server/vendor/paseo-plugin-helper/mcp/.
-// The registration wrappers in src/client import ui/theme for HostThemeProvider,
-// so any plugin that vendors "client" also has to vendor "ui".
+// Per-plugin helper src trees to vendor. "core", "ui" and "lifecycle" are
+// client-side exports and are colocated under <plugin>/client/vendor; "mcp" is
+// server-side (node-only) and lands in <plugin>/server/vendor/paseo-plugin-helper/mcp/.
+// The registration engines now live in "lifecycle", so any plugin that vendors
+// "client" also has to vendor "lifecycle". Plugins that still render the ui/
+// adapter layer keep vendoring "ui".
 export const PLUGINS = {
-  "top": ["client", "ui", "server", "shared"],
-  "mcp-tools": ["client", "ui", "server", "shared", "mcp"],
-  "demo": ["client", "core", "ui", "server", "shared"],
-  "forges": ["client", "ui", "server", "shared"],
-  "slash": ["client", "ui", "server", "shared"],
-  "x-comms": ["client", "ui", "server", "shared", "mcp"],
-  "twofado": ["client", "ui", "server", "shared"],
-  "plugin-updates": ["client", "ui", "server", "shared"],
-  "wellbeing": ["client", "ui", "server", "shared"],
-  "permission-logger": ["client", "ui", "server", "shared"],
+  "top": ["client", "lifecycle", "ui", "server", "shared"],
+  "mcp-tools": ["client", "lifecycle", "ui", "server", "shared", "mcp"],
+  "demo": ["client", "lifecycle", "core", "ui", "server", "shared"],
+  "forges": ["client", "lifecycle", "ui", "server", "shared"],
+  "slash": ["client", "lifecycle", "ui", "server", "shared"],
+  "x-comms": ["client", "lifecycle", "ui", "server", "shared", "mcp"],
+  "twofado": ["client", "lifecycle", "ui", "server", "shared"],
+  "plugin-updates": ["client", "lifecycle", "ui", "server", "shared"],
+  "wellbeing": ["client", "lifecycle", "ui", "server", "shared"],
+  "permission-logger": ["client", "lifecycle", "ui", "server", "shared"],
 };
 
-export const TREES = ["client", "core", "ui", "server", "shared", "mcp"];
+export const TREES = ["client", "lifecycle", "core", "ui", "server", "shared", "mcp"];
 export const DEST_ROOT = "vendor/paseo-plugin-helper";
 
 // Destination dir for a helper src tree inside a plugin.
 export function destDir(pluginRoot, srcTree) {
   if (srcTree === "mcp") return path.join(pluginRoot, "server", DEST_ROOT, "mcp");
-  if (srcTree === "core" || srcTree === "ui") {
+  if (srcTree === "core" || srcTree === "ui" || srcTree === "lifecycle") {
     return path.join(pluginRoot, "client", DEST_ROOT, srcTree);
   }
   return path.join(pluginRoot, srcTree, DEST_ROOT);

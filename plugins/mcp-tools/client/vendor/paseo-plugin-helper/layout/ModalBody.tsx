@@ -6,7 +6,6 @@
  * See `docs/client-migration.md`.
  */
 import React, {
-  createContext,
   useContext,
   useRef,
   type ComponentType,
@@ -92,10 +91,16 @@ export interface ModalBodyProps {
  *
  * Adding the `"required"` member is additive: the existing two values keep
  * their meaning and the default stays `"helper"`.
+ *
+ * The context now lives in `lifecycle/` so the registration engines can mark
+ * their subtrees without importing the frozen layout kit; it is re-exported
+ * here for compatibility.
  */
-export type ModalBodyScrollOwner = "helper" | "host" | "required" | "popover";
-
-export const ModalBodyScrollOwnerContext = createContext<ModalBodyScrollOwner>("helper");
+export {
+  ModalBodyScrollOwnerContext,
+  type ModalBodyScrollOwner,
+} from "../lifecycle/scroll-owner";
+import { ModalBodyScrollOwnerContext } from "../lifecycle/scroll-owner";
 
 // `size` is advisory and intentionally carries no width floor. A content-side
 // `minWidth` overrides the host dialog allocation instead of deferring to it,
