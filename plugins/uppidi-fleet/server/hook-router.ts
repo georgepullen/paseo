@@ -6,7 +6,6 @@ import os from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
-const execFileAsync = promisify(execFile);
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import type { PaseoApi } from "@getpaseo/client";
 import type {
@@ -25,6 +24,21 @@ import { createDefaultIssuesCheckIo, runIssuesCheck, type IssuesCheckIo } from "
 import { resolveWorkspaceForRepo, type ResolvedWorkspace } from "./workspace-lookup.js";
 import { isRepoMatching } from "../shared/sort-filter.js";
 import { DEFAULT_ROLE_MODELS, loadSavedRoleModels } from "./role-models.js";
+
+const defaultExecFileAsync = promisify(execFile);
+let execFileAsync = defaultExecFileAsync;
+
+export type ExecFileAsyncFn = (
+  file: string,
+  args: readonly string[],
+  options?: unknown,
+) => Promise<{ stdout: string; stderr?: string }>;
+
+// Test seam: the suite stubs the CLI through this instead of shelling out to the
+// real `paseo` binary (mirrors agents.ts and role-models.ts).
+export function setExecFileAsyncForTest(fn: ExecFileAsyncFn | null): void {
+  execFileAsync = (fn || defaultExecFileAsync) as typeof execFileAsync;
+}
 
 export interface RouterConfig {
   host?: string;
@@ -165,6 +179,8 @@ export interface HookRouterOptions {
   /** Ordered model fallback list for orchestrator provision (#890). */
   orchestratorModelFallback?: string[];
   modelFallbackList?: string[];
+  /** Overrides provider mode discovery for orchestrator spawns (#894). */
+  providerModeResolver?: (provider: string) => Promise<ProviderModeInfo | null>;
   spawnAgent?: (opts: {
     title: string;
     prompt: string;
@@ -1809,6 +1825,48 @@ export function resolveOrchestratorModel(
     provider: parsed.provider,
     model: parsed.model,
   };
+}
+
+export interface ProviderModeInfo {
+  modes: Array<{ id: string; label?: string }>;
+  defaultModeId?: string | null;
+}
+
+/**
+ * Picks the mode to request when creating an agent.
+ *
+ * Mode-less providers reject any explicit mode (`Invalid mode 'yolo' ...
+ * Available modes: (none)`), so an unresolved mode must stay undefined instead
+ * of falling back to a hard-coded autonomous default. When the requested mode
+ * is not advertised, the provider's default mode is used if it is addressable.
+ */
+export function resolveProviderSpawnMode(
+  info: ProviderModeInfo | null | undefined,
+  requestedMode?: string,
+): string | undefined {
+  const modes = info?.modes ?? [];
+  if (modes.length === 0) return undefined;
+
+  const findBy = (value: string) => {
+    const needle = value.toLowerCase();
+    return (
+      modes.find((mode) => mode.id === value) ??
+      modes.find((mode) => mode.id.toLowerCase() === needle) ??
+      modes.find((mode) => (mode.label ?? "").toLowerCase() === needle)
+    );
+  };
+
+  const requested = requestedMode?.trim() || "yolo";
+  const requestedMatch = findBy(requested);
+  if (requestedMatch) return requestedMatch.id;
+
+  const defaultMode = info?.defaultModeId?.trim();
+  if (defaultMode) {
+    const defaultMatch = findBy(defaultMode);
+    if (defaultMatch) return defaultMatch.id;
+  }
+
+  return undefined;
 }
 
 export interface WatchdogAssessment {
@@ -3596,6 +3654,114 @@ export class HookRouter {
     });
   }
 
+  private async getProviderModeInfo(provider: string): Promise<ProviderModeInfo | null> {
+    if (!provider) return null;
+
+    if (this.options?.providerModeResolver) {
+      try {
+        return await this.options.providerModeResolver(provider);
+      } catch (err) {
+        this.log(
+          `[warn] provider mode resolver failed for ${provider}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        return null;
+      }
+    }
+
+    const snapshot = await this.readPaseoProviderModes(provider);
+    if (snapshot) return snapshot;
+
+    if (this.isTestMode || process.env.NODE_ENV === "test") return null;
+
+    try {
+      const { stdout } = await execFileAsync("paseo", ["provider", "ls", "--json"], {
+        timeout: 5000,
+        encoding: "utf-8",
+      });
+      const parsed: unknown = JSON.parse(stdout);
+      const entries = Array.isArray(parsed)
+        ? parsed
+        : Array.isArray((parsed as { providers?: unknown })?.providers)
+          ? (parsed as { providers: unknown[] }).providers
+          : [];
+      const entry = entries.find(
+        (candidate) =>
+          (candidate as { provider?: unknown })?.provider === provider ||
+          (candidate as { id?: unknown })?.id === provider,
+      ) as { modes?: unknown; defaultMode?: unknown } | undefined;
+      if (!entry) return null;
+
+      // `provider ls` only exposes mode labels, not ids. The lead/default mode
+      // is reported as an id, so treat it as addressable when it is not the
+      // `"default"` sentinel the CLI emits for a provider with no default.
+      const labels =
+        typeof entry.modes === "string"
+          ? entry.modes
+              .split(",")
+              .map((label) => label.trim())
+              .filter(Boolean)
+          : [];
+      const modes = labels.map((label) => ({ id: label, label }));
+      const defaultMode =
+        typeof entry.defaultMode === "string" && entry.defaultMode.trim()
+          ? entry.defaultMode.trim()
+          : null;
+      if (
+        defaultMode &&
+        defaultMode !== "default" &&
+        !modes.some((mode) => mode.id === defaultMode)
+      ) {
+        modes.push({ id: defaultMode, label: defaultMode });
+      }
+      return { modes, defaultModeId: defaultMode };
+    } catch (err) {
+      this.log(
+        `[warn] provider mode lookup failed for ${provider}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return null;
+    }
+  }
+
+  private async readPaseoProviderModes(provider: string): Promise<ProviderModeInfo | null> {
+    const providers = (this.getPaseo() as unknown as { providers?: unknown })?.providers as
+      | { snapshot?: () => Promise<unknown> }
+      | undefined;
+    if (!providers || typeof providers.snapshot !== "function") return null;
+    try {
+      const snapshot = (await providers.snapshot()) as
+        | { entries?: unknown; payload?: { entries?: unknown } }
+        | null;
+      const entries = Array.isArray(snapshot?.entries)
+        ? (snapshot.entries as unknown[])
+        : Array.isArray(snapshot?.payload?.entries)
+          ? (snapshot.payload.entries as unknown[])
+          : [];
+      const entry = entries.find(
+        (candidate) => (candidate as { provider?: unknown })?.provider === provider,
+      ) as { modes?: unknown; defaultModeId?: unknown } | undefined;
+      if (!entry) return null;
+
+      const modes = Array.isArray(entry.modes)
+        ? (entry.modes as unknown[])
+            .map((mode) => ({
+              id: typeof (mode as { id?: unknown })?.id === "string" ? (mode as { id: string }).id : "",
+              label:
+                typeof (mode as { label?: unknown })?.label === "string"
+                  ? (mode as { label: string }).label
+                  : undefined,
+            }))
+            .filter((mode) => mode.id.length > 0)
+        : [];
+      const defaultModeId = typeof entry.defaultModeId === "string" ? entry.defaultModeId : null;
+      return { modes, defaultModeId };
+    } catch (err) {
+      this.log(
+        `[warn] provider snapshot lookup failed for ${provider}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return null;
+    }
+  }
+
   public async ensureOrchestrator(
     input: EnsureOrchestratorInput,
   ): Promise<EnsureOrchestratorResult> {
@@ -3663,9 +3829,11 @@ export class HookRouter {
       fallbackList,
       circuitBreakerPath,
     });
-    const targetMode = input.mode?.trim() || "yolo";
     const targetProvider = resolvedModel.provider;
     const targetModel = resolvedModel.model || undefined;
+    const requestedMode = input.mode?.trim() || "yolo";
+    const providerModeInfo = await this.getProviderModeInfo(targetProvider);
+    const targetMode = resolveProviderSpawnMode(providerModeInfo, requestedMode);
     const title = `Orchestrator · ${canonicalKey}`;
     const prompt = `You are the project orchestrator for ${repo}. Follow the orchestrator skill to coordinate tasks, supervise worker agents, and manage pull requests and issues.`;
     const labels: Record<string, string> = {
@@ -3704,8 +3872,8 @@ export class HookRouter {
             role: "orchestrator",
             cwd: resolved.cwd,
             labels,
-            mode: targetMode,
           };
+          if (targetMode) createPayload.mode = targetMode;
           if (targetModel) {
             createPayload.provider = `${targetProvider}/${targetModel}`;
             createPayload.model = targetModel;
@@ -3714,9 +3882,9 @@ export class HookRouter {
           }
           const sdkConfig: Record<string, any> = {
             provider: createPayload.provider,
-            modeId: targetMode,
             featureValues: { auto_accept: true },
           };
+          if (targetMode) sdkConfig.modeId = targetMode;
           if (resolved.cwd) sdkConfig.cwd = resolved.cwd;
           createPayload.config = sdkConfig;
           if (resolved.workspaceId) {
@@ -3746,7 +3914,7 @@ export class HookRouter {
           const args = ["run", "-d", "--title", title];
           if (targetProvider) args.push("--provider", targetProvider);
           if (targetModel) args.push("--model", targetModel);
-          args.push("--mode", targetMode);
+          if (targetMode) args.push("--mode", targetMode);
           if (resolved.workspaceId) args.push("--workspace", resolved.workspaceId);
           if (resolved.cwd) args.push("--cwd", resolved.cwd);
           for (const [k, v] of Object.entries(labels)) {
@@ -3778,19 +3946,22 @@ export class HookRouter {
       return { ok: false, error: "Failed to spawn orchestrator agent", repo };
     }
 
-    // Explicitly configure autonomous execution mode (yolo)
-    await this.setAgentMode(agentId, targetMode);
+    // Explicitly configure autonomous execution mode when the provider exposes one
+    if (targetMode) {
+      await this.setAgentMode(agentId, targetMode);
+    }
 
     // Detach agent so it operates as an autonomous peer rather than inheriting Front Desk/caller parentage
     await this.detachAgent(agentId).catch(() => {});
 
     // Update metadata
-    await this.updateAgentMetadata(agentId, title, {
+    const metadata: Record<string, string> = {
       role: "orchestrator",
       category: "orchestrator",
       repo,
-      mode: targetMode,
-    }).catch(() => {});
+    };
+    if (targetMode) metadata.mode = targetMode;
+    await this.updateAgentMetadata(agentId, title, metadata).catch(() => {});
 
     // Register in authoritative registry & enrolled repos
     this.writeOrchestrator(repo, agentId, "ensure");
@@ -3802,7 +3973,7 @@ export class HookRouter {
     }
 
     this.log(
-      `[info] Orchestrator provisioned for ${repo}: ${agentId} (workspace=${resolved.workspaceId ?? resolved.cwd}, mode=${targetMode})`,
+      `[info] Orchestrator provisioned for ${repo}: ${agentId} (workspace=${resolved.workspaceId ?? resolved.cwd}, mode=${targetMode ?? "none"})`,
     );
 
     return {

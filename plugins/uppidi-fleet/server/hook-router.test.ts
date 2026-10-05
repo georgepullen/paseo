@@ -84,10 +84,13 @@ import {
   REPO_ONBOARDING_ISSUE_TITLE,
   REPO_ONBOARDING_ISSUE_LABELS,
   REPO_ONBOARDING_ISSUE_BODY,
+  resolveProviderSpawnMode,
+  setExecFileAsyncForTest,
   type CoalesceEvent,
   type WatchdogAgent,
   type WatchdogAgentDisk,
   type HookRouterOptions,
+  type ProviderModeInfo,
 } from "./hook-router.js";
 import { setFetchForTest, setTokenResolverForTest } from "./forgejo-api.js";
 import { setMetricsFilePathForTest } from "./metrics.js";
@@ -4024,6 +4027,7 @@ describe("hook-router ensure-orchestrator deterministic resolution and idempoten
   let tempRepoDir: string;
   let router: HookRouter;
   let spawnedCalls: any[];
+  let providerModes: Record<string, ProviderModeInfo | null>;
   let stopRouter: (() => Promise<void>) | null = null;
 
   beforeEach(async () => {
@@ -4035,6 +4039,9 @@ describe("hook-router ensure-orchestrator deterministic resolution and idempoten
     mkdirSync(stateDir, { recursive: true });
     mkdirSync(tempRepoDir, { recursive: true });
     spawnedCalls = [];
+    providerModes = {
+      "antigravity-acp": { modes: [{ id: "yolo", label: "YOLO" }], defaultModeId: "yolo" },
+    };
 
     const workspacesWithRealDir = [
       {
@@ -4052,6 +4059,7 @@ describe("hook-router ensure-orchestrator deterministic resolution and idempoten
       stateDir,
       port: 0,
       workspacesData: workspacesWithRealDir,
+      providerModeResolver: async (provider) => providerModes[provider] ?? null,
       spawnAgent: async (opts) => {
         spawnedCalls.push(opts);
         return { id: `agent-${spawnedCalls.length}` };
@@ -4219,6 +4227,162 @@ describe("hook-router ensure-orchestrator deterministic resolution and idempoten
     assert.equal(existBody.ok, true);
     assert.equal(existBody.status, "existing");
     assert.equal(existBody.agentId, "agent-1");
+  });
+});
+
+describe("orchestrator provider mode resolution (#894)", () => {
+  let tempDir: string;
+  let queueDir: string;
+  let stateDir: string;
+  let tempRepoDir: string;
+  let capturedRuns: string[][] = [];
+
+  const workspacesWithRealDir = (repoDir: string) => [
+    {
+      workspaceId: "ws-paseo-main",
+      cwd: repoDir,
+      displayName: "Paseo",
+      isolation: "local",
+      projectKey: "remote:forge.mrs.uppidi.com:222/xpufx-org/paseo",
+    },
+  ];
+
+  const makeRouter = (options: Partial<HookRouterOptions> = {}): HookRouter =>
+    new HookRouter(null, {
+      port: 0,
+      queueDir,
+      stateDir,
+      workspacesData: workspacesWithRealDir(tempRepoDir),
+      ...options,
+    });
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "paseo-orch-mode-test-"));
+    queueDir = join(tempDir, "queues");
+    stateDir = join(tempDir, "state");
+    tempRepoDir = join(tempDir, "repo-worktree");
+    mkdirSync(queueDir, { recursive: true });
+    mkdirSync(stateDir, { recursive: true });
+    mkdirSync(tempRepoDir, { recursive: true });
+    capturedRuns = [];
+    setExecFileAsyncForTest(async (_cmd: string, args: readonly string[]) => {
+      if (args[0] === "run") capturedRuns.push([...args]);
+      return { stdout: JSON.stringify({ id: "agent-cli" }) };
+    });
+  });
+
+  afterEach(() => {
+    setExecFileAsyncForTest(null);
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it("resolveProviderSpawnMode omits the mode when the provider declares none", () => {
+    assert.equal(resolveProviderSpawnMode({ modes: [] }, "yolo"), undefined);
+    assert.equal(resolveProviderSpawnMode(null, "yolo"), undefined);
+    assert.equal(resolveProviderSpawnMode(undefined, "yolo"), undefined);
+  });
+
+  it("resolveProviderSpawnMode matches requested modes by id or label", () => {
+    const info: ProviderModeInfo = {
+      modes: [
+        { id: "build", label: "Build" },
+        { id: "plan", label: "Plan" },
+      ],
+    };
+    assert.equal(resolveProviderSpawnMode(info, "build"), "build");
+    assert.equal(resolveProviderSpawnMode(info, "BUILD"), "build");
+    assert.equal(resolveProviderSpawnMode(info, "Plan"), "plan");
+  });
+
+  it("resolveProviderSpawnMode falls back to an addressable default mode", () => {
+    const info: ProviderModeInfo = {
+      modes: [{ id: "full-access", label: "Full access" }],
+      defaultModeId: "full-access",
+    };
+    assert.equal(resolveProviderSpawnMode(info, "yolo"), "full-access");
+  });
+
+  it("resolveProviderSpawnMode omits an unaddressable default mode", () => {
+    const info: ProviderModeInfo = {
+      modes: [
+        { id: "build", label: "Build" },
+        { id: "plan", label: "Plan" },
+      ],
+      defaultModeId: "default",
+    };
+    assert.equal(resolveProviderSpawnMode(info, "yolo"), undefined);
+  });
+
+  it("omits the spawn mode for a mode-less provider", async () => {
+    const spawned: any[] = [];
+    const router = makeRouter({
+      providerModeResolver: async () => ({ modes: [] }),
+      spawnAgent: async (opts) => {
+        spawned.push(opts);
+        return { id: "agent-pi" };
+      },
+    });
+
+    const res = await router.ensureOrchestrator({
+      repo: "xpufx-org/paseo",
+      provider: "pi",
+      model: "pi-model",
+    });
+    assert.equal(res.ok, true);
+    assert.equal(spawned[0].provider, "pi");
+    assert.equal(spawned[0].mode, undefined);
+  });
+
+  it("passes the resolved mode for a mode-capable provider", async () => {
+    const spawned: any[] = [];
+    const router = makeRouter({
+      providerModeResolver: async () => ({
+        modes: [{ id: "yolo", label: "YOLO" }],
+        defaultModeId: "yolo",
+      }),
+      spawnAgent: async (opts) => {
+        spawned.push(opts);
+        return { id: "agent-antigravity" };
+      },
+    });
+
+    const res = await router.ensureOrchestrator({ repo: "xpufx-org/paseo" });
+    assert.equal(res.ok, true);
+    assert.equal(spawned[0].provider, "antigravity-acp");
+    assert.equal(spawned[0].mode, "yolo");
+  });
+
+  it("omits --mode on the CLI fallback for a mode-less provider", async () => {
+    const router = makeRouter({
+      allowCliSpawn: true,
+      providerModeResolver: async () => ({ modes: [] }),
+    });
+
+    const res = await router.ensureOrchestrator({
+      repo: "xpufx-org/paseo",
+      provider: "pi",
+      model: "pi-model",
+    });
+    assert.equal(res.ok, true);
+    assert.equal(capturedRuns.length, 1);
+    assert.equal(capturedRuns[0].includes("--mode"), false);
+  });
+
+  it("passes --mode on the CLI fallback for a mode-capable provider", async () => {
+    const router = makeRouter({
+      allowCliSpawn: true,
+      providerModeResolver: async () => ({
+        modes: [{ id: "full-access", label: "Full access" }],
+        defaultModeId: "full-access",
+      }),
+    });
+
+    const res = await router.ensureOrchestrator({ repo: "xpufx-org/paseo" });
+    assert.equal(res.ok, true);
+    assert.equal(capturedRuns.length, 1);
+    const modeIdx = capturedRuns[0].indexOf("--mode");
+    assert.ok(modeIdx >= 0, "expected --mode in CLI args");
+    assert.equal(capturedRuns[0][modeIdx + 1], "full-access");
   });
 });
 
