@@ -2,6 +2,8 @@ import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import {
   resolveHookUrl,
+  resolveHookEndpoint,
+  resolveHookAuthPosture,
   handleHookStatus,
   handleHookServiceStatus,
   handleHookInfo,
@@ -86,6 +88,43 @@ describe("uppidi-fleet hook server handlers", () => {
   it("normalizes trailing slashes in custom hook URL", () => {
     assert.equal(resolveHookUrl("http://localhost:9000/"), "http://localhost:9000");
     assert.equal(resolveHookUrl("http://localhost:9000///"), "http://localhost:9000");
+  });
+
+  it("resolves a structured endpoint and the rung that supplied it (#903)", () => {
+    const endpoint = resolveHookEndpoint();
+    assert.equal(endpoint.baseUrl, resolveHookUrl());
+    assert.equal(endpoint.host, "127.0.0.1");
+    assert.equal(endpoint.port, 8099);
+    assert.equal(endpoint.source, "plugin-settings");
+
+    const explicit = resolveHookEndpoint("http://10.11.12.13:8200/");
+    assert.equal(explicit.host, "10.11.12.13");
+    assert.equal(explicit.port, 8200);
+    assert.equal(explicit.baseUrl, "http://10.11.12.13:8200");
+    assert.equal(explicit.source, "explicit");
+  });
+
+  it("reports the shared secret path without its value (#903)", () => {
+    const prevEnv = process.env.FORGEJO_WEBHOOK_SECRET;
+    const prevFile = process.env.PASEO_FORGEJO_HOOK_SECRET_FILE;
+    const dir = mkdtempSync(join(tmpdir(), "uppidi-fleet-auth-"));
+    const secretPath = join(dir, "forgejo-hook.secret");
+    const secretValue = "hook-secret-value-must-not-leak";
+    writeFileSync(secretPath, secretValue, "utf8");
+    delete process.env.FORGEJO_WEBHOOK_SECRET;
+    process.env.PASEO_FORGEJO_HOOK_SECRET_FILE = secretPath;
+    try {
+      const posture = resolveHookAuthPosture();
+      assert.equal(posture.available, true);
+      assert.equal(posture.location, secretPath);
+      assert.ok(!JSON.stringify(posture).includes(secretValue), "posture never carries the value");
+    } finally {
+      if (prevEnv !== undefined) process.env.FORGEJO_WEBHOOK_SECRET = prevEnv;
+      else delete process.env.FORGEJO_WEBHOOK_SECRET;
+      if (prevFile !== undefined) process.env.PASEO_FORGEJO_HOOK_SECRET_FILE = prevFile;
+      else delete process.env.PASEO_FORGEJO_HOOK_SECRET_FILE;
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it("resolves FORGE_HOOK_URL when no explicit URL is provided (#464)", () => {

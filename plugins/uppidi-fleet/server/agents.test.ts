@@ -28,6 +28,7 @@ import {
   SPAWN_AUTHORITY_WORKER_ERROR,
   SPAWN_AUTHORITY_WORKSPACE_ERROR,
   spawnPaseoAgent,
+  buildFrontDeskIntroPrompt,
   handleUppidiFrontDeskActivity,
   handleUppidiFrontDeskPrompt,
   handleFleetTeardown,
@@ -1082,3 +1083,65 @@ describe("Fleet teardown state cleanup (#774)", () => {
   });
 });
 
+describe("Front Desk intro prompt hook context (#903)", () => {
+  let tmpDir: string;
+  let prevSecretEnv: string | undefined;
+  let prevSecretFile: string | undefined;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "uppidi-fleet-fd-intro-"));
+    prevSecretEnv = process.env.FORGEJO_WEBHOOK_SECRET;
+    prevSecretFile = process.env.PASEO_FORGEJO_HOOK_SECRET_FILE;
+  });
+
+  afterEach(() => {
+    setActiveHookRouter(null);
+    if (prevSecretEnv !== undefined) process.env.FORGEJO_WEBHOOK_SECRET = prevSecretEnv;
+    else delete process.env.FORGEJO_WEBHOOK_SECRET;
+    if (prevSecretFile !== undefined) process.env.PASEO_FORGEJO_HOOK_SECRET_FILE = prevSecretFile;
+    else delete process.env.PASEO_FORGEJO_HOOK_SECRET_FILE;
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("appends the active router endpoint and auth path without the secret value", () => {
+    const secretPath = path.join(tmpDir, "forgejo-hook.secret");
+    const secretValue = "yet-another-secret-value";
+    fs.writeFileSync(secretPath, secretValue, "utf8");
+    delete process.env.FORGEJO_WEBHOOK_SECRET;
+    process.env.PASEO_FORGEJO_HOOK_SECRET_FILE = secretPath;
+
+    const router = new HookRouter(null, {
+      host: "10.9.8.7",
+      port: 9123,
+      stateDir: tmpDir,
+      queueDir: path.join(tmpDir, "queues"),
+    });
+    setActiveHookRouter(router);
+
+    const prompt = buildFrontDeskIntroPrompt("Custom Front Desk intro.");
+    assert.ok(prompt.startsWith("Custom Front Desk intro."), "custom intro is preserved");
+    assert.ok(prompt.includes("host: 10.9.8.7"), "host comes from the active router");
+    assert.ok(prompt.includes("port: 9123"), "port comes from the active router");
+    assert.ok(prompt.includes("baseUrl: http://10.9.8.7:9123"), "baseUrl is derived");
+    assert.ok(prompt.includes("resolution source: active-router"), "the rung is named");
+    assert.ok(prompt.includes(secretPath), "auth names the secret path");
+    assert.ok(!prompt.includes(secretValue), "the secret value is never embedded");
+  });
+
+  it("reports missing auth without failing when the secret file is absent", () => {
+    delete process.env.FORGEJO_WEBHOOK_SECRET;
+    process.env.PASEO_FORGEJO_HOOK_SECRET_FILE = path.join(tmpDir, "missing.secret");
+
+    const router = new HookRouter(null, {
+      host: "10.9.8.7",
+      port: 9123,
+      stateDir: tmpDir,
+      queueDir: path.join(tmpDir, "queues"),
+    });
+    setActiveHookRouter(router);
+
+    const prompt = buildFrontDeskIntroPrompt();
+    assert.ok(prompt.includes("auth: no shared webhook secret at"), "absence is stated");
+    assert.ok(prompt.includes(path.join(tmpDir, "missing.secret")), "expected location is named");
+  });
+});

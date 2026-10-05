@@ -61,6 +61,7 @@ import {
   loadRouterConfig,
   saveRouterConfig,
 } from "./hook-router.js";
+import { resolveHookAuthPosture, resolveHookEndpoint } from "./hook.js";
 import { resolveWorkspaceForRepo } from "./workspace-lookup.js";
 import { loadSavedRoleModels, DEFAULT_ROLE_MODELS } from "./role-models.js";
 
@@ -2228,15 +2229,40 @@ function enrollPersistedRepo(repo: string): void {
   saveRouterConfig({ enrolledRepos: Array.from(enrolled) });
 }
 
+/**
+ * Builds the Front Desk introduction prompt, appending the resolved hook router
+ * endpoint and auth posture (#903). The endpoint comes from the same chain as
+ * `scripts/frontdesk-info`; the shared secret's value is never included, only
+ * where it lives.
+ */
+export function buildFrontDeskIntroPrompt(basePrompt?: string): string {
+  const base =
+    basePrompt?.trim() ||
+    "You are the Fleet Front Desk liaison. Monitor incoming events, coordinate with project orchestrators, and triage requests across the workspace.";
+  const endpoint = resolveHookEndpoint();
+  const auth = resolveHookAuthPosture();
+  const authLine = auth.available
+    ? `auth: shared webhook secret available at ${auth.location} (value withheld; never print it)`
+    : `auth: no shared webhook secret at ${auth.location}${auth.note ? ` (${auth.note})` : ""}`;
+  return [
+    base,
+    "",
+    "Active hook router (resolved at spawn; use these values, do not hardcode):",
+    `- host: ${endpoint.host}`,
+    `- port: ${endpoint.port}`,
+    `- baseUrl: ${endpoint.baseUrl}`,
+    `- resolution source: ${endpoint.source}`,
+    `- ${authLine}`,
+  ].join("\n");
+}
+
 export async function handleUppidiCreateFrontDesk(
   input: UppidiCreateFrontDeskInput,
   context: PluginHandlerContext
 ): Promise<UppidiCreateFrontDeskOutput> {
   try {
     const title = input.title?.trim() || "Front Desk";
-    const prompt =
-      input.prompt?.trim() ||
-      "You are the Fleet Front Desk liaison. Monitor incoming events, coordinate with project orchestrators, and triage requests across the workspace.";
+    const prompt = buildFrontDeskIntroPrompt(input.prompt);
 
     const spawnRes = await spawnPaseoAgent(
       {

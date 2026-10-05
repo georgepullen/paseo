@@ -37,6 +37,7 @@ import { DEFAULT_ROLE_MODELS, handleUppidiRoleModels, handleUppidiSetRoleModel, 
 // out to the real container runtime of whichever host runs the suite.
 import { handleUppidiRunners, setExecFileAsyncForTest as setRunnerExecFileAsyncForTest } from "./runners.js";
 import { setFetchForTest, setTokenResolverForTest } from "./forgejo-api.js";
+import { getUppidiFleetSettingsStorage } from "./settings.js";
 import { buildProjectGroups } from "../shared/sort-filter.js";
 
 describe("fleet and agents classification", () => {
@@ -600,6 +601,52 @@ describe("fleet roster lifecycle actions and per-repo mute RPCs (#426)", () => {
     assert.equal(res.agentId, "agent-fd-new");
     assert.equal(createdPayload?.role, "front-desk");
     assert.ok(createdPayload?.title?.includes("Front Desk"));
+  });
+
+  it("injects the resolved hook endpoint and auth posture into the Front Desk intro prompt (#903)", async () => {
+    const prevSecretEnv = process.env.FORGEJO_WEBHOOK_SECRET;
+    const prevSecretFile = process.env.PASEO_FORGEJO_HOOK_SECRET_FILE;
+    const secretDir = fs.mkdtempSync(path.join(os.tmpdir(), "uppidi-fleet-fd-prompt-"));
+    const secretPath = path.join(secretDir, "forgejo-hook.secret");
+    const secretValue = "sup3r-s3cret-value-must-not-leak";
+    fs.writeFileSync(secretPath, `${secretValue}\n`, "utf8");
+    delete process.env.FORGEJO_WEBHOOK_SECRET;
+    process.env.PASEO_FORGEJO_HOOK_SECRET_FILE = secretPath;
+
+    const storage = getUppidiFleetSettingsStorage();
+    const prevSettings = storage.read();
+    storage.update((prev) => ({ ...prev, hookHost: "10.20.30.40", hookPort: 8123 }));
+
+    try {
+      let createdPayload: any = null;
+      const mockContext: any = {
+        paseo: {
+          agents: {
+            create: async (opts: any) => {
+              createdPayload = opts;
+              return { agent: { id: "agent-fd-hookinfo", status: "running" } };
+            },
+          },
+        },
+      };
+
+      const res = await handleUppidiCreateFrontDesk({}, mockContext);
+      assert.equal(res.ok, true);
+      const prompt: string = createdPayload.prompt;
+      assert.ok(prompt.includes("host: 10.20.30.40"), "prompt carries the resolved host");
+      assert.ok(prompt.includes("port: 8123"), "prompt carries the resolved port");
+      assert.ok(prompt.includes("baseUrl: http://10.20.30.40:8123"), "prompt carries the resolved baseUrl");
+      assert.ok(prompt.includes("resolution source: plugin-settings"), "prompt names the resolution rung");
+      assert.ok(prompt.includes(secretPath), "prompt names the secret path");
+      assert.ok(!prompt.includes(secretValue), "prompt must never include the secret value");
+    } finally {
+      storage.update(() => ({ ...prevSettings }));
+      if (prevSecretEnv !== undefined) process.env.FORGEJO_WEBHOOK_SECRET = prevSecretEnv;
+      else delete process.env.FORGEJO_WEBHOOK_SECRET;
+      if (prevSecretFile !== undefined) process.env.PASEO_FORGEJO_HOOK_SECRET_FILE = prevSecretFile;
+      else delete process.env.PASEO_FORGEJO_HOOK_SECRET_FILE;
+      fs.rmSync(secretDir, { recursive: true, force: true });
+    }
   });
 
   it("replaces Front Desk session via handleUppidiReplaceFrontDesk", async () => {
