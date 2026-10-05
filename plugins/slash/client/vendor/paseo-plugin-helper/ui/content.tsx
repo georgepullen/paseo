@@ -12,7 +12,7 @@ import {
   type TextStyle,
   type ViewStyle,
 } from "react-native";
-import { getClientHost } from "../host";
+import { getClientHost } from "../core/host";
 import type { StatusVariant, ThemeColors } from "../../../../shared/vendor/paseo-plugin-helper/types";
 import { resolveMetricStatus, type MetricThresholds } from "../../../../shared/vendor/paseo-plugin-helper/formatters";
 import { useHostTheme } from "./theme";
@@ -23,8 +23,8 @@ import { HostButton } from "./controls";
 /**
  * Paseo Plugin Helper — UI content adapters (`paseo-plugin-helper/ui`).
  *
- * Thin, host-delegating replacements for the frozen `client/` content
- * components (Card, Tabs, Badge, …). Contract shared by everything here:
+ * Thin, host-delegating content adapters (Card, Tabs, Badge, …). Contract
+ * shared by everything here:
  *
  * - Colors come from the host `theme` prop via {@link useHostTheme} — never
  *   from DOM CSS variables, flair, or a density scale.

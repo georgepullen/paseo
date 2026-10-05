@@ -161,7 +161,7 @@ export function auditProject(targetDir: string, options: AuditOptions = {}): Aud
     const inBuildOrTool = isBuildOrToolFile(relPath);
 
     // v8 init tracking (any file; the call itself belongs in client code)
-    if (content.includes("paseo-plugin-helper/client")) {
+    if (content.includes("paseo-plugin-helper/ui")) {
       helperClientUsed = true;
     }
     if (content.includes("initClientHelpers(")) {
@@ -595,7 +595,7 @@ export function auditProject(targetDir: string, options: AuditOptions = {}): Aud
       "missing-client-init",
       entry,
       1,
-      "paseo-plugin-helper/client used without initClientHelpers()",
+      "paseo-plugin-helper/ui used without initClientHelpers()",
     );
   }
 

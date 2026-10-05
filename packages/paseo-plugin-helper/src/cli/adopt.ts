@@ -51,7 +51,7 @@ function initBlock(sdkMajor: 7 | 8): string {
     return [
       `import { useRpc } from "@getpaseo/plugin/client";`,
       `import { Icon, Modal, useToast } from "@getpaseo/plugin/client/react-native";`,
-      `import { initClientHelpers } from "paseo-plugin-helper/client";`,
+      `import { initClientHelpers } from "paseo-plugin-helper/core";`,
       ``,
       `initClientHelpers({ Icon, Modal, useRpc, useToast });`,
     ].join("\n");
@@ -59,7 +59,7 @@ function initBlock(sdkMajor: 7 | 8): string {
   return [
     `import { useRpc } from "@getpaseo/plugin";`,
     `import { Icon, Modal, useToast } from "@getpaseo/plugin/client/react-native";`,
-    `import { initClientHelpers } from "paseo-plugin-helper/client";`,
+    `import { initClientHelpers } from "paseo-plugin-helper/core";`,
     ``,
     `initClientHelpers({ Icon, Modal, useRpc, useToast });`,
   ].join("\n");

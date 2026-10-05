@@ -9,12 +9,13 @@
  * - `paseo-plugin-helper/ui`       -> Host-delegating adapters (HostModalContent,
  *   HostScroll, upstream-shaped settings renderer) conforming to
  *   `@getpaseo/plugin/client/ui` and `@getpaseo/plugin/client/react-native`.
- * - `paseo-plugin-helper/client`  -> Legacy full bundle (frozen bespoke components
- *   + headless hooks; prefer `core` + `ui` for new code)
+ * - `paseo-plugin-helper/lifecycle` -> UI-free registration engines and
+ *   clipboard/haptics helpers.
+ * - `paseo-plugin-helper/core`     -> Headless client-safe runtime (host seam,
+ *   query/settings hooks, snapshot helpers).
  * - `paseo-plugin-helper/server`  -> Node-safe server storage, JSONC, and safe process spawning
  * - `paseo-plugin-helper/shared`  -> Shared RPC contracts, types, and formatters
  * - `paseo-plugin-helper/testing` -> Client and server testing harnesses
  */
 
 export * from "./shared/index.js";
-export * from "./client/styles/index.js";

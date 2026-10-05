@@ -21,10 +21,13 @@ import ts from "typescript";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const pluginRoot = path.resolve(here, "..");
 const vendorRoot = path.join(here, "vendor", "paseo-plugin-helper");
-const helperSrcBarrel = path.resolve(
-  pluginRoot,
-  "../../packages/paseo-plugin-helper/src/client/index.ts",
-);
+const helperSrcRoot = path.resolve(pluginRoot, "../../packages/paseo-plugin-helper/src");
+
+// Helper entries this plugin's surfaces resolve (paseo-plugin-helper/client was
+// removed in xpufx-org/paseo#938).
+const HELPER_TREES = ["core", "lifecycle", "ui"] as const;
+type HelperTree = (typeof HELPER_TREES)[number];
+const HELPER_SPEC_RE = /^paseo-plugin-helper\/(core|lifecycle|ui)$/;
 
 // Client surfaces registered by the plugin entry: the sidebar surface and every
 // module it renders through (the settings-screen contract, the ask cards, and
@@ -119,18 +122,22 @@ function jsxElementRoots(source: ts.SourceFile): Map<string, number> {
   return roots;
 }
 
-function helperImports(source: ts.SourceFile): Array<{ name: string; typeOnly: boolean }> {
-  const imports: Array<{ name: string; typeOnly: boolean }> = [];
+function helperImports(
+  source: ts.SourceFile,
+): Array<{ tree: HelperTree; name: string; typeOnly: boolean }> {
+  const imports: Array<{ tree: HelperTree; name: string; typeOnly: boolean }> = [];
   for (const statement of source.statements) {
     if (!ts.isImportDeclaration(statement)) continue;
     const specifier = statement.moduleSpecifier;
-    if (!ts.isStringLiteral(specifier) || specifier.text !== "paseo-plugin-helper/client") {
-      continue;
-    }
+    if (!ts.isStringLiteral(specifier)) continue;
+    const match = HELPER_SPEC_RE.exec(specifier.text);
+    if (!match) continue;
+    const tree = match[1] as HelperTree;
     const bindings = statement.importClause?.namedBindings;
     if (bindings && ts.isNamedImports(bindings)) {
       for (const element of bindings.elements) {
         imports.push({
+          tree,
           name: (element.propertyName ?? element.name).text,
           typeOnly: element.isTypeOnly,
         });
@@ -286,15 +293,17 @@ describe("2fado client JSX element types resolve statically (#555)", () => {
     }
   });
 
-  it("imports only names the vendored helper barrel exports", () => {
-    const vendored = collectBarrelExports(path.join(vendorRoot, "index.ts"));
-    expect(vendored.size).toBeGreaterThan(0);
+  it("imports only names the vendored helper barrels export", () => {
+    const vendored = new Map(
+      HELPER_TREES.map((tree) => [tree, collectBarrelExports(path.join(vendorRoot, tree, "index.ts"))]),
+    );
+    expect([...vendored.values()].some((names) => names.size > 0)).toBe(true);
     for (const { rel, source } of parsedSurfaces) {
-      for (const { name, typeOnly } of helperImports(source)) {
+      for (const { tree, name, typeOnly } of helperImports(source)) {
         if (typeOnly) continue;
         expect(
-          vendored.has(name),
-          `${rel} imports '${name}' from paseo-plugin-helper/client but the vendored barrel does not export it`,
+          vendored.get(tree)!.has(name),
+          `${rel} imports '${name}' from paseo-plugin-helper/${tree} but the vendored barrel does not export it`,
         ).toBe(true);
       }
     }
@@ -315,12 +324,14 @@ describe("2fado client JSX element types resolve statically (#555)", () => {
     }
   });
 
-  it("keeps the vendored helper barrel in sync with the helper source barrel", () => {
+  it("keeps the vendored helper barrels in sync with the helper source barrels", () => {
     // Equivalent to `node scripts/vendor-sync.mjs --check`, scoped to the
-    // exports this plugin actually resolves at build time.
-    const vendored = [...collectBarrelExports(path.join(vendorRoot, "index.ts"))].sort();
-    const source = [...collectBarrelExports(helperSrcBarrel)].sort();
-    expect(vendored).toEqual(source);
+    // entries this plugin actually resolves at build time.
+    for (const tree of HELPER_TREES) {
+      const vendored = [...collectBarrelExports(path.join(vendorRoot, tree, "index.ts"))].sort();
+      const source = [...collectBarrelExports(path.join(helperSrcRoot, tree, "index.ts"))].sort();
+      expect(vendored, tree).toEqual(source);
+    }
   });
 });
 

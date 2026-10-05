@@ -6,7 +6,7 @@ import { spacing } from "./layout";
 /**
  * Paseo Plugin Helper — UI data adapters (`paseo-plugin-helper/ui`).
  *
- * Thin, host-delegating replacements for the frozen `client/` data components
+ * Thin, host-delegating data adapters
  * (DataTable). Same contract: host theme colors only, no scroll ownership, no
  * design-system machinery.
  */

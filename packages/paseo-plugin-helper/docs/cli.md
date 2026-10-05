@@ -73,7 +73,7 @@ npm install && npm run typecheck
 
 | Rule ID | Severity | Detected Pattern | Recommended Helper |
 | :--- | :--- | :--- | :--- |
-| `no-manual-agent-subscription` | `warn` | Manual `client.paseo.agents.subscribe` and `client.addComposerPill` | `registerComposerPill` from `paseo-plugin-helper/client` |
+| `no-manual-agent-subscription` | `warn` | Manual `client.paseo.agents.subscribe` and `client.addComposerPill` | `registerComposerPill` from `paseo-plugin-helper/lifecycle` |
 | `no-raw-file-persistence` | `warn` | `fs.writeFileSync` / `fs.writeFile` for state or settings persistence | `PluginStorage` from `paseo-plugin-helper/server` |
 | `no-raw-console-in-server` | `suggestion` | Unformatted `console.log` / `console.error` in daemon code | `createPluginLogger` from `paseo-plugin-helper/server` |
 | `no-filesystem-plugin-probing` | `warn` | Checking `~/.paseo/plugins` or `config.json` via filesystem | `isPluginRunning`, `isPluginInstalled`, or `listPlugins` from `paseo-plugin-helper/server` |
@@ -84,9 +84,9 @@ npm install && npm run typecheck
 | `v8-missing-requirements` | `error` (0.8 layout) / `warn` | `paseo-plugin.json` without `requirements.paseo` | Add `"requirements": { "paseo": ">=0.8.0" }` (migration guide step 7) |
 | `v8-root-module` | `error` | Code module at the plugin root in a 0.8 layout | Move into `client/`, `server/`, or `shared/` |
 | `v8-crossed-import` | `error` | Client code reaching into `server/` (or vice versa), or Node APIs in client code | Move the operation behind an RPC defined in `shared/` |
-| `missing-client-init` | `warn` | Helper client usage without `initClientHelpers()` | Call `initClientHelpers()` once in the client entry |
-| `no-bespoke-react-native-interactions` | `warn` | Raw `Pressable` imported in plugin client code | Use helper interaction primitives such as `Button`, `Tabs`, or `Collapsible` |
-| `no-bespoke-style-system` | `warn` | `StyleSheet` imported in plugin client code | Use helper layout/component primitives and retain only small composition styles |
+| `missing-client-init` | `warn` | Helper `ui/` adapter usage without `initClientHelpers()` | Call `initClientHelpers()` from `paseo-plugin-helper/core` once in the client entry |
+| `no-bespoke-react-native-interactions` | `warn` | Raw `Pressable` imported in plugin client code | Compose a local interaction seam (or use `paseo-plugin-helper/ui` adapters) and declare the conformance exemption |
+| `no-bespoke-style-system` | `warn` | `StyleSheet` imported in plugin client code | Use `paseo-plugin-helper/ui` adapters with host theme colors; retain only small composition styles |
 
 ---
 

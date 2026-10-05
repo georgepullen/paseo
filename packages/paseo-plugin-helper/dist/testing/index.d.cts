@@ -1,7 +1,7 @@
 import { ComponentType } from 'react';
-import { H as HostAgentRef, h as HostSurfaceProps, P as PluginCleanup, b as HostAgentUpdate } from '../host-CcdHvtoG.cjs';
+import { H as HostAgentRef, a as HostSurfaceProps, P as PluginCleanup, b as HostAgentUpdate } from '../host-BAF48X1U.cjs';
 import { PluginComposerPillContribution, PluginButtonRegistration } from '@getpaseo/plugin/client';
-import { b as CommandCenterItemContribution } from '../command-center-BEBnbU1U.cjs';
+import { C as CommandCenterItemContribution } from '../command-center-DsVBRDGn.cjs';
 import { P as PluginRpcContract, R as RpcInput, a as RpcOutput } from '../rpc-D27pph91.cjs';
 import 'react-native';
 import 'zod';

@@ -224,16 +224,12 @@ Rank the board yourself from the plugin's board overview / issues list:
 #### Mandatory: Paseo Plugin Helper UI Standards (Never Bespoke Raw React Native)
 When building or modifying client UI in Paseo plugins:
 1. **Reference Gold Standard**: Inspect `plugins/mcp-tools` as the canonical reference implementation.
-2. **Never Handroll Bespoke UI Primitives**:
-   - **Do NOT hardcode modal dimensions**: Never set `minWidth`, `minHeight`, or fixed widths on `<ModalBody>` or modal containers. Modals must be 100% fluid.
-   - **Do NOT roll custom buttons or selectors using `<Pressable>`**: Use `Button`, `Tabs`, or `FormRow` containing `Button` variants (`variant="primary" | "ghost" | "secondary"`).
-   - **Do NOT roll custom form rows or setting switches**: Use `<FormRow label="..." description="...">` wrapping `<Toggle>` or `<TextInput>`.
-   - **Do NOT roll custom card borders or headers**: Use `<Card variant="elevated">`, `<Card.Header title="..." subtitle="..." />`, or `<SectionHeader>`.
-   - **Do NOT roll custom key/value displays**: Use `<KeyValueGroup>` and `<KeyValue>` (or `CompactKeyValue`).
-   - **Do NOT roll custom empty or status indicators**: Use `<EmptyState>` and `<StatusDot>`.
-3. **Available Helper Client Palette**: Exported from `paseo-plugin-helper/client`:
-   - **Layout**: `ModalBody`, `ActionBar`, `FormRow`
-   - **Components**: `Card`, `Tabs`, `Button`, `Toggle`, `TextInput`, `Badge`, `StatusDot`, `KeyValue`, `KeyValueGroup`, `Collapsible`, `SectionHeader`, `CommandBox`, `AttentionBeacon`, `CodeBlock`, `SearchInput`, `EmptyState`, `ProgressBar`, `MetricGauge`, `DataTable`, `TruncatedText`, `AboutSection`, `Icon`
+2. **Compose From Host Primitives, Not a Bespoke Kit**: The helper's `client/` UI kit was removed (xpufx-org/paseo#847, #938). Build UI from `paseo-plugin-helper/ui` adapters (`HostModalContent`, `HostScroll`, `HostModalSection`, `HostCard`, `HostButton`, `HostBadge`, `HostTabs`, ...), the host SDK (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`), and plain `react-native` composition.
+   - **Do NOT hardcode modal dimensions**: no `minWidth` / `minHeight` / fixed widths on modal containers. Modals are 100% fluid and adapt to the dialog the host allocates.
+   - **Do NOT force `scrollable={false}`** on the host `<Modal.Content>` or nest a second vertical scroller; use `HostModalContent` / `HostModalSection` and let the host own the one scroll region.
+   - **Do NOT roll custom pressables/buttons/selectors**: use the host SDK, `HostButton` / `HostToggle` / `HostSelect`, or a plugin-local `host-ui` composition — and declare the `no-bespoke-react-native-interactions` exemption when you must compose `Pressable`.
+   - **Do NOT roll custom cards/tabs/status visuals**: use `HostCard`, `HostTabs`, `HostBadge`, `HostSectionHeader`, or local composition over host `theme.colors`.
+3. **Client entries**: headless hooks + the host seam from `paseo-plugin-helper/core`; registration engines (`registerComposerPill`, `registerSidebarSurface`, `registerWorkspacePanel`, `registerAgentPanel`) from `paseo-plugin-helper/lifecycle`; UI adapters from `paseo-plugin-helper/ui`. Migration guide: `packages/paseo-plugin-helper/docs/client-migration.md`.
 4. **Audit Before Delivery**:
    - Run `./packages/paseo-plugin-helper/bin/paseo-plugin-helper.js audit <plugin-path>` to catch anti-patterns.
 

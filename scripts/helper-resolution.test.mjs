@@ -7,7 +7,7 @@
  * shared primitives; the daemon serving uppidi-fleet was 15 commits behind, the
  * plugin bound none of it, CI went green, and a reload three minutes after the
  * merge reported success and changed nothing. Nothing in the tree noticed,
- * because a plugin bundling `paseo-plugin-helper/client` gets this checkout's
+ * because a plugin bundling the helper's entries gets this checkout's
  * helper *source* — there is no copy of it inside the plugin to compare against.
  *
  * So each plugin is checked on four things, all re-derived from files on disk:
@@ -62,9 +62,7 @@ const PLUGIN_DIRS = fs
  * directions below: a new mixed plugin fails, and fixing one demands dropping
  * the entry instead of letting the exemption rot.
  */
-const KNOWN_MIXED_RESOLUTIONS = {
-  slash: "client/commands.ts imports ./vendor/paseo-plugin-helper/host while the rest of the plugin imports the bare specifier",
-};
+const KNOWN_MIXED_RESOLUTIONS = {};
 
 function evaluateAll() {
   return PLUGIN_DIRS.map((name) => ({
@@ -80,14 +78,14 @@ function withScratchPlugin(prefix, write, run) {
   fs.mkdirSync(path.join(pluginDir, "shared"), { recursive: true });
   fs.writeFileSync(
     path.join(pluginDir, "index.client.tsx"),
-    'import { Card } from "paseo-plugin-helper/client";\nexport default Card;\n',
+    'import { useRpcQuery } from "paseo-plugin-helper/core";\nexport default useRpcQuery;\n',
   );
   fs.writeFileSync(
     path.join(pluginDir, "tsconfig.json"),
     JSON.stringify({
       compilerOptions: {
         paths: {
-          "paseo-plugin-helper/client": [`../../${HELPER_ROOT}/src/client/index.ts`],
+          "paseo-plugin-helper/core": [`../../${HELPER_ROOT}/src/core/index.ts`],
         },
       },
     }),
@@ -267,12 +265,12 @@ test("a committed vendored tree is the publish artifact, not the runtime resolut
   assert.equal(xComms.servedFrom, "vendored");
   assert.equal(xComms.route, null);
 
-  // slash is the one plugin that serves both, which is why it is carried in
-  // KNOWN_MIXED_RESOLUTIONS rather than here. One file imports the vendored
-  // path; the rest import the bare specifier, so the bundle carries two copies.
+  // slash used to import the helper's vendored `host` from one file, which made
+  // it the one mixed-resolution plugin. The vendored client tree it reached into
+  // was removed in #938, so the whole plugin now resolves the bare specifier.
   const slash = resolveServedFrom(path.join(REPO_ROOT, "plugins", "slash"));
-  assert.equal(slash.servedFrom, "mixed");
-  assert.deepEqual(slash.vendoredSources, ["client/commands.ts"]);
+  assert.equal(slash.servedFrom, "checkout");
+  assert.deepEqual(slash.vendoredSources, []);
   assert.ok(slash.bareSources.length > 1);
 });
 

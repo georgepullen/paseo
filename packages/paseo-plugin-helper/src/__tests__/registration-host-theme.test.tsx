@@ -2,10 +2,10 @@ import { beforeEach, describe, expect, it } from "vitest";
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
 import { View } from "react-native";
-import { initClientHelpers } from "../client/host.js";
-import { registerSidebarSurface } from "../client/surface.js";
-import { registerAgentPanel, registerWorkspacePanel } from "../client/panel.js";
-import { registerComposerPill } from "../client/pill.js";
+import { initClientHelpers } from "../core/host.js";
+import { registerSidebarSurface } from "../lifecycle/surface.js";
+import { registerAgentPanel, registerWorkspacePanel } from "../lifecycle/panel.js";
+import { registerComposerPill } from "../lifecycle/pill.js";
 import { useHostTheme } from "../ui/theme.js";
 import type { PluginTheme } from "../shared/types.js";
 

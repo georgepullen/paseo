@@ -6,7 +6,7 @@ import {
   contractSchemaToFields,
   registerHelperSettingsScreen,
   type HelperSettingsUiBundle,
-} from "../client/settings-screen.js";
+} from "../ui/settings-screen.js";
 import { defineSettingsContract } from "../shared/settings.js";
 import { createMockClientContext } from "../testing/mock-client.js";
 
@@ -121,7 +121,7 @@ describe("registerHelperSettingsScreen", () => {
   });
 
   it("nests SettingsCard inside SettingsSection", async () => {
-    const settingsModule = await import("../client/settings.js");
+    const settingsModule = await import("../core/settings.js");
     vi.spyOn(settingsModule, "usePluginSettings").mockReturnValue({
       settings: { showCpu: true },
       updateSettings: () => {},

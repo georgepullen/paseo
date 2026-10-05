@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { registerCommandCenterItem } from "../client/command-center.js";
+import { registerCommandCenterItem } from "../core/command-center.js";
 import { createMockClientContext } from "../testing/mock-client.js";
 
 describe("registerCommandCenterItem", () => {

@@ -1,9 +1,9 @@
 /**
  * Paseo Plugin Helper — Settings UI adapters.
  *
- * These re-export the bundle-driven settings renderer from `client/`, whose
- * entire contract is already upstream-shaped: the caller passes the host's
- * native `@getpaseo/plugin/client/ui` primitives
+ * The bundle-driven settings renderer's entire contract is already
+ * upstream-shaped: the caller passes the host's native
+ * `@getpaseo/plugin/client/ui` primitives
  * (`SettingsSection`, `SettingsCard`, `SettingsSwitch`, `SettingsSelect`,
  * `SettingsInput`) as the `ui` bundle, and the helper only maps a zod
  * settings contract to fields — no bespoke switches, rows, or cards.
@@ -17,7 +17,7 @@
 export {
   contractSchemaToFields,
   registerHelperSettingsScreen,
-} from "../settings-screen";
+} from "./settings-screen";
 export type {
   HelperSettingsUiBundle,
   HelperSettingsCardProps,
@@ -33,4 +33,4 @@ export type {
   HelperSettingsField,
   HelperSettingsFieldOverrides,
   RegisterHelperSettingsScreenOptions,
-} from "../settings-screen";
+} from "./settings-screen";

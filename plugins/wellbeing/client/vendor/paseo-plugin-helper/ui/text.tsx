@@ -12,8 +12,8 @@ import {
   type TextStyle,
   type ViewStyle,
 } from "react-native";
-import { getClientHost } from "../host";
-import { copyToClipboard } from "../utils/clipboard";
+import { getClientHost } from "../core/host";
+import { copyToClipboard } from "../lifecycle/clipboard";
 import { useHostTheme, useHostLayout } from "./theme";
 import { alpha } from "./color";
 import { spacing } from "./layout";
@@ -23,7 +23,7 @@ import { HostButton } from "./controls";
 /**
  * Paseo Plugin Helper — UI text & misc adapters (`paseo-plugin-helper/ui`).
  *
- * Thin, host-delegating replacements for the frozen `client/` text components
+ * Thin, host-delegating text adapters
  * (CodeBlock, CommandBox, TruncatedText, …). Same contract as the rest of ui/:
  * host theme colors only, no scroll ownership, no design-system machinery.
  */

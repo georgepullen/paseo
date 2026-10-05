@@ -1,19 +1,20 @@
-import { describe, expect, it, beforeEach, vi } from "vitest";
+import { describe, expect, it, beforeEach } from "vitest";
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
-import { initClientHelpers } from "../client/host.js";
-import * as themeProvider from "../client/theme/provider.js";
-import { defaultDarkTheme } from "../client/theme/provider.js";
+import { initClientHelpers } from "../core/host.js";
 import {
   registerSidebarSurface,
   DEFAULT_SIDEBAR_MAX_CONTENT_WIDTH,
-} from "../client/surface.js";
+} from "../lifecycle/surface.js";
+import type { PluginTheme } from "../shared/types.js";
 
-const colors: any = {
-  surface0: "#18181b", surface1: "#27272a", surface2: "#3f3f46", border: "#3f3f46",
-  foreground: "#fafafa", foregroundMuted: "#a1a1aa", accent: "#3b82f6",
-  accentForeground: "#ffffff", statusSuccess: "#22c55e", statusWarning: "#eab308",
-  statusDanger: "#ef4444",
+const hostTheme: PluginTheme = {
+  colors: {
+    surface0: "#18181b", surface1: "#27272a", surface2: "#3f3f46", border: "#3f3f46",
+    foreground: "#fafafa", foregroundMuted: "#a1a1aa", accent: "#3b82f6",
+    accentForeground: "#ffffff", statusSuccess: "#22c55e", statusWarning: "#eab308",
+    statusDanger: "#ef4444",
+  },
 };
 
 beforeEach(() => {
@@ -22,12 +23,6 @@ beforeEach(() => {
     Modal: Object.assign(() => null, { Content: () => null }),
     useRpc: () => async () => ({}),
     useToast: () => ({}),
-  } as any);
-  vi.spyOn(themeProvider, "usePluginTheme").mockReturnValue({
-    theme: {} as any, colors, fonts: {} as any,
-    layout: { compact: false, platform: "web" } as any, flair: {} as any,
-    isCompact: false, isMobile: false, touchTargetMin: 28,
-    alpha: (c: string, o: number) => `${c}:${o}`, resolveRadius: () => 6,
   } as any);
 });
 
@@ -47,7 +42,7 @@ function columnStyle(overrides: Record<string, unknown> = {}): Record<string, un
   act(() => {
     renderer = TestRenderer.create(
       React.createElement(registered, {
-        theme: defaultDarkTheme,
+        theme: hostTheme,
         layout: { compact: false, platform: "web" },
       } as any)
     );

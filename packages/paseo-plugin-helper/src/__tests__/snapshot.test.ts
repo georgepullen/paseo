@@ -4,7 +4,7 @@ import {
   sharedSnapshotKey,
   shallowEqualRecord,
   shouldEmitSnapshotUpdate,
-} from "../client/snapshot.js";
+} from "../core/snapshot.js";
 
 describe("client/snapshot shared keys", () => {
   it("normalizes blank scopes to host-wide", () => {

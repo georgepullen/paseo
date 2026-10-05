@@ -1,13 +1,18 @@
 # Plugin Components, Layout & Settings Forms
 
-> Comprehensive catalog of Paseo Host UI primitives, Settings form components, and the `paseo-plugin-helper/client` design system.
+> Comprehensive catalog of Paseo Host UI primitives, Settings form components, and the host-delegating `paseo-plugin-helper/ui` adapters.
+>
+> **Note (xpufx-org/paseo#847, #938):** the `paseo-plugin-helper/client` design system
+> (and its `Card`/`Button`/`Badge`/`Tabs`/`ModalBody`/`usePluginTheme` primitives) was
+> removed. Examples below that import it are historical; see the
+> [helper migration guide](../../../packages/paseo-plugin-helper/docs/client-migration.md).
 >
 > **References**:
 > - [Upstream Host UI Reference](file:///home/xpufx/code/3rdparty/paseo/paseo/public-docs/plugins/reference.md#host-ui)
 > - [Upstream Settings Screens Reference](file:///home/xpufx/code/3rdparty/paseo/paseo/public-docs/plugins/reference.md#settings-screens)
 > - [Modal UI Example](file:///home/xpufx/code/3rdparty/paseo/paseo/plugin-examples/modal-ui)
 > - [Settings Example](file:///home/xpufx/code/3rdparty/paseo/paseo/plugin-examples/settings)
-> - [`paseo-plugin-helper/docs/client.md`](../../../packages/paseo-plugin-helper/docs/client.md)
+> - [`paseo-plugin-helper/docs/client-migration.md`](../../../packages/paseo-plugin-helper/docs/client-migration.md)
 
 ---
 

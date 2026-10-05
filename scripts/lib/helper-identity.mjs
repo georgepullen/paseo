@@ -164,7 +164,7 @@ function parseTsconfig(tsconfigPath) {
 }
 
 /** The tsconfig `paths` entry for a helper subpath, or null. */
-export function helperPathAlias(pluginDir, subpath = "client") {
+export function helperPathAlias(pluginDir, subpath = "core") {
   const paths = parseTsconfig(path.join(pluginDir, "tsconfig.json"))?.compilerOptions?.paths;
   if (!paths || typeof paths !== "object") return null;
   const alias = paths[`paseo-plugin-helper/${subpath}`];

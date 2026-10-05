@@ -19,7 +19,7 @@ describe("Audit CLI & Scanner", () => {
       fs.writeFileSync(
         path.join(pluginDir, "client", "index.tsx"),
         `import { Text, View } from "react-native";
-import { Button } from "paseo-plugin-helper/client";
+import { HostButton } from "paseo-plugin-helper/ui";
 export const Example = () => <View><Text>Example</Text><Button label="OK" /></View>;`,
       );
 
@@ -101,7 +101,8 @@ export const Example = () => <View><Text>Example</Text><Button label="OK" /></Vi
       fs.writeFileSync(
         path.join(tmpDir, "pill.client.tsx"),
         `
-        import { registerComposerPill, initClientHelpers } from "paseo-plugin-helper/client";
+        import { registerComposerPill } from "paseo-plugin-helper/lifecycle";
+        import { initClientHelpers } from "paseo-plugin-helper/core";
         initClientHelpers({ Icon: {}, Modal: {}, useRpc: () => async () => ({}), useToast: () => ({}) });
         export function contributeClient(client) {
           return registerComposerPill(client, { id: "test", title: "Clean" });
@@ -146,7 +147,8 @@ export const Example = () => <View><Text>Example</Text><Button label="OK" /></Vi
       fs.writeFileSync(
         path.join(tmpDir, "client.tsx"),
         `
-        import { registerComposerPill, initClientHelpers } from "paseo-plugin-helper/client";
+        import { registerComposerPill } from "paseo-plugin-helper/lifecycle";
+        import { initClientHelpers } from "paseo-plugin-helper/core";
         initClientHelpers({ Icon: {}, Modal: {}, useRpc: () => async () => ({}), useToast: () => ({}) });
         export const setup = (client) => registerComposerPill(client, { id: "test", title: "OK" });
         `,
@@ -238,8 +240,8 @@ export const Example = () => <View><Text>Example</Text><Button label="OK" /></Vi
       fs.writeFileSync(
         path.join(tmpDir, "client", "pill.tsx"),
         `
-        import { ModalBody } from "paseo-plugin-helper/client";
-        export function view() { return ModalBody; }
+        import { HostModalContent } from "paseo-plugin-helper/ui";
+        export function view() { return HostModalContent; }
         `,
       );
 
@@ -297,7 +299,7 @@ export const Example = () => <View><Text>Example</Text><Button label="OK" /></Vi
       expect(uiIssues[0].file).toContain("bad.tsx");
       expect(uiIssues[0].severity).toBe("warn");
       expect(uiIssues[0].message).toBe("Bare React Native UI primitive imported in plugin client code.");
-      expect(uiIssues[0].replacement).toContain("paseo-plugin-helper/client");
+      expect(uiIssues[0].replacement).toContain("paseo-plugin-helper/ui");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -321,14 +323,14 @@ export const Example = () => <View><Text>Example</Text><Button label="OK" /></Vi
     }
   });
 
-  it("passes clean client code using paseo-plugin-helper/client", () => {
+  it("passes clean client code using the host-delegating helper entries", () => {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "paseo-audit-rnui-clean-"));
 
     try {
       fs.mkdirSync(path.join(tmpDir, "client"));
       fs.writeFileSync(
         path.join(tmpDir, "client", "good.tsx"),
-        `import { Text, View } from "react-native";\nimport { ModalBody, Toggle, TextInput, Button } from "paseo-plugin-helper/client";\nexport const v = 1;`,
+        `import { Text, View } from "react-native";\nimport { HostModalContent } from "paseo-plugin-helper/ui";\nexport const v = 1;`,
       );
 
       const report = auditProject(tmpDir);
@@ -357,7 +359,7 @@ export const Example = () => <View><Text>Example</Text><Button label="OK" /></Vi
       const dimIssues = report.issues.filter((i) => i.ruleId === "no-hardcoded-modal-dimensions");
       expect(dimIssues).toHaveLength(2);
       expect(dimIssues.every((i) => i.severity === "warn")).toBe(true);
-      expect(dimIssues[0].replacement).toContain("ModalBody");
+      expect(dimIssues[0].replacement).toContain("HostModalContent");
     } finally {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     }
@@ -370,7 +372,7 @@ export const Example = () => <View><Text>Example</Text><Button label="OK" /></Vi
       fs.mkdirSync(path.join(tmpDir, "client"));
       fs.writeFileSync(
         path.join(tmpDir, "client", "bad.tsx"),
-        `import { ModalBody } from "paseo-plugin-helper/client";\nexport const a = <ModalBody maxContentWidth={600} />;\nexport const b = <Modal.Content scrollable={false} />;`,
+        `import { HostModalContent } from "paseo-plugin-helper/ui";\nexport const a = <HostModalContent maxContentWidth={600} />;\nexport const b = <Modal.Content scrollable={false} />;`,
       );
 
       const report = auditProject(tmpDir);

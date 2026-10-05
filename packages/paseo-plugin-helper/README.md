@@ -1,29 +1,30 @@
 # paseo-plugin-helper
 
-> Developer toolkit, UI design system, and lifecycle primitives for building high-quality Paseo desktop & mobile plugins.
+> Developer toolkit and lifecycle primitives for building high-quality Paseo desktop & mobile plugins.
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.8-blue)](https://www.typescriptlang.org/)
 
-`paseo-plugin-helper` provides drop-in solutions for building 3rd-party plugins for [Paseo](https://github.com/getpaseo/paseo). It eliminates boilerplate and provides native-feeling React Native UI components with **mobile-first responsiveness**, **configurable visual flairs**, **zero-dependency MCP client diagnostics**, and **daemon runtime utilities**.
+`paseo-plugin-helper` provides drop-in solutions for building 3rd-party plugins for [Paseo](https://github.com/getpaseo/paseo): headless RPC/query/settings hooks, UI-free lifecycle registration engines, host-delegating UI adapters, a **zero-dependency MCP client**, and **daemon runtime utilities**.
 
 > [!NOTE]
 > **Developer Library Only (Deprecated as a Plugin)**: `paseo-plugin-helper` is deprecated as an installable plugin and is not published as one. It serves strictly as an npm developer library, CLI toolkit, and SDK used by plugin authors (it cannot be installed via `paseo plugin add`).
 >
-> **Compatibility**: one published build runs on **Paseo >= 0.8.0**. `paseo-plugin-helper/client` imports zero Paseo SDK modules and instead receives `Icon`, `Modal`, `useRpc`, and `useToast` via a single `initClientHelpers()` call in the plugin client entry (see `docs/client.md`). `server`, `shared`, `mcp`, and `testing` carry no SDK imports at all.
+> **Compatibility**: one published build runs on **Paseo >= 0.8.0**. The client-safe entries (`core`, `lifecycle`, `ui`) import zero Paseo SDK modules and receive `Icon`, `Modal`, `useRpc`, and `useToast` via a single `initClientHelpers()` call in the plugin client entry. `server`, `shared`, `mcp`, and `testing` carry no SDK imports at all.
 
-> [!WARNING]
-> **`client/` UI kit deprecated (paseo#847) — frozen, bug fixes only.** The bespoke
-> UI components, theme/flair system, and layout primitives under
-> `paseo-plugin-helper/client` are deprecated. New plugin UI must be built on
-> the `ui/` adapter layer (`paseo-plugin-helper/ui`) composed with host SDK
-> primitives (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
-> See the [migration guide](docs/client-migration.md). The headless hooks and
-> lifecycle engines have moved out of the frozen bundle: the registration
-> engines (`registerComposerPill`, `registerSidebarSurface`, `registerWorkspacePanel`,
-> `registerAgentPanel`) plus clipboard/haptics live in
-> `paseo-plugin-helper/lifecycle`, and remain re-exported from `client/` for
-> compatibility.
+> [!IMPORTANT]
+> **The bespoke `client/` UI kit was removed (paseo#847, paseo#938).** The UI
+> components, theme/flair system, layout primitives, `tickets`, `ForgeIcon`,
+> `custom-pills` and the `settings-screen` barrel no longer ship, and the
+> `paseo-plugin-helper/client` subpath no longer exists. Build plugin UI from
+> the host SDK (`@getpaseo/plugin/client/react-native`,
+> `@getpaseo/plugin/client/ui`) plus the host-delegating
+> `paseo-plugin-helper/ui` adapters — see the
+> [migration guide](docs/client-migration.md). Headless hooks and the host seam
+> live in `paseo-plugin-helper/core`; the registration engines
+> (`registerComposerPill`, `registerSidebarSurface`, `registerWorkspacePanel`,
+> `registerAgentPanel`) and clipboard/haptics live in
+> `paseo-plugin-helper/lifecycle`.
 >
 > Registration wrappers (`registerSidebarSurface`, `registerWorkspacePanel`,
 > `registerAgentPanel`, `registerComposerPill`) mount the `ui/`
@@ -39,15 +40,9 @@
 
 - **Structured Logging & Identity**: `createPluginLogger` automatically prints an informative startup banner with plugin identity/version in Paseo GUI logs and keeps log lines unfragmented.
 - **Version Resolution & Stamping**: Auto-extracts plugin version from `package.json` + Git tags (`resolvePluginVersion`) and generates static TypeScript versions for client bundles (`stampVersion`).
-- **Mobile & Desktop First**: Automatically scales touch targets (min 44pt on iOS/Android or narrow panes), avoids bottom-bar clipping, and reflows layouts between desktop and mobile.
-- **Mobile Modal Gesture Architecture**: Solves nested horizontal scrolling and double-scroll issues inside Paseo mobile bottom sheets implicitly using `ModalBody` non-nested rendering and `Tabs` edge navigation.
-- **Configurable Visual Flair**: Authors can customize corner radii (`sharp`, `rounded`, `pill`), information density, surface treatments, and brand accents while honoring Paseo's light/dark themes.
-- **Inline Actions**: `InlineButton` provides an accessible, compact link/action primitive for timeline cards and dense inline content without bespoke `Pressable` implementations.
-- **Interactive Rows**: `InteractiveRow` is a hover-aware pressable hit area for dense rows — hover tint, RN-web `title` tooltip, pressed opacity, pointer cursor, and an `onPress` that forwards the event for `stopPropagation` — so status dots, badges, and metric readouts compose without bespoke `Pressable` wrappers.
-- **Explicit Copy Affordance**: `CopyButton` gives styled/plugin surfaces a reusable clipboard control (host `copyText` path + Copy → Check/"Copied!" feedback) for content the host's selection-copy handler ignores.
-- **Shared Forge Marks**: `<ForgeIcon>` resolves a host/kind to one brand mark — Lucide `Github`/`Gitlab`, helper-drawn official mono marks for `Codeberg`/`Forgejo`/`Gitea`, and a generic fallback — so plugins stop duplicating per-forge icon tables.
-- **Layout Vocabulary**: `Row`, `Stack`/`VStack`, and `Grid` replace hand-rolled flexbox `View` styles with theme-derived gaps and width-aware wrapping, while `KeyValueGroup` gains `collapse`/`minColumnWidth` so compact surfaces stay multi-column when there is room.
-- ℹ️ **Plugin About & Diagnostics Card**: `<AboutSection>` standardizes plugin branding, license tags, version badges, external navigation buttons, 1-tap "Copy Diagnostics" for issue triage, and auto-resolves official GitHub logos from author or repository URLs.
+- **Host-Delegating UI Adapters**: `paseo-plugin-helper/ui` ships opinion-free adapters (`HostModalContent`, `HostScroll`, `HostModalSection`, `HostCard`, `HostButton`, `HostBadge`, `HostTabs`, controls, and a settings renderer) that compose the host SDK primitives and read host theme colors — no bespoke design system.
+- **Host Theme Propagation**: registration wrappers mount `HostThemeProvider` so `ui/` adapters track the host light/dark theme; outside a registrar, mount it yourself.
+- **Shared Forge Marks**: `resolveForgeMark` (in `paseo-plugin-helper/shared`) maps a host/kind to one brand-mark descriptor, so plugins stop duplicating per-forge icon tables.
 - **Composer Pill Lifecycle Engine**: Complete management of agent subscriptions, pill contributions, and modal states in one function call (`registerComposerPill`).
 - **Composable Feature Modules**: `FeatureModule` + `composeFeatureModules` assemble a plugin from droppable units of functionality — each contributes server/client behavior, returns an idempotent disposer, and is torn down in reverse order with partial-failure cleanup and eager composition validation (see [docs/features.md](docs/features.md)).
 - **Panels & Surfaces**: One-line registration for sidebar surfaces (`registerSidebarSurface`), panels (`registerWorkspacePanel`, `registerAgentPanel`), and Ctrl+K command-center items (`registerCommandCenterItem`) with automatic host-theme and flair propagation.
@@ -69,10 +64,9 @@ To guarantee compliance with Paseo's bundler and compiler rules (no Node builtin
 
 | Subpath | Target Platform | Description | Docs |
 | :--- | :--- | :--- | :--- |
-| `paseo-plugin-helper/client` | React Native | **Deprecated (frozen)** — UI components, visual flair provider, pill engine, panels, React Query hooks | [docs/client.md](docs/client.md) |
 | `paseo-plugin-helper/lifecycle` | React Native | UI-free registration engines (`registerComposerPill`, `registerSidebarSurface`, `registerWorkspacePanel`, `registerAgentPanel`), clipboard, haptics, host theme context | [docs/client-migration.md](docs/client-migration.md) |
-| `paseo-plugin-helper/core` | Universal | Headless client-safe runtime: RPC contracts, query/settings hooks, formatters (no `react-native`, no `node:*`) | [docs/client.md](docs/client.md) |
-| `paseo-plugin-helper/ui` | React Native | Host-delegating UI adapters (`HostModalContent`, `HostScroll`, `HostModalSection`, settings renderer) | [docs/client-migration.md](docs/client-migration.md) |
+| `paseo-plugin-helper/core` | Universal | Headless client-safe runtime: host seam (`initClientHelpers`), RPC contracts, query/settings hooks, snapshot helpers (no `react-native`, no `node:*`) | [docs/client-migration.md](docs/client-migration.md) |
+| `paseo-plugin-helper/ui` | React Native | Host-delegating UI adapters (`HostModalContent`, `HostScroll`, `HostModalSection`, `Host*` controls, settings renderer) | [docs/client-migration.md](docs/client-migration.md) |
 | `paseo-plugin-helper/server` | Node.js 20+ | `createPluginLogger`, `resolvePluginVersion`, `stampVersion`, `getSystemMetrics`, `PluginStorage`, `safeSpawn`, `redactSecrets` | [docs/server.md](docs/server.md) |
 | `paseo-plugin-helper/mcp` | Node.js 20+ | Zero-dependency stdio `McpClient`, ring buffer, process tree killer | [docs/mcp.md](docs/mcp.md) |
 | `paseo-plugin-helper/cli` | Node.js 20+ | `auditProject` programmatic scanner and reporting | [docs/cli.md](docs/cli.md) |
@@ -88,7 +82,7 @@ flowchart TB
     H["paseo-plugin-helper\nwhat you get"]
 
     H --> RPC["RPC contracts\ndefineContract • defineSettingsContract\nuseRpcQuery • useRpcMutation\nuseAutoRefreshQuery"]
-    H --> UI["UI components\nCard • Badge • Button • Tabs\nMetricGauge • ProgressBar\nDataTable • SearchInput\nHighlightedText • InteractiveRow\nToggle • TextInput • Select • FormRow\nModalBody • ActionBar\nRow • Stack • Grid\nAboutSection • EmptyState\nStatusDot • ForgeIcon • AttentionBeacon"]
+    H --> UI["UI adapters (ui/)\nHostModalContent • HostScroll\nHostModalSection • HostCard\nHostButton • HostBadge • HostToggle\nHostSelect • HostTabs\nsettings renderer"]
     H --> PILL["Surfaces\nregisterComposerPill\nregisterSidebarSurface\nregisterWorkspacePanel\nregisterAgentPanel"]
     H --> MOD["Feature modules\nFeatureModule • composeFeatureModules"]
     H --> SET["Settings\nusePluginSettings\nuseSharedPluginSettings\nuseSuiteSettings"]
@@ -136,130 +130,44 @@ Or in your plugin's `package.json`:
 
 ## Quickstart
 
-### 1. Client: Composer Pill & UI Primitives
+### 1. Client: Composer Pill from the lifecycle + ui entries
 
 ```tsx
 import type { PluginClientContribution } from "@getpaseo/plugin";
-import {
-  registerComposerPill,
-  ModalBody,
-  Card,
-  Button,
-  Badge,
-  KeyValue,
-  TextInput,
-  Toggle,
-  Collapsible,
-  useRpcQuery,
-} from "paseo-plugin-helper/client";
+import { useRpc } from "@getpaseo/plugin/client";
+import { Icon, Modal, useToast } from "@getpaseo/plugin/client/react-native";
+import { initClientHelpers, useRpcQuery } from "paseo-plugin-helper/core";
+import { registerComposerPill } from "paseo-plugin-helper/lifecycle";
+import { HostCard, HostBadge, HostModalSection } from "paseo-plugin-helper/ui";
 import { myStatusContract } from "./contracts.js";
+
+initClientHelpers({ Icon, Modal, useRpc, useToast });
 
 export const contributeClient: PluginClientContribution = (client) => {
   return registerComposerPill(client, {
     id: "my-plugin",
     title: "System Stats",
     icon: "Activity",
-    flair: {
-      radius: "rounded",          // "sharp" | "rounded" | "pill"
-      density: "comfortable",     // "compact" | "comfortable" | "spacious"
-      accentColor: "#10b981",     // Custom brand emerald accent
-    },
     renderModal({ agentId, close }) {
-      const { data, isLoading } = useRpcQuery(myStatusContract, { agentId });
+      const { data } = useRpcQuery(myStatusContract, { agentId });
 
       return (
-        <ModalBody>
-          <Card>
-            <KeyValue label="Status" value={data?.status} />
-            <KeyValue label="Uptime" value={data?.uptime} />
-            <Badge variant="success" label="Healthy" />
-          </Card>
-          <Button variant="secondary" label="Dismiss" onPress={close} />
-        </ModalBody>
+        <HostModalSection>
+          <HostCard>
+            <HostBadge variant="success" label={data?.status ?? "…"} />
+          </HostCard>
+        </HostModalSection>
       );
     },
   });
 };
 ```
 
-### 1b. Style Guide: Tokens Over Literals
-
-```tsx
-import {
-  usePluginTheme,   // colors, fonts, padding, resolveRadius, isCompact
-  spacing,          // xxs:2 xs:4 sm:8 md:12 lg:16 xl:24
-  resolveElevation, // "none" | "sm" | "md" | "lg" -> shadow + elevation
-} from "paseo-plugin-helper/client";
-
-function Row() {
-  const { colors, padding, isCompact } = usePluginTheme();
-  return (
-    <View
-      style={{
-        backgroundColor: colors.surface1,   // never a hex literal
-        paddingHorizontal: padding.horizontal,
-        paddingVertical: isCompact ? spacing.xs : spacing.sm, // one rung down in compact
-        ...resolveElevation("sm"),          // no hand-rolled shadowColor
-      }}
-    />
-  );
-}
-```
-
-Rules: `Card`, `KeyValue`, `Tabs`, and `ModalBody` already follow this scale,
-so compose them instead of re-implementing wrappers. `PluginThemeProvider`
-merges static defaults, live Paseo 0.8 CSS variables (`--background`,
-`--foreground`, `--muted`, `--accent`, `--border`), and the injected host
-theme in that order, so surfaces track host dark/light switches with no
-plugin code.
-
-### 1c. Composing Layout: `Row`, `Stack`, `Grid`
-
-Stop hand-rolling `<View style={{ flexDirection: "row", gap }}>` and stacking
-everything one-per-line. The three layout primitives are thin flexbox wrappers
-whose default `gap` comes from the active theme
-(`usePluginTheme().padding.gap`), so spacing tracks host density with no
-literals:
-
-```tsx
-import { Button, Grid, MetricGauge, Row, Stack, StatusDot, Text } from "paseo-plugin-helper/client";
-
-// Horizontal: status dot + title + action on one line.
-<Row align="center" gap="sm">
-  <StatusDot variant="success" />
-  <Text>Build passing</Text>
-  <Button label="Retry" variant="ghost" size="sm" onPress={retry} />
-</Row>
-
-// Vertical: the deliberate column default.
-<Stack>
-  <Text>Title</Text>
-  <Text>Subtitle</Text>
-</Stack>
-
-// Width-aware grid: four-up when it fits, wrapping down as the surface narrows.
-<Grid columns={4} minColumnWidth={180}>
-  <MetricGauge value={12} label="CPU" />
-  <MetricGauge value={64} label="RAM" />
-</Grid>
-```
-
-`Row` accepts `wrap`, `align`, and `justify`; `Stack` (alias `VStack`) is the
-column counterpart. `gap` is a spacing token (`"xs" | "sm" | "md" | "lg" | "xl"`)
-or a raw px number, defaulting to the theme gap. `Grid` never collapses to a
-single column: with `minColumnWidth` it uses as many columns as fit (capped by
-`columns`) and wraps the rest.
-
-`<KeyValueGroup>` keeps its compact-aware default (one column on a compact
-surface) for existing consumers, but now exposes `collapse` and `minColumnWidth`:
-
-```tsx
-// Stay 2-up even in a compact popover, as long as each cell has 220px.
-<KeyValueGroup columns={2} collapse="never" minColumnWidth={220}>
-  <KeyValue layout="inline" label="Version" value={sha} mono />
-  <KeyValue layout="inline" label="Remote" value={remote} mono />
-</KeyValueGroup>
-```
+The `ui/` adapters take no theme prop: every registration wrapper mounts the
+host `HostThemeProvider` for its subtree, so the adapters read the host `theme`
+colors directly. Outside a registration wrapper, mount `HostThemeProvider`
+yourself. Hand-rolled layout, pressables, and status visuals stay local to the
+plugin — the helper no longer ships a bespoke design system.
 
 ---
 
@@ -402,115 +310,41 @@ export default function contribute(server) {
 Modals do not size themselves. Every plugin modal takes the **host-allocated
 dialog size** and is fluid within it:
 
-- **Fill it, don't dictate it**: `ModalBody` is `flex: 1 / minHeight: 0 /
-  width: "100%"`; keep every wrapper between the host and `ModalBody` fluid too.
-- **No content-driven resizing**: a root that sizes to its children makes the
-  dialog visibly resize/redraw as data loads or grows. That is the anti-pattern
-  this contract removes.
-- **No hardcoded modal dimensions**: no `minWidth`/`minHeight`/fixed `width`/
-  `height` literals on modal or surface containers. Shrinkable text uses
+- **Fill it, don't dictate it**: keep every wrapper between the host and your
+  content fluid; a root that sizes to its children makes the dialog visibly
+  resize/redraw as data loads.
+- **No hardcoded modal dimensions**: no `minWidth`/`minHeight`/fixed
+  `width`/`height` literals on modal or surface containers. Shrinkable text uses
   `minWidth: 0` + `flexShrink: 1`.
 - **No nested scrollers**: the host owns the outer scroll on desktop and the
-  bottom sheet owns it on mobile; use `ModalBody` instead of adding another
-  `ScrollView`.
+  bottom sheet owns it on mobile.
 
-On desktop the host presents a bounded dialog and owns scrolling; on mobile the
-host presents an `AdaptiveModalSheet` bottom sheet that owns the viewport and
-sheet gesture. Plugins get neither to guess: they just stay fluid inside
-whatever the host allocates.
+Use `HostModalContent` from `paseo-plugin-helper/ui` inside your own host
+`<Modal>`. For a composer-pill `renderModal` body the host already supplies the
+one `<Modal.Content>`, so wrap content in `HostModalSection`. Use `HostScroll`
+only on surfaces where the host supplies no scroller. The adapters never force
+`scrollable={false}`, never cap width, and never add a second scroller — see
+[`docs/client-migration.md`](docs/client-migration.md).
 
-When a data-dense modal genuinely needs more room, pass the one documented
-preset `ModalBody size="large"` (desktop-only wide extent; ignored on mobile
-sheets and composer popovers) instead of adding a per-plugin width literal. In
-the other direction, `ModalBody maxContentWidth={n}` caps and centers the
-content column so settings/forms do not stretch edge-to-edge on large viewports;
-both are helper-owned, so plugin code adds no width literals. See
-[`docs/client.md`](docs/client.md) for the full contract and the `ModalBody`
-API.
+## Mobile modals
 
-### Opening your own `<Modal>`: use `<ModalContent>`, not `<Modal.Content>`
-
-Plugins that render their own host `<Modal>` must not hand it the raw host
-`<Modal.Content>`. Paseo's host defaults `Modal.Content` to `scrollable`, which
-renders a **content-sized** desktop card — so the dialog resizes on every data
-change (the inconsistency between `top` and the other surfaces).
-
-`ModalContent` is the helper-owned replacement: it always passes
-`scrollable={false}` (the host then allocates a bounded dialog) and renders the
-shared `ModalBody` contract inside it, so a plugin using it cannot end up
-content-sized.
-
-```tsx
-import { Modal } from "@getpaseo/plugin/client/react-native";
-import { ModalContent } from "paseo-plugin-helper/client";
-
-<Modal title="My modal" open={open} onOpenChange={setOpen}>
-  <ModalContent>{/* content */}</ModalContent>
-</Modal>;
-```
-
-`ModalContent` accepts every `ModalBody` prop, so `size?: "default" | "large"`
-stays the only size escape hatch. Raw `<Modal.Content>` is only for non-plugin
-surfaces; plugin client code should use `ModalContent`.
-
-The bounded host content view supplies no scroller, so `ModalContent` forces
-`ModalBody scrollMode="always"`: the helper owns the one scroll region on every
-surface (desktop included) and the bounded dialog scrolls instead of clipping.
-
-## Mobile Modal Gesture Architecture & `<Tabs>`
-
-### The Challenge with Nested Scrolling in Paseo Modals
-
-On mobile viewports (`isCompact: true`), Paseo renders modal dialogs using an `@gorhom/bottom-sheet` component (`AdaptiveModalSheet`). Under the hood, this sheet attaches a root `PanGestureHandler` to manage dragging, detents, and swipe-to-dismiss behavior.
-
-In standard React Native, nesting a horizontal `<ScrollView>` inside a gesture-driven bottom sheet creates immediate conflicts:
-1. **Touch Hijacking**: The parent bottom sheet's gesture recognizer claims ownership of all touch streams. When a user attempts to swipe a nested horizontal ribbon, the parent gesture handler intercepts the touch events and cancels them.
-2. **Double ScrollView Trap**: Paseo's modal host already wraps plugin content in a `BottomSheetScrollView` on mobile. If a plugin wraps its modal content in another vertical `<ScrollView>`, the nested views fight for touch ownership, locking scrolling velocity and swallowing gestures.
-
-### How `paseo-plugin-helper` Solves This Automatically
-
-`paseo-plugin-helper` provides built-in defenses so plugin developers do not need to invent complex workarounds:
-
-1. **Non-Nested `<ModalBody>` on Mobile**:
-   [`ModalBody`](src/client/layout/ModalBody.tsx) checks `isCompact`. On desktop, it renders a standard React Native `<ScrollView>`. On mobile, it automatically renders a responsive `<View>` with safe bottom insets, deferring vertical scrolling directly to Paseo's host `BottomSheetScrollView` without creating a double-scroll trap.
-
-2. **Universal Edge Navigation in `<Tabs>`**:
-   [`Tabs`](src/client/components/Tabs.tsx) provides two responsive modes:
-   - **`mode="fit"` (Default)**: Tabs stretch to fit the viewport width. Authors can provide `shortLabel` on any tab item (e.g. `label: "Interactive Controls"`, `shortLabel: "Controls"`), allowing tabs to fit cleanly on narrow mobile screens without truncation.
-   - **`mode="scroll"`**: If tabs exceed the container width, elevated chevron buttons (`ChevronLeft` and `ChevronRight`) appear on the track edges on both desktop and mobile. Tapping an arrow smoothly advances the tab track by 70% of the visible viewport width.
-   - **Gesture Capture**: `<Tabs>` attaches a `PanResponder` configured with `onMoveShouldSetPanResponderCapture`. When horizontal movement is detected, it claims the gesture during the capture phase before the parent bottom sheet can cancel it.
-
-#### Usage Example:
-
-```tsx
-import { Tabs, type TabItem } from "paseo-plugin-helper/client";
-
-const tabs: TabItem[] = [
-  { id: "overview", label: "System Overview", shortLabel: "Overview", icon: "Cpu" },
-  { id: "storage", label: "Storage Volumes", shortLabel: "Storage", icon: "HardDrive" },
-  { id: "network", label: "Network Diagnostics", shortLabel: "Net", icon: "Activity" },
-  { id: "logs", label: "Realtime Logs", shortLabel: "Logs", icon: "Terminal", badge: 3 },
-];
-
-<Tabs
-  tabs={tabs}
-  activeTab={activeTab}
-  onTabChange={setActiveTab}
-  mode="auto" // "auto" fits on mobile with shortLabel; use "scroll" for ribbon navigation
-/>
-```
+On mobile Paseo renders modal dialogs in an `AdaptiveModalSheet` bottom sheet
+that owns the viewport and the sheet gesture, and the host wraps plugin content
+in a `BottomSheetScrollView`. Do not nest a vertical `ScrollView` inside it:
+use `HostModalContent` / `HostModalSection` (or plain views) and let the host
+own the single scroll region.
 
 ---
 
 ## Interactive Showcase Demo
 
-Live Showcase coverage lives in the monorepo's `plugins/demo` conformance testbed (all components, responsive behaviors, Flair Studio, `AboutSection` branding). The legacy `demo/` reference tree was removed.
+Live Showcase coverage lives in the monorepo's `plugins/demo` conformance testbed (host-delegating `ui/` adapters, local composition, typed RPC actions, and persisted settings). The legacy `demo/` reference tree was removed.
 
 ## Documentation
 
 Comprehensive API and module documentation:
 
-- [Client Design System & Lifecycles (`docs/client.md`)](docs/client.md)
+- [Client migration guide (`docs/client-migration.md`)](docs/client-migration.md) — `core`, `lifecycle`, and `ui`
 - [Server Daemon Utilities (`docs/server.md`)](docs/server.md)
 - [MCP Client & Transports (`docs/mcp.md`)](docs/mcp.md)
 - [Shared Types & Formatters (`docs/shared.md`)](docs/shared.md)

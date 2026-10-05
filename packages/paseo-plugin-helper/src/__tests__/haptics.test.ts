@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { triggerHaptic } from "../client/utils/haptics.js";
+import { triggerHaptic } from "../lifecycle/haptics.js";
 
 describe("client/utils/haptics", () => {
   beforeEach(() => {

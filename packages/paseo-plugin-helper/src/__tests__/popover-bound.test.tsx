@@ -2,9 +2,24 @@ import { describe, it, expect } from "vitest";
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
 import { View } from "react-native";
-import { initClientHelpers, type ComposerPillRegistrar } from "../client/host.js";
-import { registerComposerPill } from "../client/pill.js";
-import { defaultDarkTheme } from "../client/theme/provider.js";
+import { initClientHelpers, type ComposerPillRegistrar } from "../core/host.js";
+import { registerComposerPill } from "../lifecycle/pill.js";
+
+const theme = {
+  colors: {
+    surface0: "#18181b",
+    surface1: "#27272a",
+    surface2: "#3f3f46",
+    border: "#3f3f46",
+    foreground: "#fafafa",
+    foregroundMuted: "#a1a1aa",
+    accent: "#3b82f6",
+    accentForeground: "#ffffff",
+    statusSuccess: "#22c55e",
+    statusWarning: "#eab308",
+    statusDanger: "#ef4444",
+  },
+} as any;
 
 function installHostStubs() {
   initClientHelpers({
@@ -65,7 +80,7 @@ describe("popover content height bound (#78)", () => {
         <Content
           agentId="a1"
           workspaceId="w1"
-          theme={defaultDarkTheme}
+          theme={theme}
           layout={{ compact: true, platform: "web" }}
           close={() => {}}
         />,

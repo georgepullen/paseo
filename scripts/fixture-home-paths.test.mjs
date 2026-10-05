@@ -281,7 +281,7 @@ test("fixture discovery is not vacuous: the leak sites from #621 and #624 are in
   );
   for (const known of [
     "plugins/uppidi-fleet/client/testing/fleet-fixtures.ts", // #621, the file #624 scrubbed
-    "packages/paseo-plugin-helper/src/__tests__/narrow-viewport-contract.test.tsx", // #624, the other half
+    "packages/paseo-plugin-helper/src/__tests__/formatters.test.ts", // helper fixture suite, other half of the #624 scope
     "plugins/x-comms/mcp/test/protocol.test.mjs", // the mcp/ tree the issue names
     "plugins/worktree-install/client/render.test.ts", // the pre-existing in-repo guard
   ]) {

@@ -574,7 +574,7 @@ test("test discovery is not vacuous", () => {
  */
 const RUNNER_SHAPES = [
   ["packages/paseo-plugin-helper/src/__tests__/async.test.ts", /paseo-plugin-helper\/package\.json scripts\.test$/],
-  ["packages/paseo-plugin-helper/src/__tests__/theme-tokens.test.ts", /paseo-plugin-helper\/package\.json scripts\.test$/],
+  ["packages/paseo-plugin-helper/src/__tests__/snapshot.test.ts", /paseo-plugin-helper\/package\.json scripts\.test$/],
   ["plugins/demo/shared/demo-header-mode.test.ts", /demo\/package\.json scripts\.test$/],
   ["plugins/mcp-tools/client/attribution.test.tsx", /mcp-tools\/package\.json scripts\.test$/],
   ["plugins/slash/server/orchestrate.test.ts", /slash\/package\.json scripts\.test$/],

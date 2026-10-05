@@ -10,9 +10,8 @@ import { alpha, getStatusColor, getVariantPalette } from "./host-color";
  * colors to every ui/ adapter below it.
  *
  * Contract — what this context deliberately does NOT do:
- * - No DOM CSS variable scraping. Colors come from the host `theme` prop only.
- *   The frozen `client/` `PluginThemeProvider` merges `readHostThemeVariables()`
- *   (a `getComputedStyle` scraper) into its value; this context never does.
+ * - No DOM CSS variable scraping. Colors come from the host `theme` prop only;
+ *   the removed legacy theme provider's `getComputedStyle` scraper is gone.
  * - No flair, density, typography, or padding machinery. The host owns the
  *   design language; ui/ only consumes its color tokens.
  * - No scroll-ownership state machine. See `ui/modal.tsx`.
@@ -76,9 +75,9 @@ export interface HostThemeProviderProps {
 }
 
 /**
- * Provides host theme colors to every ui/ adapter in the subtree. Drop-in
- * replacement for the client/ `PluginThemeProvider` when rendering ui/
- * adapters: same `theme` prop, no scraped variables, no flair.
+ * Provides host theme colors to every ui/ adapter in the subtree. Same `theme`
+ * prop shape the removed legacy `PluginThemeProvider` took, but no scraped
+ * variables and no flair.
  */
 export function HostThemeProvider({ theme, children }: HostThemeProviderProps) {
   const value = createHostTheme(theme.colors);

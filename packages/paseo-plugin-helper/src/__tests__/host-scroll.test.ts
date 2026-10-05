@@ -4,7 +4,7 @@ import {
   getClientHost,
   selectHostScrollView,
   type HostScrollView,
-} from "../client/host.js";
+} from "../core/host.js";
 
 const HostStub = (() => null) as unknown as HostScrollView;
 const FallbackStub = (() => null) as unknown as HostScrollView;

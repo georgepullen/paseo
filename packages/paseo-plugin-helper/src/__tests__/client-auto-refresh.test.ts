@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { REFRESH_INTERVALS } from "../client/query-refresh.js";
+import { REFRESH_INTERVALS } from "../core/query-refresh.js";
 
 describe("client/query-refresh", () => {
   it("maps refresh rates correctly", () => {

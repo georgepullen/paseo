@@ -7,8 +7,8 @@ const SRC = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /**
  * The `lifecycle` entry is client-safe (React Native, no `node:*`) but must
- * not drag the frozen `client/` design system into a consumer's bundle. It may
- * use the headless host seam (`client/host.ts`) only.
+ * not drag UI into a consumer's bundle. It may use the headless host seam
+ * (`core/host.ts`) only.
  */
 const FORBIDDEN = [
   /from\s+["']node:/,
@@ -67,7 +67,7 @@ describe("lifecycle entry purity (UI-free client runtime)", () => {
     const violations: string[] = [];
     for (const file of files) {
       const rel = file.slice(SRC.length + 1);
-      if (rel === "client/host.ts" || rel.startsWith("shared/")) continue;
+      if (rel === "core/host.ts" || rel.startsWith("shared/")) continue;
       const body = stripComments(stripTypeImports(readFileSync(file, "utf8")));
       for (const pattern of FORBIDDEN) {
         if (pattern.test(body)) violations.push(`${rel}: ${pattern}`);

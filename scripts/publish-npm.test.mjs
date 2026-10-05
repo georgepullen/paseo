@@ -63,10 +63,10 @@ check("--dry-run parsed", parseArgs(["--publish", "--dry-run"]).dryRun === true)
 check("--allow-dirty parsed", parseArgs(["--stage", "--allow-dirty"]).allowDirty === true);
 check("--allow-orphans parsed", parseArgs(["--stage", "--allow-orphans"]).allowOrphans === true);
 check("--quiet parsed", parseArgs(["--stage", "--quiet"]).quiet === true);
-check("helper guard detects import specifiers", hasBareHelperSpecifier('import { Card } from "paseo-plugin-helper/client";'));
+check("helper guard detects import specifiers", hasBareHelperSpecifier('import { useRpcQuery } from "paseo-plugin-helper/core";'));
 check(
   "helper guard ignores literal specifiers",
-  !hasBareHelperSpecifier('expect(message).toContain("paseo-plugin-helper/client")'),
+  !hasBareHelperSpecifier('expect(message).toContain("paseo-plugin-helper/core")'),
 );
 check("--stage + --publish rejected", throws(() => parseArgs(["--stage", "--publish"])));
 check("--publish + --clean-stage rejected", throws(() => parseArgs(["--publish", "--clean-stage"])));

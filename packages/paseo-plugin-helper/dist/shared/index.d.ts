@@ -1,11 +1,11 @@
-export { P as PlatformType, a as PluginTheme, R as ResponsiveLayout, S as StatusVariant, T as ThemeColors } from '../types-BKH2AGK1.js';
+export { a as PlatformType, P as PluginTheme, R as ResponsiveLayout, S as StatusVariant, T as ThemeColors } from '../types-4TBN5lgi.js';
 import { P as PluginRpcContract } from '../rpc-D27pph91.js';
 export { D as DefineRpcOptions, R as RpcInput, a as RpcOutput, d as defineContract, b as defineRpc } from '../rpc-D27pph91.js';
-export { F as FormatBytesOptions, a as FormatCompactNumberOptions, M as MetricThresholds, T as TruncateOptions, b as TruncatePathOptions, f as formatBytes, c as formatCompactNumber, d as formatDuration, e as formatNumber, g as formatUptime, r as resolveMetricStatus, s as stripAnsi, t as truncate, h as truncateMiddle, i as truncatePath } from '../formatters-BgjVLUgj.js';
-export { D as DefineSettingsContractOptions, S as SettingsContract, a as SettingsEmptyInput, b as SettingsEmptyInputSchema, d as defineSettingsContract } from '../settings-CP1gv9q3.js';
-export { F as ForgeKind, a as ForgeMarkInput, R as ResolvedForgeMark, S as SuiteSettings, b as SuiteSettingsContract, c as SuiteSettingsSchema, f as forgeKindFromHost, d as forgeMarkSource, i as isForgeKind, n as normalizeForgeHost, r as resolveForgeMark } from '../forge-Cs7Wnmen.js';
-export { A as ATTENTION_LABELS, a as AddCommentInput, b as AddCommentInputSchema, c as AddCommentOutput, d as AddCommentOutputSchema, e as AgentEnvelope, f as AgentEnvelopeSchema, g as AttentionLabel, B as BARE_REPO_PATTERN, C as CREATE_ISSUE_BODY_MAX, h as CREATE_ISSUE_LABEL_MAX, i as CREATE_ISSUE_TITLE_MAX, j as CreateIssueInput, k as CreateIssueInputSchema, l as CreateIssueOutput, m as CreateIssueOutputSchema, n as CustomPillDefinition, o as CustomPillDefinitionSchema, p as CustomPillModal, q as CustomPillModalSchema, r as CustomPillState, s as CustomPillThresholds, t as CustomPillThresholdsSchema, F as ForgeAccessInput, u as ForgeAccessState, v as ForgeAuthState, w as ForgeContextInput, x as ForgeContextInputSchema, y as ForgeContextOutput, z as ForgeContextOutputSchema, D as ForgeIssue, E as ForgeIssueSchema, G as ForgeLabel, H as ForgeLabelRef, I as ForgeLabelSchema, J as ForgeRemote, K as ForgeRepoIdentity, L as ForgeTargetResolution, M as ForgeVisibility, N as INSTALL_LABEL_MODES, O as InstallLabelMode, P as InstallLabelsInput, Q as InstallLabelsInputSchema, R as InstallLabelsOutput, S as InstallLabelsOutputSchema, T as IssueComment, U as IssueCommentSchema, V as IssueDetail, W as IssueDetailInput, X as IssueDetailInputSchema, Y as IssueDetailOutput, Z as IssueDetailOutputSchema, _ as IssueDetailSchema, $ as IssueNumberInput, a0 as LabelDefinition, a1 as LabelSetPlan, a2 as MarkdownLiteBlock, a3 as MarkdownLiteSpan, a4 as OpenIssuesInput, a5 as OpenIssuesInputSchema, a6 as OpenIssuesOutput, a7 as OpenIssuesOutputSchema, a8 as PASEO_LABEL_SCOPES, a9 as PASEO_LINK_PATTERN, aa as PASEO_SERVER_PATTERN, ab as PRIORITY_ORDER, ac as PriorityLabel, ad as SHA_PATTERN, ae as SPEC_LABELS, af as STATE_ORDER, ag as SearchIssuesInput, ah as SearchIssuesInputSchema, ai as SearchIssuesOutput, aj as SearchIssuesOutputSchema, ak as SetLabelInput, al as SetLabelInputSchema, am as SetLabelOutput, an as SetLabelOutputSchema, ao as SpecLabel, ap as StateLabel, aq as activeForgeForDirectory, ar as addCommentContract, as as createIssueContract, at as currentPriorityLabel, au as currentStateLabel, av as deriveForgeAccess, aw as forgeCapabilityFromRepo, ax as forgeContextContract, ay as forgeForgeContextContract, az as forgeWriteScopeList, aA as formatPillDisplay, aB as isValidForgeTarget, aC as issueDetailContract, aD as liveScopesFromIssues, aE as liveScopesFromLabels, aF as nextStateLabel, aG as normalizeIssueNumber, aH as openIssuesContract, aI as parseAgentEnvelope, aJ as parseForgeRemote, aK as parseLabelList, aL as parseMarkdownLite, aM as parseMarkdownLiteInline, aN as parseNumericPillValue, aO as paseoLabelScopes, aP as paseoLabelSet, aQ as planLabelSetInstall, aR as rankIssues, aS as resolveCustomPillStatus, aT as resolveForgeTarget, aU as scopeOfLabel, aV as searchIssuesContract, aW as setLabelContract, aX as shortLabelName, aY as stripAgentEnvelopeFooter, aZ as validateCreateIssueInput, a_ as writeGateNotice } from '../tickets-cIDmm9to.js';
-import 'zod';
+export { F as FormatBytesOptions, a as FormatCompactNumberOptions, M as MetricThresholds, T as TruncateOptions, b as TruncatePathOptions, f as formatBytes, c as formatCompactNumber, d as formatDuration, e as formatNumber, g as formatUptime, r as resolveMetricStatus, s as stripAnsi, t as truncate, h as truncateMiddle, i as truncatePath } from '../formatters-Bv2wa1fZ.js';
+import { S as SettingsContract } from '../settings-CP1gv9q3.js';
+export { D as DefineSettingsContractOptions, a as SettingsEmptyInput, b as SettingsEmptyInputSchema, d as defineSettingsContract } from '../settings-CP1gv9q3.js';
+export { A as ATTENTION_LABELS, a as AddCommentInput, b as AddCommentInputSchema, c as AddCommentOutput, d as AddCommentOutputSchema, e as AgentEnvelope, f as AgentEnvelopeSchema, g as AttentionLabel, B as BARE_REPO_PATTERN, C as CREATE_ISSUE_BODY_MAX, h as CREATE_ISSUE_LABEL_MAX, i as CREATE_ISSUE_TITLE_MAX, j as CreateIssueInput, k as CreateIssueInputSchema, l as CreateIssueOutput, m as CreateIssueOutputSchema, n as CustomPillDefinition, o as CustomPillDefinitionSchema, p as CustomPillModal, q as CustomPillModalSchema, r as CustomPillState, s as CustomPillThresholds, t as CustomPillThresholdsSchema, F as ForgeAccessInput, u as ForgeAccessState, v as ForgeAuthState, w as ForgeContextInput, x as ForgeContextInputSchema, y as ForgeContextOutput, z as ForgeContextOutputSchema, D as ForgeIssue, E as ForgeIssueSchema, G as ForgeLabel, H as ForgeLabelRef, I as ForgeLabelSchema, J as ForgeRemote, K as ForgeRepoIdentity, L as ForgeTargetResolution, M as ForgeVisibility, N as INSTALL_LABEL_MODES, O as InstallLabelMode, P as InstallLabelsInput, Q as InstallLabelsInputSchema, R as InstallLabelsOutput, S as InstallLabelsOutputSchema, T as IssueComment, U as IssueCommentSchema, V as IssueDetail, W as IssueDetailInput, X as IssueDetailInputSchema, Y as IssueDetailOutput, Z as IssueDetailOutputSchema, _ as IssueDetailSchema, $ as IssueNumberInput, a0 as LabelDefinition, a1 as LabelSetPlan, a2 as MarkdownLiteBlock, a3 as MarkdownLiteSpan, a4 as OpenIssuesInput, a5 as OpenIssuesInputSchema, a6 as OpenIssuesOutput, a7 as OpenIssuesOutputSchema, a8 as PASEO_LABEL_SCOPES, a9 as PASEO_LINK_PATTERN, aa as PASEO_SERVER_PATTERN, ab as PRIORITY_ORDER, ac as PriorityLabel, ad as SHA_PATTERN, ae as SPEC_LABELS, af as STATE_ORDER, ag as SearchIssuesInput, ah as SearchIssuesInputSchema, ai as SearchIssuesOutput, aj as SearchIssuesOutputSchema, ak as SetLabelInput, al as SetLabelInputSchema, am as SetLabelOutput, an as SetLabelOutputSchema, ao as SpecLabel, ap as StateLabel, aq as activeForgeForDirectory, ar as addCommentContract, as as createIssueContract, at as currentPriorityLabel, au as currentStateLabel, av as deriveForgeAccess, aw as forgeCapabilityFromRepo, ax as forgeContextContract, ay as forgeForgeContextContract, az as forgeWriteScopeList, aA as formatPillDisplay, aB as isValidForgeTarget, aC as issueDetailContract, aD as liveScopesFromIssues, aE as liveScopesFromLabels, aF as nextStateLabel, aG as normalizeIssueNumber, aH as openIssuesContract, aI as parseAgentEnvelope, aJ as parseForgeRemote, aK as parseLabelList, aL as parseMarkdownLite, aM as parseMarkdownLiteInline, aN as parseNumericPillValue, aO as paseoLabelScopes, aP as paseoLabelSet, aQ as planLabelSetInstall, aR as rankIssues, aS as resolveCustomPillStatus, aT as resolveForgeTarget, aU as scopeOfLabel, aV as searchIssuesContract, aW as setLabelContract, aX as shortLabelName, aY as stripAgentEnvelopeFooter, aZ as validateCreateIssueInput, a_ as writeGateNotice } from '../tickets-C3jgqoT-.js';
+import { z } from 'zod';
 
 /**
  * Cleanup handle returned by a feature contribution.
@@ -117,6 +117,24 @@ interface FeatureComposition<TServerContext = unknown, TClientContext = unknown>
  */
 declare function composeFeatureModules<TServerContext = unknown, TClientContext = unknown>(modules: readonly FeatureModule<TServerContext, TClientContext>[]): FeatureComposition<TServerContext, TClientContext>;
 
+declare const SuiteSettingsSchema: z.ZodObject<{
+    suiteTitle: z.ZodDefault<z.ZodString>;
+    accentColor: z.ZodDefault<z.ZodString>;
+    density: z.ZodDefault<z.ZodEnum<{
+        compact: "compact";
+        comfortable: "comfortable";
+        spacious: "spacious";
+    }>>;
+    showSuiteTabs: z.ZodDefault<z.ZodBoolean>;
+}, z.core.$strip>;
+type SuiteSettings = z.infer<typeof SuiteSettingsSchema>;
+declare const SuiteSettingsContract: SettingsContract<{
+    suiteTitle: string;
+    accentColor: string;
+    density: "compact" | "comfortable" | "spacious";
+    showSuiteTabs: boolean;
+}>;
+
 declare class TimeoutError extends Error {
     readonly timeoutMs: number;
     constructor(message: string, timeoutMs: number);
@@ -196,6 +214,51 @@ declare function hasHighlightMatch(text: string, query: string): boolean;
  */
 declare function hasFuzzyHighlight(text: string, query: string): boolean;
 
+/**
+ * Shared forge brand-mark resolution.
+ *
+ * One host/kind -> mark table for every plugin that shows forge iconography,
+ * so plugins never carry their own per-forge icon maps. The client-side
+ * `<ForgeIcon>` renders this descriptor; server/shared code can consume the
+ * pure resolver without pulling in React.
+ *
+ * GitHub and GitLab resolve to their Lucide marks; Codeberg, Forgejo and Gitea
+ * have no Lucide equivalent and resolve to helper-drawn official mono marks.
+ */
+type ForgeKind = "github" | "gitlab" | "codeberg" | "forgejo" | "gitea" | "generic";
+interface ResolvedForgeMark {
+    /** Stable forge identity. */
+    kind: ForgeKind;
+    /** Human-readable forge name for labels and accessibility. */
+    label: string;
+    /** Host Lucide icon name; the exact mark on hosts with SVG support, the closest fallback otherwise. */
+    lucideName: string;
+    /** True when `<ForgeIcon>` draws the official mark instead of delegating to the host icon set. */
+    custom: boolean;
+}
+interface ForgeMarkInput {
+    /** Forge hostname, e.g. `codeberg.org` or `forge.example.com`. */
+    host?: string | null;
+    /** Explicit forge identity; wins over host detection when it names a known forge. */
+    kind?: ForgeKind | string | null;
+}
+/**
+ * Reduce a remote URL, `owner/repo` slug or bare hostname to a lowercase
+ * hostname without scheme, userinfo, port, path or a leading `www.`.
+ */
+declare function normalizeForgeHost(host: string | null | undefined): string | null;
+declare function isForgeKind(value: unknown): value is ForgeKind;
+declare function forgeKindFromHost(host: string | null | undefined): ForgeKind;
+/**
+ * Resolve a forge descriptor from a hostname and/or explicit kind. Accepts a
+ * bare host string for the common host-only case.
+ */
+declare function resolveForgeMark(input: ForgeMarkInput | string | null | undefined): ResolvedForgeMark;
+/** Inline SVG data URI for a custom mark, tinted with the resolved color. */
+declare function forgeMarkSource(kind: ForgeKind, color: string): {
+    uri: string;
+} | null;
+
 interface SuppressedSink {
     debug?(message: string, data?: unknown): void;
     warn?(message: string, data?: unknown): void;
@@ -208,4 +271,4 @@ interface SuppressedSink {
  */
 declare function reportSuppressed(sink: Pick<SuppressedSink, "debug" | "warn"> | undefined, context: string, error: unknown, level?: "debug" | "warn"): void;
 
-export { type FeatureComposition, type FeatureDisposer, type FeatureModule, type HighlightOptions, type HighlightPart, PluginRpcContract, type SuppressedSink, TimeoutError, composeFeatureModules, hasFuzzyHighlight, hasHighlightMatch, normalizeSearchQuery, reportSuppressed, splitHighlightParts, withTimeout };
+export { type FeatureComposition, type FeatureDisposer, type FeatureModule, type ForgeKind, type ForgeMarkInput, type HighlightOptions, type HighlightPart, PluginRpcContract, type ResolvedForgeMark, SettingsContract, type SuiteSettings, SuiteSettingsContract, SuiteSettingsSchema, type SuppressedSink, TimeoutError, composeFeatureModules, forgeKindFromHost, forgeMarkSource, hasFuzzyHighlight, hasHighlightMatch, isForgeKind, normalizeForgeHost, normalizeSearchQuery, reportSuppressed, resolveForgeMark, splitHighlightParts, withTimeout };

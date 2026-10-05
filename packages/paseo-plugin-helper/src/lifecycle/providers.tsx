@@ -1,18 +1,16 @@
 import React, { type ComponentType, type ReactNode } from "react";
 import type { PluginTheme } from "../shared/types.js";
-import type { HostLayout } from "../client/host.js";
-import type { VisualFlair } from "../client/theme/flair.js";
+import type { HostLayout } from "../core/host.js";
+import type { VisualFlair } from "./flair.js";
 import { HostThemeProvider } from "./host-theme.js";
 
 /**
  * Presentational seam for the lifecycle registration engines.
  *
- * The `client/` entry re-exports the registrars and installs a provider that
- * mounts the frozen `PluginThemeProvider` on top of the host theme, preserving
- * the legacy design-system behavior existing consumers depend on. Consumers
- * importing `paseo-plugin-helper/lifecycle` directly get only
- * `HostThemeProvider` (the host `theme` prop drives every ui/ adapter), which
- * is the migration target — no frozen `client/` theme or layout code is pulled.
+ * The bespoke `client/` design system was removed (#938), so no installer
+ * remains: `RegistrarThemeScope` mounts only `HostThemeProvider` (the host
+ * `theme` prop drives every ui/ adapter). The legacy-provider hook stays for
+ * callers that mounted their own theme provider before the removal.
  */
 export interface RegistrarThemeProps {
   theme: PluginTheme;
@@ -26,9 +24,8 @@ export type RegistrarLegacyThemeProvider = ComponentType<RegistrarThemeProps>;
 let legacyThemeProvider: RegistrarLegacyThemeProvider | undefined;
 
 /**
- * Installed once by the `client/` compatibility shim. Keeping it out of the
- * `lifecycle/` entry's runtime imports is what lets that entry stay free of the
- * frozen design system.
+ * Installed once by a legacy theme shim. Keeping it out of the `lifecycle/`
+ * entry's runtime imports is what lets that entry stay free of any UI kit.
  */
 export function setRegistrarLegacyThemeProvider(
   provider: RegistrarLegacyThemeProvider | undefined,

@@ -5,12 +5,12 @@ import { Text, View } from "react-native";
 import {
   initClientHelpers,
   type ComposerPillRegistrar,
-} from "../client/host.js";
+} from "../core/host.js";
 import {
   registerComposerPill,
   resolvePillModalScrollable,
-} from "../client/pill.js";
-import { ModalBodyScrollOwnerContext } from "../client/layout/ModalBody.js";
+} from "../lifecycle/pill.js";
+import { ModalBodyScrollOwnerContext } from "../lifecycle/scroll-owner.js";
 import { HostModalSection } from "../ui/modal.js";
 
 describe("resolvePillModalScrollable", () => {

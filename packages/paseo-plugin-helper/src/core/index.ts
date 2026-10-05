@@ -18,7 +18,7 @@
  *
  * React (not React Native) is the only view-layer dependency here, via
  * `@tanstack/react-query` hooks. Host RPC access flows through the injected
- * `useRpc` seam in `client/host.js`, which itself carries only type-level
+ * `useRpc` seam in `core/host.ts`, which itself carries only type-level
  * `react-native` imports (erased at runtime).
  */
 
@@ -41,7 +41,7 @@ export {
   getOptionalClientHost,
   isClientHostInitialized,
   selectHostScrollView,
-} from "../client/host.js";
+} from "./host.js";
 export type {
   ClientHostDeps,
   HostTheme,
@@ -59,11 +59,11 @@ export type {
   HostPillProps,
   HostSurfaceProps,
   PluginCleanup,
-} from "../client/host.js";
+} from "./host.js";
 
-export * from "../client/query.js";
-export * from "../client/query-refresh.js";
-export * from "../client/settings.js";
-export * from "../client/shared-settings.js";
-export * from "../client/snapshot.js";
-export * from "../client/command-center.js";
+export * from "./query.js";
+export * from "./query-refresh.js";
+export * from "./settings.js";
+export * from "./shared-settings.js";
+export * from "./snapshot.js";
+export * from "./command-center.js";

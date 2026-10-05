@@ -12,7 +12,7 @@ import {
   getOptionalClientHost,
   selectHostScrollView,
   type HostScrollView,
-} from "../host";
+} from "../core/host";
 
 /**
  * Host-delegating modal content for `paseo-plugin-helper/ui`.

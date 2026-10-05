@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
 import { ScrollView, Text, TextInput, View } from "react-native";
-import { initClientHelpers } from "../client/host.js";
+import { initClientHelpers } from "../core/host.js";
 import { HostModalContent, HostModalSection, HostScroll } from "../ui/modal.js";
 import { HostCard, HostCardHeader, HostTabs, HostBadge } from "../ui/content.js";
 import { HostButton, HostToggle, HostSelect, HostTextInput } from "../ui/controls.js";

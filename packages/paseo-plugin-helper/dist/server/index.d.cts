@@ -1,9 +1,9 @@
 import { ZodType } from 'zod';
 import { S as SettingsContract } from '../settings-BNRcFeSP.cjs';
 import { SpawnOptions } from 'node:child_process';
-import { n as CustomPillDefinition, r as CustomPillState, D as ForgeIssue, G as ForgeLabel, a4 as OpenIssuesInput, a6 as OpenIssuesOutput, ag as SearchIssuesInput, ai as SearchIssuesOutput, w as ForgeContextInput, y as ForgeContextOutput, W as IssueDetailInput, Y as IssueDetailOutput, ak as SetLabelInput, am as SetLabelOutput, a as AddCommentInput, c as AddCommentOutput, j as CreateIssueInput, l as CreateIssueOutput, P as InstallLabelsInput, R as InstallLabelsOutput } from '../tickets-c-r4cP8s.cjs';
+import { n as CustomPillDefinition, r as CustomPillState, D as ForgeIssue, G as ForgeLabel, a4 as OpenIssuesInput, a6 as OpenIssuesOutput, ag as SearchIssuesInput, ai as SearchIssuesOutput, w as ForgeContextInput, y as ForgeContextOutput, W as IssueDetailInput, Y as IssueDetailOutput, ak as SetLabelInput, am as SetLabelOutput, a as AddCommentInput, c as AddCommentOutput, j as CreateIssueInput, l as CreateIssueOutput, P as InstallLabelsInput, R as InstallLabelsOutput } from '../tickets-43n7zSNn.cjs';
 import '../rpc-D27pph91.cjs';
-import '../types-BKH2AGK1.cjs';
+import '../types-4TBN5lgi.cjs';
 
 interface PluginStorageOptions<T> {
     defaultData?: T;

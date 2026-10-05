@@ -3,8 +3,8 @@
 // plugins/<plugin>/{client,server,shared}/vendor/paseo-plugin-helper/ so the
 // published plugin installs with zero host requirements (no npm, no registry).
 //
-// Dev source imports the bare specifier `paseo-plugin-helper/client|server|
-// shared|mcp`; each plugin's tsconfig `paths` aliases it to the helper src, so
+// Dev source imports the bare specifier `paseo-plugin-helper/core|lifecycle|
+// ui|server|shared|mcp`; each plugin's tsconfig `paths` aliases it to the helper src, so
 // a helper src edit shows up on reload with no copy step (#176). The vendored
 // copies are the *publish* artifact: mirror-github.mjs rewrites the bare
 // specifiers to these relative copies when it stages the scoped tree.
@@ -89,8 +89,8 @@ function devLinkStatus() {
       problems.push(`plugins/${plugin}/tsconfig.json is missing`);
       continue;
     }
-    if (!raw.includes('"paseo-plugin-helper/client"')) {
-      problems.push(`plugins/${plugin}/tsconfig.json has no "paseo-plugin-helper/client" path alias`);
+    if (!raw.includes('"paseo-plugin-helper/server"')) {
+      problems.push(`plugins/${plugin}/tsconfig.json has no "paseo-plugin-helper/server" path alias`);
     }
   }
 
@@ -210,9 +210,6 @@ function prune(pluginRoot, tree) {
       // The "mcp" helper tree lives under server/vendor/.../mcp; the
       // "server" prune pass must not treat it as dead server files.
       if (tree === "server" && dir === dstDir && e.isDirectory() && e.name === "mcp") continue;
-      // The client-side core and ui trees are colocated under the client
-      // vendor root, but have their own source trees and prune passes.
-      if (tree === "client" && dir === dstDir && e.isDirectory() && (e.name === "core" || e.name === "ui" || e.name === "lifecycle")) continue;
       const d = path.join(dir, e.name);
       const s = path.join(srcDir, path.relative(dstDir, d));
       if (e.isDirectory()) {
@@ -231,6 +228,35 @@ function prune(pluginRoot, tree) {
   return removed;
 }
 
+// The removed (paseo#938) "client" helper tree shared its vendored root with
+// the core/ui/lifecycle trees, so nothing walks the orphaned root files. Prune
+// anything at that root that is not one of the colocated client-side trees.
+//
+// x-comms is the one plugin that deliberately serves its own committed copy
+// (see scripts/lib/helper-identity.mjs) and reaches the frozen `client` barrel
+// through relative vendored paths. Its tree is a frozen fork, not a mirror of
+// the deleted helper src, so it must survive the sweep until x-comms itself is
+// migrated.
+const CLIENT_VENDOR_ROOT_TREES = new Set(["core", "ui", "lifecycle"]);
+const FROZEN_CLIENT_VENDOR_PLUGINS = new Set(["x-comms"]);
+function pruneOrphanedClientRoot(pluginRoot) {
+  if (FROZEN_CLIENT_VENDOR_PLUGINS.has(path.basename(pluginRoot))) return 0;
+  const root = destDir(pluginRoot, "client");
+  if (!fs.existsSync(root) || isLink(root)) return 0;
+  let removed = 0;
+  for (const e of fs.readdirSync(root, { withFileTypes: true })) {
+    if (e.isDirectory() && CLIENT_VENDOR_ROOT_TREES.has(e.name)) continue;
+    const d = path.join(root, e.name);
+    console.log(`  pruned: ${path.relative(ROOT, d)}`);
+    if (!CHECK) {
+      if (e.isDirectory()) fs.rmSync(d, { recursive: true, force: true });
+      else fs.unlinkSync(d);
+    }
+    removed++;
+  }
+  return removed;
+}
+
 // Copy+prune every vendored tree from the helper src. Shared by the write mode
 // and by --materialize-links, which only reaches it once it has converted a
 // symlink and therefore owes the affected trees a real copy.
@@ -242,6 +268,7 @@ function refreshCopies() {
       changed += copyTree(pluginRoot, tree);
       changed += prune(pluginRoot, tree);
     }
+    changed += pruneOrphanedClientRoot(pluginRoot);
   }
   return changed;
 }
@@ -354,6 +381,7 @@ function syncOnce() {
       dirty += copyTree(pluginRoot, tree);
       dirty += prune(pluginRoot, tree);
     }
+    dirty += pruneOrphanedClientRoot(pluginRoot);
   }
   if (!CHECK) {
     materializeLinks();

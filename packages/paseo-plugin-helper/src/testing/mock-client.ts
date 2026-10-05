@@ -5,12 +5,12 @@ import type {
   HostAgentUpdate,
   HostSurfaceProps,
   PluginCleanup,
-} from "../client/host.js";
+} from "../core/host.js";
 import type {
   PluginButtonRegistration,
   PluginComposerPillContribution,
 } from "@getpaseo/plugin/client";
-import type { CommandCenterItemContribution } from "../client/command-center.js";
+import type { CommandCenterItemContribution } from "../core/command-center.js";
 
 export interface MockAgent extends HostAgentRef {
   [key: string]: any;

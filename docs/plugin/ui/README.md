@@ -2,7 +2,13 @@
 
 > Complete developer reference for designing, composing, and rendering cross-platform UI across Paseo Desktop (Electron), iOS, Android, and Web browsers.
 >
-> **Integration context**: This guide documents UI development in the `xpufx/paseo` monorepo (`~/code/paseo`), combining Paseo core host primitives with the [`paseo-plugin-helper/client`](../../../packages/paseo-plugin-helper/README.md) design system, and cross-referencing the [upstream Paseo reference](file:///home/xpufx/code/3rdparty/paseo/paseo/public-docs/plugins/reference.md#host-ui).
+> **Integration context**: This guide documents UI development in the `xpufx/paseo` monorepo (`~/code/paseo`), combining Paseo core host primitives with the host-delegating [`paseo-plugin-helper/ui`](../../../packages/paseo-plugin-helper/README.md) adapters, and cross-referencing the [upstream Paseo reference](file:///home/xpufx/code/3rdparty/paseo/paseo/public-docs/plugins/reference.md#host-ui).
+>
+> **Note (xpufx-org/paseo#847, #938):** the bespoke `paseo-plugin-helper/client` design system
+> (its `Card`/`Button`/`Badge`/`Tabs`/`ModalBody`/`usePluginTheme` primitives and Visual
+> Flair engine) was removed. The examples below that import it are historical. Use the
+> host SDK primitives and the `paseo-plugin-helper/ui` adapters; see the
+> [helper migration guide](../../../packages/paseo-plugin-helper/docs/client-migration.md).
 
 ---
 
@@ -22,13 +28,13 @@
 Every plugin UI contribution in Paseo must strictly adhere to four foundational principles:
 
 1. **Theme Awareness Over Color Literals**:
-   Paseo ships with multiple light, dark, and custom user-installed themes. Hardcoded hex colors (`#ffffff`, `#000000`, etc.) and unstyled React Native `<Text>` elements break immediately upon theme switching. All text, surfaces, borders, and accents must resolve through `theme.colors` tokens or `usePluginTheme()`.
+   Paseo ships with multiple light, dark, and custom user-installed themes. Hardcoded hex colors (`#ffffff`, `#000000`, etc.) and unstyled React Native `<Text>` elements break immediately upon theme switching. All text, surfaces, borders, and accents must resolve through `theme.colors` tokens (or `useHostTheme()` inside a `ui/` adapter).
 
 2. **Mobile-First Responsiveness**:
    Paseo is a multi-platform app running on Desktop, Web, Android, and iOS. UI must scale with `layout.compact` (true on mobile viewports or narrow desktop panes). Touch targets must maintain minimum heights of 44pt on compact screens.
 
 3. **Fluid Layouts Without Fixed Modals**:
-   Plugins **do not size their own dialogs**. On desktop, the host allocates a bounded window; on mobile, the host presents an `AdaptiveModalSheet` bottom sheet. Plugins must use fluid containers (`ModalBody`, `flex: 1`, `minHeight: 0`, `width: "100%"`) and never hardcode fixed width/height literals on dialog frames.
+   Plugins **do not size their own dialogs**. On desktop, the host allocates a bounded window; on mobile, the host presents an `AdaptiveModalSheet` bottom sheet. Plugins must keep containers fluid (`flex: 1`, `minHeight: 0`, `width: "100%"`) and never hardcode fixed width/height literals on dialog frames.
 
 4. **Gesture Hierarchy & Non-Nested Scrollers**:
    On mobile, vertical scrolling inside sheets is handled by the host’s bottom-sheet gesture recognizer. Plugins must never nest standard vertical `<ScrollView>`s inside mobile modals, which causes the infamous double-scroll freeze.

@@ -1,14 +1,7 @@
-/**
- * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
- * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
- * (`paseo-plugin-helper/ui`) composed with host SDK primitives
- * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
- * See `docs/client-migration.md`.
- */
 import React, { type ComponentType } from "react";
 import { View } from "react-native";
-import type { HostSurfaceProps as PluginSurfaceProps } from "../host";
-import type { VisualFlair } from "../theme/flair";
+import type { HostSurfaceProps as PluginSurfaceProps } from "../core/host";
+import type { VisualFlair } from "./flair";
 import { ModalBodyScrollOwnerContext } from "./scroll-owner";
 import { RegistrarThemeScope } from "./providers";
 

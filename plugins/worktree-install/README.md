@@ -28,7 +28,7 @@ element is in the tree. A row that loses its element fails the build.
 
 **2. It is not built on the shared UI kit.** `client/kit.tsx` is ~40 primitives written
 against plain `react-native` and the host's own `Icon`/`TextInput`/`copyText`. Nothing
-from `paseo-plugin-helper/client` is imported — not `Badge`, not `Button`, not
+from the (since-removed, #938) `paseo-plugin-helper/client` kit is imported — not `Badge`, not `Button`, not
 `DataTable`, not `SectionHeader`. Registration goes through the host's own
 `addSidebarItem`/`addSurface`/`addWorkspacePanel` rather than a helper registrar,
 because those registrars wrap a surface in the shared kit's chrome.
@@ -41,7 +41,7 @@ entire theming requirement, and there is no third mode, no scale, and no token t
 
 ## Dependency resolution
 
-`uppidi-fleet` imports the bare specifier `paseo-plugin-helper/client`, declares no
+`uppidi-fleet` imports the bare specifier `paseo-plugin-helper/core`, declares no
 dependency on it, and resolves it only through a tsconfig `paths` alias into
 `../../packages/paseo-plugin-helper/src`. That works in this monorepo and nowhere else,
 and nothing in CI can catch the failure (see [#630](https://forge.mrs.uppidi.com/xpufx-org/paseo/issues/630)).

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
 import { ScrollView, Text, View } from "react-native";
-import { initClientHelpers } from "../client/host.js";
+import { initClientHelpers } from "../core/host.js";
 import { HostModalContent, HostModalSection, HostScroll } from "../ui/modal.js";
 
 let hostContentProps: Record<string, unknown> | null = null;

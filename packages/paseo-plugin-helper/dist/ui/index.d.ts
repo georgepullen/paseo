@@ -1,13 +1,12 @@
-export { H as HostLayoutProvider, a as HostLayoutProviderProps, b as HostTheme, c as HostThemeProvider, d as HostThemeProviderProps, e as alpha, g as getContrastColor, f as getLuminance, h as getStatusColor, i as getVariantPalette, u as useHostLayout, j as useHostTheme } from '../host-color-DurfPvEA.js';
-import React__default, { ReactNode } from 'react';
+export { H as HostLayoutProvider, a as HostLayoutProviderProps, b as HostTheme, c as HostThemeProvider, d as HostThemeProviderProps, e as alpha, g as getContrastColor, f as getLuminance, h as getStatusColor, i as getVariantPalette, u as useHostLayout, j as useHostTheme } from '../host-color-DMCvQ95S.js';
+import React__default, { ReactNode, ComponentType } from 'react';
 import { StyleProp, ViewStyle, ScrollViewProps, TextStyle, KeyboardTypeOptions, GestureResponderEvent, AccessibilityRole } from 'react-native';
-import { S as StatusVariant, T as ThemeColors } from '../types-BKH2AGK1.js';
-import { M as MetricThresholds } from '../formatters-BgjVLUgj.js';
-export { H as HelperSettingsCardProps, a as HelperSettingsField, b as HelperSettingsFieldKind, c as HelperSettingsFieldOverrides, d as HelperSettingsInputProps, e as HelperSettingsRowBaseProps, f as HelperSettingsScreenContribution, g as HelperSettingsScreenRegistrar, h as HelperSettingsSectionProps, i as HelperSettingsSelectComponent, j as HelperSettingsSelectProps, k as HelperSettingsSwitchProps, l as HelperSettingsUiBundle, R as RegisterHelperSettingsScreenOptions, m as contractSchemaToFields, r as registerHelperSettingsScreen } from '../settings-screen-BSM7f82Y.js';
-import '../settings-CP1gv9q3.js';
+import { S as StatusVariant, T as ThemeColors } from '../types-4TBN5lgi.js';
+import { M as MetricThresholds } from '../formatters-Bv2wa1fZ.js';
+import { S as SettingsContract } from '../settings-CP1gv9q3.js';
+import { a as HostSurfaceProps, P as PluginCleanup } from '../host-BAF48X1U.js';
 import 'zod';
 import '../rpc-D27pph91.js';
-import '../host-CcdHvtoG.js';
 import '@getpaseo/plugin/client';
 
 /**
@@ -145,8 +144,8 @@ declare function HostFormRow({ label, description, children, layout, style, }: H
 /**
  * Paseo Plugin Helper — UI content adapters (`paseo-plugin-helper/ui`).
  *
- * Thin, host-delegating replacements for the frozen `client/` content
- * components (Card, Tabs, Badge, …). Contract shared by everything here:
+ * Thin, host-delegating content adapters (Card, Tabs, Badge, …). Contract
+ * shared by everything here:
  *
  * - Colors come from the host `theme` prop via {@link useHostTheme} — never
  *   from DOM CSS variables, flair, or a density scale.
@@ -313,7 +312,7 @@ declare function HostTabs({ tabs, activeTab, onTabChange, mode, style, }: HostTa
 /**
  * Paseo Plugin Helper — UI control adapters (`paseo-plugin-helper/ui`).
  *
- * Thin, host-delegating replacements for the frozen `client/` controls
+ * Thin, host-delegating control adapters
  * (Button, Toggle, Select, TextInput, …). Same contract as the rest of ui/:
  * host theme colors only, no scroll ownership, no design-system machinery.
  * Text inputs prefer the host-injected `TextInput` (modal keyboard
@@ -442,7 +441,7 @@ declare function HostSearchInput({ value, onChangeText, placeholder, onClear, he
 /**
  * Paseo Plugin Helper — UI text & misc adapters (`paseo-plugin-helper/ui`).
  *
- * Thin, host-delegating replacements for the frozen `client/` text components
+ * Thin, host-delegating text adapters
  * (CodeBlock, CommandBox, TruncatedText, …). Same contract as the rest of ui/:
  * host theme colors only, no scroll ownership, no design-system machinery.
  */
@@ -578,7 +577,7 @@ declare function HostAttentionBeacon({ children, mode, tone, color, active, styl
 /**
  * Paseo Plugin Helper — UI data adapters (`paseo-plugin-helper/ui`).
  *
- * Thin, host-delegating replacements for the frozen `client/` data components
+ * Thin, host-delegating data adapters
  * (DataTable). Same contract: host theme colors only, no scroll ownership, no
  * design-system machinery.
  */
@@ -603,4 +602,83 @@ interface HostDataTableProps<T> {
  */
 declare function HostDataTable<T>({ data, columns, keyExtractor, emptyState, style, }: HostDataTableProps<T>): React__default.JSX.Element | null;
 
-export { type HostAboutLink, HostAboutSection, type HostAboutSectionProps, HostActionBar, type HostActionBarProps, HostAttentionBeacon, type HostAttentionBeaconMode, type HostAttentionBeaconProps, type HostAttentionBeaconTone, HostBadge, type HostBadgeProps, type HostBadgeSize, type HostBadgeStyle, HostButton, type HostButtonProps, type HostButtonSize, type HostButtonVariant, HostCard, HostCardHeader, type HostCardHeaderProps, type HostCardProps, HostCodeBlock, type HostCodeBlockProps, HostCollapsible, type HostCollapsibleProps, HostCommandBox, type HostCommandBoxProps, HostCopyButton, type HostCopyButtonProps, type HostCopyButtonSize, type HostCopyButtonVariant, type HostDataColumn, HostDataTable, type HostDataTableProps, HostEmptyState, type HostEmptyStateProps, HostFormRow, type HostFormRowProps, HostGrid, type HostGridProps, HostHighlightedText, type HostHighlightedTextProps, HostInlineButton, type HostInlineButtonProps, HostInteractiveRow, type HostInteractiveRowProps, HostKeyValue, type HostKeyValueProps, type HostKeyValueTruncateMode, HostMetricGauge, type HostMetricGaugeProps, HostModalContent, HostModalSection, HostProgressBar, type HostProgressBarProps, HostResponsive, type HostResponsiveLayout, type HostResponsiveProps, HostRow, type HostRowProps, HostScroll, HostSearchInput, type HostSearchInputProps, HostSectionHeader, type HostSectionHeaderProps, HostSelect, type HostSelectOption, type HostSelectProps, HostStack, type HostStackProps, HostStatusDot, type HostStatusDotProps, type HostSurfaceVariant, type HostTabItem, HostTabs, type HostTabsProps, HostTextInput, type HostTextInputProps, HostToggle, type HostToggleProps, type HostTruncateMode, HostTruncatedText, type HostTruncatedTextProps, type SpacingValue, formatCommandLine, resolveHostSurface, resolveSpacing, spacing };
+interface HelperSettingsCardProps {
+    children: ReactNode;
+    testID?: string;
+}
+interface HelperSettingsSectionProps {
+    title: string;
+    info?: ReactNode;
+    trailing?: ReactNode;
+    children: ReactNode;
+    testID?: string;
+}
+interface HelperSettingsRowBaseProps {
+    label: string;
+    hint?: string;
+    error?: string | null;
+    children?: ReactNode;
+    testID?: string;
+}
+interface HelperSettingsSwitchProps extends HelperSettingsRowBaseProps {
+    value: boolean;
+    onValueChange(value: boolean): void;
+    disabled?: boolean;
+}
+interface HelperSettingsSelectProps<Value extends string = string> extends HelperSettingsRowBaseProps {
+    value: Value;
+    options: readonly {
+        label: string;
+        value: Value;
+    }[];
+    onValueChange(value: Value): void;
+    disabled?: boolean;
+}
+interface HelperSettingsInputProps extends HelperSettingsRowBaseProps {
+    initialValue?: string;
+    onChangeText(text: string): void;
+    placeholder?: string;
+    disabled?: boolean;
+    secureTextEntry?: boolean;
+}
+type HelperSettingsSelectComponent = <Value extends string = string>(props: HelperSettingsSelectProps<Value>) => ReactNode;
+interface HelperSettingsUiBundle {
+    SettingsCard: ComponentType<HelperSettingsCardProps>;
+    SettingsSection: ComponentType<HelperSettingsSectionProps>;
+    SettingsSwitch: ComponentType<HelperSettingsSwitchProps>;
+    SettingsSelect: HelperSettingsSelectComponent;
+    SettingsInput: ComponentType<HelperSettingsInputProps>;
+}
+interface HelperSettingsScreenContribution {
+    id: string;
+    title: string;
+    icon: string;
+    Component: ComponentType<HostSurfaceProps>;
+}
+interface HelperSettingsScreenRegistrar {
+    addSettingsScreen(contribution: HelperSettingsScreenContribution): PluginCleanup;
+}
+type HelperSettingsFieldKind = "boolean" | "enum" | "string" | "number";
+interface HelperSettingsField {
+    key: string;
+    kind: HelperSettingsFieldKind;
+    label: string;
+    description?: string;
+    options?: string[];
+}
+interface HelperSettingsFieldOverrides {
+    labels?: Record<string, string>;
+    descriptions?: Record<string, string>;
+}
+declare function contractSchemaToFields(schema: unknown, overrides?: HelperSettingsFieldOverrides): HelperSettingsField[];
+interface RegisterHelperSettingsScreenOptions {
+    ui: HelperSettingsUiBundle;
+    id?: string;
+    title?: string;
+    icon?: string;
+    labels?: Record<string, string>;
+    descriptions?: Record<string, string>;
+}
+declare function registerHelperSettingsScreen<TSettings extends Record<string, any>>(client: HelperSettingsScreenRegistrar, contract: SettingsContract<TSettings>, options: RegisterHelperSettingsScreenOptions): PluginCleanup;
+
+export { type HelperSettingsCardProps, type HelperSettingsField, type HelperSettingsFieldKind, type HelperSettingsFieldOverrides, type HelperSettingsInputProps, type HelperSettingsRowBaseProps, type HelperSettingsScreenContribution, type HelperSettingsScreenRegistrar, type HelperSettingsSectionProps, type HelperSettingsSelectComponent, type HelperSettingsSelectProps, type HelperSettingsSwitchProps, type HelperSettingsUiBundle, type HostAboutLink, HostAboutSection, type HostAboutSectionProps, HostActionBar, type HostActionBarProps, HostAttentionBeacon, type HostAttentionBeaconMode, type HostAttentionBeaconProps, type HostAttentionBeaconTone, HostBadge, type HostBadgeProps, type HostBadgeSize, type HostBadgeStyle, HostButton, type HostButtonProps, type HostButtonSize, type HostButtonVariant, HostCard, HostCardHeader, type HostCardHeaderProps, type HostCardProps, HostCodeBlock, type HostCodeBlockProps, HostCollapsible, type HostCollapsibleProps, HostCommandBox, type HostCommandBoxProps, HostCopyButton, type HostCopyButtonProps, type HostCopyButtonSize, type HostCopyButtonVariant, type HostDataColumn, HostDataTable, type HostDataTableProps, HostEmptyState, type HostEmptyStateProps, HostFormRow, type HostFormRowProps, HostGrid, type HostGridProps, HostHighlightedText, type HostHighlightedTextProps, HostInlineButton, type HostInlineButtonProps, HostInteractiveRow, type HostInteractiveRowProps, HostKeyValue, type HostKeyValueProps, type HostKeyValueTruncateMode, HostMetricGauge, type HostMetricGaugeProps, HostModalContent, HostModalSection, HostProgressBar, type HostProgressBarProps, HostResponsive, type HostResponsiveLayout, type HostResponsiveProps, HostRow, type HostRowProps, HostScroll, HostSearchInput, type HostSearchInputProps, HostSectionHeader, type HostSectionHeaderProps, HostSelect, type HostSelectOption, type HostSelectProps, HostStack, type HostStackProps, HostStatusDot, type HostStatusDotProps, type HostSurfaceVariant, type HostTabItem, HostTabs, type HostTabsProps, HostTextInput, type HostTextInputProps, HostToggle, type HostToggleProps, type HostTruncateMode, HostTruncatedText, type HostTruncatedTextProps, type RegisterHelperSettingsScreenOptions, type SpacingValue, contractSchemaToFields, formatCommandLine, registerHelperSettingsScreen, resolveHostSurface, resolveSpacing, spacing };

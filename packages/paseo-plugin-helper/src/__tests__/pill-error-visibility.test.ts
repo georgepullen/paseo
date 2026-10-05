@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { initClientHelpers, type ComposerPillRegistrar } from "../client/host.js";
-import { registerComposerPill } from "../client/pill.js";
+import { initClientHelpers, type ComposerPillRegistrar } from "../core/host.js";
+import { registerComposerPill } from "../lifecycle/pill.js";
 
 function installHostStubs() {
   initClientHelpers({

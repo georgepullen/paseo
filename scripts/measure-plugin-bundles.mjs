@@ -56,10 +56,12 @@ const SERVER_EXTERNAL = [...SDK_SPECIFIERS, "zod"];
 
 const HELPER_ENTRY = {
   index: "src/index.ts",
-  "client/index": "src/client/index.ts",
   "server/index": "src/server/index.ts",
   "mcp/index": "src/mcp/index.ts",
   "shared/index": "src/shared/index.ts",
+  "core/index": "src/core/index.ts",
+  "lifecycle/index": "src/lifecycle/index.ts",
+  "ui/index": "src/ui/index.ts",
   "testing/index": "src/testing/index.ts",
   cli: "src/cli/index.ts",
 };
@@ -171,7 +173,7 @@ function helperSubstitution(helperDist) {
 
 function packageAlias(helperDist) {
   const alias = {};
-  for (const key of ["", "/client", "/server", "/shared", "/mcp", "/testing"]) {
+  for (const key of ["", "/server", "/shared", "/mcp", "/core", "/lifecycle", "/ui", "/testing"]) {
     alias[`paseo-plugin-helper${key}`] = path.join(helperDist, key === "" ? "index.js" : `${key.slice(1)}/index.js`);
   }
   return alias;

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
 import { Pressable, Text } from "react-native";
-import { initClientHelpers } from "../client/host.js";
+import { initClientHelpers } from "../core/host.js";
 import { HostCopyButton } from "../ui/controls.js";
 import { HostThemeProvider } from "../ui/theme.js";
 import { alpha } from "../ui/color.js";

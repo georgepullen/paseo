@@ -3,8 +3,8 @@ import {
   clipboardTierOrder,
   copyToClipboard,
   type ClipboardEnvironment,
-} from "../client/utils/clipboard.js";
-import { initClientHelpers } from "../client/host.js";
+} from "../lifecycle/clipboard.js";
+import { initClientHelpers } from "../core/host.js";
 
 const fourFieldHost = {
   Icon: (() => null) as any,

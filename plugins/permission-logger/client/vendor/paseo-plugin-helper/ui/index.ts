@@ -16,11 +16,9 @@
  *   (`@getpaseo/plugin/client/ui`), injected by the plugin — never
  *   re-implemented here.
  *
- * This is the only UI the package ships going forward. The legacy bespoke
- * components (`ModalBody`, `ModalContent`, `Card`, `Button`, …) remain
- * available from `paseo-plugin-helper/client` for compatibility but are
- * frozen: no new features, and the CLI audit flags new `maxContentWidth` /
- * `scrollable={false}` uses with pointers here.
+ * This is the only UI the package ships: the legacy bespoke kit was removed
+ * in #938, and the CLI audit flags new `maxContentWidth` / `scrollable={false}`
+ * uses with pointers here.
  *
  * Module map:
  * - `ui/theme.tsx` — `HostThemeProvider` / `useHostTheme` (host colors only)

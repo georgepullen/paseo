@@ -5,8 +5,8 @@ import {
   initClientHelpers,
   getClientHost,
   isClientHostInitialized,
-} from "../client/host.js";
-import { registerComposerPill } from "../client/pill.js";
+} from "../core/host.js";
+import { registerComposerPill } from "../lifecycle/pill.js";
 import { defineContract } from "../shared/rpc.js";
 import { z } from "zod";
 

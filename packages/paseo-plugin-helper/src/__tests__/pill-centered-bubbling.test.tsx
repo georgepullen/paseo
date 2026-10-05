@@ -2,8 +2,8 @@ import React from "react";
 import { describe, expect, it, vi } from "vitest";
 import TestRenderer, { act } from "react-test-renderer";
 import { Text, TextInput, View } from "react-native";
-import { initClientHelpers, type ComposerPillRegistrar } from "../client/host.js";
-import { registerComposerPill } from "../client/pill.js";
+import { initClientHelpers, type ComposerPillRegistrar } from "../core/host.js";
+import { registerComposerPill } from "../lifecycle/pill.js";
 
 const theme: any = {
   colors: {

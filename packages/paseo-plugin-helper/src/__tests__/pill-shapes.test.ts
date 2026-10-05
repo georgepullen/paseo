@@ -1,8 +1,8 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
-import { initClientHelpers, type ComposerPillRegistrar } from "../client/host.js";
-import { registerComposerPill } from "../client/pill.js";
+import { initClientHelpers, type ComposerPillRegistrar } from "../core/host.js";
+import { registerComposerPill } from "../lifecycle/pill.js";
 
 const iconCalls: Array<{ name: string; size?: number; color?: string }> = [];
 
