@@ -7,16 +7,16 @@ import {
   Card,
   CodeBlock,
   FormRow,
+  HostScroll,
   KeyValue,
   KeyValueGroup,
-  ModalBody,
   SectionHeader,
   Stack,
   StatusDot,
   TextInput,
   Toggle,
-  usePluginTheme,
-} from "paseo-plugin-helper/client";
+  useDemoTheme,
+} from "./host-ui.js";
 import { registerSidebarSurface, triggerHaptic, type SidebarSurfaceRegistrar } from "paseo-plugin-helper/lifecycle";
 import { useRpcQuery, useRpcMutation } from "paseo-plugin-helper/core";
 import {
@@ -57,12 +57,12 @@ function handleSource(snapshot: ServerSettingsSnapshot | undefined): string {
 }
 
 export function ServerSettingsDemoSurface(_props: PluginSurfaceProps) {
-  const { colors, typography } = usePluginTheme();
+  const { colors, typography } = useDemoTheme();
   const [label, setLabel] = useState<string>("");
 
   // Snapshot reflects what the DAEMON observed on the handle; each poll issues a
   // fresh handle.read() server-side (see handleGetServerSettingsSnapshot).
-  const { data, isLoading, refetch, error } = useRpcQuery(
+  const { data, refetch, error } = useRpcQuery(
     demoSettingsSnapshotContract,
     {},
     { refetchInterval: 2000 },
@@ -104,13 +104,7 @@ export function ServerSettingsDemoSurface(_props: PluginSurfaceProps) {
   const controlsDisabled = !handleAvailable || isSaving || isResetting || !values;
 
   return (
-    <ModalBody
-      headerMode="pinned"
-      refreshing={isLoading}
-      onRefresh={() => {
-        void refetch();
-      }}
-    >
+    <HostScroll>
       <Stack gap={12}>
         <Card variant="elevated">
           <Card.Header
@@ -327,7 +321,7 @@ const state = await settings.read();
           />
         </Card>
       </Stack>
-    </ModalBody>
+    </HostScroll>
   );
 }
 

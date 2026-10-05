@@ -6,43 +6,34 @@ import { Icon, Modal, useToast, ScrollView, FlatList, TextInput as HostTextInput
 
 initClientHelpers({ Icon, Modal, useRpc, useToast, copyText, ScrollView, FlatList, TextInput: HostTextInput });
 import {
-  PluginThemeProvider,
+  AboutSection,
   ActionBar,
-  Card,
+  AttentionBeacon,
   Badge,
-  StatusDot,
   Button,
+  Card,
+  CodeBlock,
+  Collapsible,
+  DataTable,
+  EmptyState,
+  FormRow,
   KeyValue,
   KeyValueGroup,
   MetricGauge,
   ProgressBar,
-  DataTable,
-  Tabs,
   SearchInput,
-  EmptyState,
-  CodeBlock,
-  Toggle,
-  FormRow,
-  TextInput,
-  AboutSection,
-  AttentionBeacon,
-  Collapsible,
   SectionHeader,
-  usePluginTheme,
-  useResponsive,
-  inputRecipe,
-  cardRecipe,
-  buttonRecipe,
-  tabStripRecipe,
-  tabItemRecipe,
-  badgeRecipe,
-  type VisualFlair,
+  StatusDot,
+  Tabs,
+  TextInput,
+  Toggle,
+  useDemoTheme,
   type AttentionBeaconMode,
   type AttentionBeaconTone,
-} from "paseo-plugin-helper/client";
+} from "./host-ui.js";
 import { registerComposerPill, triggerHaptic, type RenderModalProps } from "paseo-plugin-helper/lifecycle";
 import { useAutoRefreshQuery, useRpcMutation, usePluginSettings, initClientHelpers, type ComposerPillRegistrar } from "paseo-plugin-helper/core";
-import { formatBytes, formatUptime } from "paseo-plugin-helper/shared";
+import { formatUptime } from "paseo-plugin-helper/shared";
 import {
   getDemoDataRpc,
   triggerDemoActionRpc,
@@ -58,17 +49,15 @@ import { PLUGIN_VERSION } from "../shared/version.js";
 
 const EMPTY_PARAMS = {};
 
-function DemoModal({ close, workspaceId }: RenderModalProps) {
-  const { colors, theme, layout, typography, touchTargetMin } = usePluginTheme();
-  const { isCompact } = useResponsive();
+function DemoModal({ close, workspaceId, layout }: RenderModalProps) {
+  const { colors, typography, touchTargetMin } = useDemoTheme();
+  const isCompact = layout.compact;
   const toast = useToast();
   const [activeTab, setActiveTab] = useState<string>("gauges");
   const [navigationOpen, setNavigationOpen] = useState<boolean>(false);
 
   const showcaseTabs = [
     { id: "gauges", label: "Gauges & Hardware", shortLabel: "Gauges" },
-    { id: "recipes", label: "Headless Style Recipes", shortLabel: "Recipes" },
-    { id: "flair", label: "Visual Flair Studio", shortLabel: "Flair" },
     { id: "data", label: "Data Table", shortLabel: "Data" },
     { id: "controls", label: "Interactive Controls", shortLabel: "Controls" },
     { id: "attention", label: "Attention & Beacons", shortLabel: "Beacon" },
@@ -78,9 +67,6 @@ function DemoModal({ close, workspaceId }: RenderModalProps) {
     { id: "about", label: "About Plugin", shortLabel: "About" },
   ];
   const [searchQuery, setSearchQuery] = useState<string>("");
-  const [recipeInputText, setRecipeInputText] = useState<string>("Interacting here does not dismiss the modal");
-  const [recipeSubTab, setRecipeSubTab] = useState<string>("active");
-  const [recipeButtonClicks, setRecipeButtonClicks] = useState<number>(0);
   const [liveStream, setLiveStream] = useState<boolean>(true);
   const [actionFeedback, setActionFeedback] = useState<string | null>(null);
   const [attentionOn, setAttentionOn] = useState<boolean>(true);
@@ -186,27 +172,8 @@ function DemoModal({ close, workspaceId }: RenderModalProps) {
       item.category.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  const activeFlair: Partial<VisualFlair> = {
-    radius: settings.flairRadius,
-    density: settings.flairDensity,
-    surfaceStyle: settings.flairSurface,
-    borderWidth: settings.flairBorderWidth,
-    headingTransform: settings.flairUppercase ? "uppercase" : "none",
-    accentColor: settings.flairAccentColor,
-  };
-
   return (
-    <PluginThemeProvider
-      theme={{
-        ...theme,
-        colors: {
-          ...theme.colors,
-          accent: settings.flairAccentColor,
-        },
-      }}
-      layout={layout}
-      flair={activeFlair}
-    >
+    <>
       {/* Pill-embedded content (#219): the pill host already provides the one
           <Modal.Content> (modal paths) or no modal at all (0.8 popover), so
           this must stay a plain fluid section — a nested <Modal.Content>
@@ -368,301 +335,6 @@ function DemoModal({ close, workspaceId }: RenderModalProps) {
         </>
       )}
 
-      {/* TAB: HEADLESS STYLE RECIPES */}
-      {activeTab === "recipes" && (
-        <>
-          <Card variant="elevated">
-            <Card.Header
-              title="Pure Headless Style Recipes"
-              subtitle="Zero-overhead style objects driving raw React Native markup"
-            />
-            <Text style={{ color: colors.foregroundMuted, ...typography.caption, marginTop: 4 }}>
-              Pure style recipe functions (inputRecipe, cardRecipe, buttonRecipe, tabStripRecipe, tabItemRecipe, badgeRecipe) mapping Theme / PluginTheme tokens directly to standard React Native style objects.
-            </Text>
-          </Card>
-
-          {/* Raw View Card styled with cardRecipe */}
-          <View style={cardRecipe(theme, "elevated")}>
-            <View style={cardRecipe(theme).header}>
-              <Text style={cardRecipe(theme).headerTitle}>Raw View Card (cardRecipe)</Text>
-              <View style={badgeRecipe(theme, "accent")}>
-                <View style={badgeRecipe(theme, "accent").dot} />
-                <Text style={badgeRecipe(theme, "accent").text}>cardRecipe("elevated")</Text>
-              </View>
-            </View>
-            <Text style={{ color: colors.foregroundMuted, ...typography.bodySmall, marginBottom: 10 }}>
-              Plain View container styled with cardRecipe(theme, "elevated") without wrapping in Helper Card.
-            </Text>
-
-            {/* TextInput styled with inputRecipe */}
-            <View style={inputRecipe(theme).container}>
-              <Text style={inputRecipe(theme).label}>Input Style Recipe (inputRecipe)</Text>
-              <TextInput
-                style={inputRecipe(theme, { mono: true }).input}
-                value={recipeInputText}
-                onChangeText={setRecipeInputText}
-                placeholder="Type inside modal (verifying event isolation)..."
-              />
-              <Text style={inputRecipe(theme).hint}>
-                Typing or selecting text inside this input does not bubble to host modal trigger (#347).
-              </Text>
-            </View>
-
-            {/* Action Bar with buttons using buttonRecipe styles */}
-            <ActionBar align="flex-start" direction="row" style={{ marginTop: 12 }}>
-              <Button
-                label={`Primary Action (${recipeButtonClicks})`}
-                variant="primary"
-                size="sm"
-                onPress={() => {
-                  triggerHaptic("light");
-                  setRecipeButtonClicks((c) => c + 1);
-                }}
-              />
-              <Button
-                label="Secondary Reset"
-                variant="secondary"
-                size="sm"
-                onPress={() => {
-                  triggerHaptic("light");
-                  setRecipeButtonClicks(0);
-                }}
-              />
-              <Button
-                label="Danger Toast"
-                variant="danger"
-                size="sm"
-                onPress={() => {
-                  triggerHaptic("medium");
-                  toast.show("Action clicked from recipe showcase", { variant: "error" });
-                }}
-              />
-            </ActionBar>
-          </View>
-
-          {/* Raw Tab Strip styled with tabStripRecipe & tabItemRecipe */}
-          <View style={cardRecipe(theme, "flat")}>
-            <View style={cardRecipe(theme).header}>
-              <Text style={cardRecipe(theme).headerTitle}>Raw Tab Strip (tabStripRecipe)</Text>
-            </View>
-            <View style={tabStripRecipe(theme).frame}>
-              <View style={tabStripRecipe(theme).track}>
-                {(["all", "active", "archived"] as const).map((subTab) => {
-                  const isActive = recipeSubTab === subTab;
-                  const item = tabItemRecipe(theme, isActive);
-                  return (
-                    <Button
-                      key={subTab}
-                      label={subTab.charAt(0).toUpperCase() + subTab.slice(1)}
-                      style={item.container}
-                      textStyle={item.text}
-                      onPress={() => {
-                        triggerHaptic("light");
-                        setRecipeSubTab(subTab);
-                      }}
-                    />
-                  );
-                })}
-              </View>
-            </View>
-          </View>
-
-          {/* Raw Badges styled with badgeRecipe */}
-          <View style={cardRecipe(theme, "tinted")}>
-            <View style={cardRecipe(theme).header}>
-              <Text style={cardRecipe(theme).headerTitle}>Raw Badges (badgeRecipe)</Text>
-            </View>
-            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 6 }}>
-              {(["success", "warning", "danger", "accent", "neutral"] as const).map((variant) => (
-                <View key={variant} style={badgeRecipe(theme, variant).container}>
-                  <View style={badgeRecipe(theme, variant).dot} />
-                  <Text style={badgeRecipe(theme, variant).text}>{variant}</Text>
-                </View>
-              ))}
-              <View style={badgeRecipe(theme, { variant: "success", styleVariant: "solid" }).container}>
-                <Text style={badgeRecipe(theme, { variant: "success", styleVariant: "solid" }).text}>
-                  solid
-                </Text>
-              </View>
-              <View style={badgeRecipe(theme, { variant: "accent", styleVariant: "outline" }).container}>
-                <Text style={badgeRecipe(theme, { variant: "accent", styleVariant: "outline" }).text}>
-                  outline
-                </Text>
-              </View>
-            </View>
-          </View>
-        </>
-      )}
-
-      {/* TAB: VISUAL FLAIR STUDIO */}
-      {activeTab === "flair" && (
-        <>
-          <Card variant={settings.flairSurface}>
-            <Card.Header
-              title="Visual Flair Studio"
-              subtitle="Live theme & flair customizer backed by atomic settings"
-            />
-
-            {/* Corner Radius Selector */}
-            <FormRow
-              label="Corner Radius"
-              description={`Active preset: "${settings.flairRadius}"`}
-            >
-              <ActionBar align="flex-start" direction="row" style={{ marginTop: 0 }}>
-                {(["sharp", "rounded", "pill"] as const).map((r) => (
-                  <Button
-                    key={r}
-                    size="sm"
-                    label={r.toUpperCase()}
-                    variant={settings.flairRadius === r ? "primary" : "ghost"}
-                    onPress={() => {
-                      triggerHaptic("light");
-                      updateSettings({ flairRadius: r });
-                    }}
-                  />
-                ))}
-              </ActionBar>
-            </FormRow>
-
-            {/* Information Density Selector */}
-            <FormRow
-              label="Layout Density"
-              description={`Active density: "${settings.flairDensity}"`}
-            >
-              <ActionBar align="flex-start" direction="row" style={{ marginTop: 0 }}>
-                {(["compact", "comfortable", "spacious"] as const).map((d) => (
-                  <Button
-                    key={d}
-                    size="sm"
-                    label={d.charAt(0).toUpperCase() + d.slice(1)}
-                    variant={settings.flairDensity === d ? "primary" : "ghost"}
-                    onPress={() => {
-                      triggerHaptic("light");
-                      updateSettings({ flairDensity: d });
-                    }}
-                  />
-                ))}
-              </ActionBar>
-            </FormRow>
-
-            {/* Surface Styling Selector */}
-            <FormRow
-              label="Surface Treatment"
-              description={`Active surface: "${settings.flairSurface}"`}
-            >
-              <ActionBar align="flex-start" direction="row" style={{ marginTop: 0 }}>
-                {(["flat", "tinted", "elevated"] as const).map((s) => (
-                  <Button
-                    key={s}
-                    size="sm"
-                    label={s.charAt(0).toUpperCase() + s.slice(1)}
-                    variant={settings.flairSurface === s ? "primary" : "ghost"}
-                    onPress={() => {
-                      triggerHaptic("light");
-                      updateSettings({ flairSurface: s });
-                    }}
-                  />
-                ))}
-              </ActionBar>
-            </FormRow>
-
-            {/* Border Width Stepper / Selector */}
-            <FormRow
-              label="Border Width"
-              description={`Container outline stroke: ${settings.flairBorderWidth}px`}
-            >
-              <ActionBar align="flex-start" direction="row" style={{ marginTop: 0 }}>
-                {[0, 1, 2, 3].map((w) => (
-                  <Button
-                    key={w}
-                    size="sm"
-                    label={`${w}px`}
-                    variant={settings.flairBorderWidth === w ? "primary" : "ghost"}
-                    onPress={() => {
-                      triggerHaptic("light");
-                      updateSettings({ flairBorderWidth: w });
-                    }}
-                  />
-                ))}
-              </ActionBar>
-            </FormRow>
-
-            {/* Brand Accent Color Swatches */}
-            <FormRow
-              label="Brand Accent Color"
-              description={`Current accent: ${settings.flairAccentColor}`}
-            >
-              <ActionBar align="flex-start" direction="row" style={{ marginTop: 0 }}>
-                {[
-                  { label: "Indigo", color: "#6366f1" },
-                  { label: "Emerald", color: "#10b981" },
-                  { label: "Violet", color: "#8b5cf6" },
-                  { label: "Amber", color: "#f59e0b" },
-                  { label: "Rose", color: "#f43f5e" },
-                  { label: "Cyan", color: "#06b6d4" },
-                ].map((swatch) => {
-                  const isSelected = settings.flairAccentColor.toLowerCase() === swatch.color.toLowerCase();
-                  return (
-                    <Button
-                      key={swatch.color}
-                      size="sm"
-                      accessibilityLabel={`Select ${swatch.label} accent color`}
-                      onPress={() => {
-                        triggerHaptic("light");
-                        updateSettings({ flairAccentColor: swatch.color });
-                      }}
-                      style={{
-                        backgroundColor: swatch.color,
-                        borderColor: isSelected ? colors.foreground : "transparent",
-                        borderWidth: 2,
-                        borderRadius: 9999,
-                        width: touchTargetMin,
-                        height: touchTargetMin,
-                        minWidth: touchTargetMin,
-                        minHeight: touchTargetMin,
-                        paddingHorizontal: 0,
-                        paddingVertical: 0,
-                      }}
-                    />
-                  );
-                })}
-              </ActionBar>
-            </FormRow>
-
-            {/* Uppercase Header Switch */}
-            <FormRow
-              label="Uppercase Section Headings"
-              description="Transform component section titles to uppercase"
-            >
-              <Toggle
-                value={settings.flairUppercase}
-                onValueChange={(val) => {
-                  triggerHaptic("light");
-                  updateSettings({ flairUppercase: val });
-                }}
-              />
-            </FormRow>
-
-            {/* Live Component Preview Card */}
-            <Card variant={settings.flairSurface} style={{ marginTop: 8 }}>
-              <Card.Header
-                title="Live Component Preview"
-                subtitle="Reflects your active Visual Flair in real-time"
-              />
-              <KeyValueGroup columns={isCompact ? 1 : 2}>
-                <KeyValue label="Status" value="Production Ready" />
-                <KeyValue label="Radius Mode" value={settings.flairRadius} />
-              </KeyValueGroup>
-              <ActionBar align="flex-start">
-                <Button label="Primary Button" variant="primary" size="sm" />
-                <Button label="Secondary" variant="secondary" size="sm" />
-                <Badge label="Adaptive Badge" variant="accent" />
-              </ActionBar>
-            </Card>
-          </Card>
-        </>
-      )}
-
       {/* TAB 2: DATA TABLE */}
       {activeTab === "data" && (
         <Card variant="elevated">
@@ -791,7 +463,7 @@ function DemoModal({ close, workspaceId }: RenderModalProps) {
             <Card.Header title="Sample Code Block" />
             <CodeBlock
               language="typescript"
-              code={`import { createPluginPill, MetricGauge } from "paseo-plugin-helper/client";\n\n// Renders circular ring\n<MetricGauge value={75} label="CPU Load" />`}
+              code={`import { Icon, Modal, ScrollView } from "@getpaseo/plugin/client/react-native";\n\n// The demo composes its own MetricGauge over the host theme\n<MetricGauge value={75} label="CPU Load" />`}
               copyable
             />
           </Card>
@@ -1301,7 +973,7 @@ function DemoModal({ close, workspaceId }: RenderModalProps) {
         </Text>
       </View>
       </View>
-    </PluginThemeProvider>
+    </>
   );
 }
 
@@ -1312,11 +984,6 @@ export function contributeClient(client: ComposerPillRegistrar) {
     modalTitle: "Showcase Demo",
     modalIcon: "Sliders",
     hostScroll: true,
-    flair: {
-      radius: "rounded",
-      density: "comfortable",
-      accentColor: "#6366f1",
-    },
     renderModal: (props) => <DemoModal {...props} />,
   });
   return () => {

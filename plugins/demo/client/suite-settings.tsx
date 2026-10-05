@@ -8,13 +8,13 @@ import {
   KeyValue,
   KeyValueGroup,
   Toggle,
-  usePluginTheme,
-} from "paseo-plugin-helper/client";
+  useDemoTheme,
+} from "./host-ui.js";
 import { triggerHaptic } from "paseo-plugin-helper/lifecycle";
 import { useSuiteSettings } from "paseo-plugin-helper/core";
 
 export function SharedSuiteCard() {
-  const { colors, typography } = usePluginTheme();
+  const { colors, typography } = useDemoTheme();
   const { settings, updateSettings, resetSettings, isUpdating } = useSuiteSettings({
     pollIntervalMs: 2000,
   });

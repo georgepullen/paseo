@@ -2,8 +2,10 @@
 
 This plugin is a demo for showcasing some of the capabilities of
 [`paseo-plugin-helper`](https://github.com/xpufx/paseo-plugin-helper) ([npm](https://www.npmjs.com/package/paseo-plugin-helper)),
-namely the UI design system, lifecycle primitives, and daemon utilities for
-building Paseo plugins. It does not necessarily do anything useful to end
+namely lifecycle primitives and daemon utilities for building Paseo plugins,
+plus a plugin-local `client/host-ui.tsx` composition built on the host SDK
+(`@getpaseo/plugin/client/react-native`) rather than the removed helper design
+system. It does not necessarily do anything useful to end
 users. Install this one to see every pattern running live; depend on the
 helper to build your own.
 
@@ -12,12 +14,6 @@ Built on [paseo-plugin-helper](https://github.com/xpufx/paseo/tree/main/packages
 The helper package and demo are together a demonstration of an idea: that
 the plugin ecosystem can benefit from a common library, not necessarily this
 common library, rather than solving the same issues again and again.
-
-<p align="center">
-  <a href="https://raw.githubusercontent.com/xpufx/paseo/main/plugins/demo/screenshots/helper-visual-flair.png">
-    <img src="https://raw.githubusercontent.com/xpufx/paseo/main/plugins/demo/screenshots/helper-visual-flair.png" alt="Visual Flair Studio" />
-  </a>
-</p>
 
 | System Metrics | About Plugin |
 | :---: | :---: |
@@ -32,7 +28,6 @@ common library, rather than solving the same issues again and again.
 | Tab | Pattern it teaches |
 | :--- | :--- |
 | Gauges & Hardware | `MetricGauge`, `ProgressBar`, `KeyValueGroup`, auto-refresh polling with selectable cadence |
-| Visual Flair Studio | Live theme/flair customizer (`radius`, `density`, `surface`, `borderWidth`, `accentColor`) backed by atomic settings |
 | Data Table | `DataTable` + `SearchInput` over live daemon items, with `EmptyState` |
 | Interactive Controls | `Button`, `Toggle`, `TextInput`, `FormRow`, haptics + toast feedback |
 | Attention & Beacons | `AttentionBeacon` modes/tones plus workspace beacon RPCs (set/blink/clear) and agent identity inspection |
@@ -45,8 +40,8 @@ common library, rather than solving the same issues again and again.
 
 The modal navbar renders two ways, switchable in the Settings tab (`navigationStyle`):
 
-- **Tabs**: sliding single-row `<Tabs mode="scroll">`, pinned above the scroller (`headerMode="pinned"`).
-- **Dropdown** (default): in-flow dropdown trigger + menu inside the `ModalBody` header, scrolling with the content (`headerMode="scroll"`, see `resolveDemoHeaderMode` in `shared/demo.ts`). The open menu resets on navigation-style switches and on pull-to-refresh.
+- **Tabs**: a wrapping single-row `<Tabs>` strip at the top of the body.
+- **Dropdown** (default): an in-flow `<Collapsible>` trigger plus menu rows. The open menu resets on navigation-style switches.
 
 ## RPC contracts (`shared/demo.ts`)
 
@@ -54,7 +49,7 @@ The modal navbar renders two ways, switchable in the Settings tab (`navigationSt
 - `helper-demo.trigger-action`: background action demo with success/error toast + haptic feedback.
 - `helper-demo.agent-identity`: active agent identity/session for self-inspection.
 - `helper-demo.beacon-set` / `beacon-blink` / `beacon-clear`: workspace status beacon control.
-- `helper-demo.settings`: persisted settings (`showCpuUsage`, `accentPillLabel`, `pollingRate`, `navigationStyle`, `highCpuThreshold`, flair fields).
+- `helper-demo.settings`: persisted settings (`showCpuUsage`, `accentPillLabel`, `pollingRate`, `navigationStyle`, `highCpuThreshold`).
 
 ## TEMP: upstream server settings handle (issue #62)
 
