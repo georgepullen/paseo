@@ -11,7 +11,20 @@ import type {
   UppidiSetRoleModelOutput,
 } from "../shared/contracts.js";
 
-const execFileAsync = promisify(execFile);
+const defaultExecFileAsync = promisify(execFile);
+let execFileAsync = defaultExecFileAsync;
+
+export type ExecFileAsyncFn = (
+  file: string,
+  args: readonly string[],
+  options?: unknown
+) => Promise<{ stdout: string; stderr?: string }>;
+
+// Test seam: the fleet suite stubs the CLI through this instead of shelling
+// out to the real `paseo` binary (mirrors the agents.ts seam).
+export function setExecFileAsyncForTest(fn: ExecFileAsyncFn | null): void {
+  execFileAsync = (fn || defaultExecFileAsync) as typeof execFileAsync;
+}
 
 const CONFIG_PATH = join(
   homedir(),
@@ -86,33 +99,95 @@ export function saveRoleModels(roles: Record<string, RoleModelConfig>): void {
 export async function discoverAvailableModels(
   context?: PluginHandlerContext
 ): Promise<string[]> {
-  const models = new Set<string>([
-    "antigravity-acp/gemini-3.8-flash-low",
-    "antigravity-acp/gemini-3.8-flash-medium",
-    "codex/gpt-5.6-terra",
-    "codex/gpt-5.6-luna",
-    "uppidi/opencode-go/deepseek-v4.1-flash",
-    "opencode/ollama-cloud/deepseek-v4.1-flash",
-    "uppidi/opencode-go/muse-spark-1.3-contributor",
-    "opencode/opencode/muse-spark-1.3-contributor-free",
-  ]);
+  void context;
+  const models = new Set<string>();
 
+  let providers: string[];
   try {
-    const { stdout } = await execFileAsync("paseo", ["provider", "list", "--json"], {
-      timeout: 5000,
-      encoding: "utf-8",
-    });
-    const parsed = JSON.parse(stdout);
-    if (Array.isArray(parsed)) {
-      for (const p of parsed) {
-        if (typeof p?.id === "string") models.add(p.id);
-      }
-    }
+    providers = await listEnabledProviders();
   } catch {
-    // Provider list fallback
+    return [];
+  }
+  if (providers.length === 0) {
+    return [];
   }
 
-  return Array.from(models);
+  const perProvider = await Promise.all(
+    providers.map(async (provider) => {
+      try {
+        const { stdout } = await execFileAsync(
+          "paseo",
+          ["provider", "models", provider, "--json"],
+          {
+            timeout: 5000,
+            encoding: "utf-8",
+          }
+        );
+        const parsed: unknown = JSON.parse(stdout);
+        if (!Array.isArray(parsed)) {
+          return;
+        }
+        for (const m of parsed) {
+          const id =
+            typeof (m as { id?: unknown })?.id === "string"
+              ? ((m as { id: string }).id as string)
+              : null;
+          if (id && id.length > 0) {
+            models.add(`${provider}/${id}`);
+          }
+        }
+      } catch {
+        // A single provider failing (e.g. disabled after listing) must not
+        // fail the whole discovery pass.
+      }
+    })
+  );
+  void perProvider;
+
+  return Array.from(models).sort();
+}
+
+async function listEnabledProviders(): Promise<string[]> {
+  const { stdout } = await execFileAsync("paseo", ["provider", "ls", "--json"], {
+    timeout: 5000,
+    encoding: "utf-8",
+  });
+  const parsed: unknown = JSON.parse(stdout);
+  const entries = Array.isArray(parsed)
+    ? parsed
+    : Array.isArray((parsed as { providers?: unknown })?.providers)
+      ? (parsed as { providers: unknown[] }).providers
+      : [];
+  const providers: string[] = [];
+  for (const p of entries) {
+    const rec = p as {
+      provider?: unknown;
+      id?: unknown;
+      enabled?: unknown;
+      status?: unknown;
+    };
+    const name =
+      typeof rec?.provider === "string"
+        ? rec.provider
+        : typeof rec?.id === "string"
+          ? rec.id
+          : null;
+    if (!name) {
+      continue;
+    }
+    // `paseo provider ls --json` reports string fields such as
+    // enabled: "Enabled"|"Disabled" and status: "available"|"unavailable".
+    // Skip explicitly disabled/unavailable providers; attempt everything
+    // else (including "error" status) and let per-provider failures fall out
+    // naturally.
+    const enabled = typeof rec?.enabled === "string" ? rec.enabled.toLowerCase() : "";
+    const status = typeof rec?.status === "string" ? rec.status.toLowerCase() : "";
+    if (enabled === "disabled" || status === "unavailable") {
+      continue;
+    }
+    providers.push(name);
+  }
+  return providers;
 }
 
 export async function handleUppidiRoleModels(

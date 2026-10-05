@@ -31,7 +31,7 @@ import {
   getPersistedStateDir,
 } from "./agents.js";
 
-import { DEFAULT_ROLE_MODELS, handleUppidiRoleModels, handleUppidiSetRoleModel } from "./role-models.js";
+import { DEFAULT_ROLE_MODELS, handleUppidiRoleModels, handleUppidiSetRoleModel, setExecFileAsyncForTest as setRoleModelsExecFileAsyncForTest } from "./role-models.js";
 // The runners module owns its own exec seam, distinct from the agents one
 // above; stubbing only the agents seam would leave the runner path shelling
 // out to the real container runtime of whichever host runs the suite.
@@ -361,13 +361,70 @@ describe("fleet and agents classification", () => {
 });
 
 describe("role models configuration", () => {
-  it("provides default role mappings", async () => {
-    const res = await handleUppidiRoleModels({}, {} as any);
-    assert.equal(res.ok, true);
-    assert.ok(res.roles["front-desk"]);
-    assert.ok(res.roles["orchestrator"]);
-    assert.ok(res.roles["coding-agent"]);
-    assert.ok(res.availableModels.length > 0);
+  it("provides default role mappings with dynamically discovered models (#892)", async () => {
+    // Discovery must drive the list: stub `paseo provider ls` and
+    // `paseo provider models <provider>` and assert the handler aggregates
+    // fully-qualified `<provider>/<model.id>` ids.
+    setRoleModelsExecFileAsyncForTest(async (cmd: string, args: readonly string[]) => {
+      if (cmd === "paseo" && args[0] === "provider" && args[1] === "ls") {
+        return {
+          stdout: JSON.stringify([
+            { provider: "opencode", status: "available", enabled: "Enabled" },
+            { provider: "antigravity", status: "available", enabled: "Enabled" },
+            { provider: "codex", status: "unavailable", enabled: "Disabled" },
+          ]),
+        };
+      }
+      if (cmd === "paseo" && args[0] === "provider" && args[1] === "models") {
+        if (args[2] === "opencode") {
+          return {
+            stdout: JSON.stringify([
+              { id: "opencode/muse-spark-1.3-contributor-free" },
+              { id: "opencode-go/deepseek-v4.1-flash" },
+            ]),
+          };
+        }
+        if (args[2] === "antigravity") {
+          return { stdout: JSON.stringify([{ id: "gemini-3.8-flash-low" }]) };
+        }
+        return { stdout: "[]" };
+      }
+      return { stdout: "[]" };
+    });
+
+    try {
+      const res = await handleUppidiRoleModels({}, {} as any);
+      assert.equal(res.ok, true);
+      assert.ok(res.roles["front-desk"]);
+      assert.ok(res.roles["orchestrator"]);
+      assert.ok(res.roles["coding-agent"]);
+      assert.deepEqual(res.availableModels, [
+        "antigravity/gemini-3.8-flash-low",
+        "opencode/opencode-go/deepseek-v4.1-flash",
+        "opencode/opencode/muse-spark-1.3-contributor-free",
+      ]);
+      // Bare provider ids must never leak into the picker list.
+      assert.ok(!res.availableModels.includes("opencode"));
+      assert.ok(!res.availableModels.includes("antigravity"));
+      // Disabled/unavailable providers are skipped entirely.
+      assert.ok(!res.availableModels.some((m) => m.startsWith("codex/")));
+    } finally {
+      setRoleModelsExecFileAsyncForTest(null);
+    }
+  });
+
+  it("returns an empty model list instead of hardcoded seeds when discovery fails (#892)", async () => {
+    setRoleModelsExecFileAsyncForTest(async () => {
+      throw new Error("paseo not found");
+    });
+
+    try {
+      const res = await handleUppidiRoleModels({}, {} as any);
+      assert.equal(res.ok, true);
+      assert.deepEqual(res.availableModels, []);
+    } finally {
+      setRoleModelsExecFileAsyncForTest(null);
+    }
   });
 
   it("updates role model mapping", async () => {
