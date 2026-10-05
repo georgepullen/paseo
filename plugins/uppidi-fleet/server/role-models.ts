@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, isAbsolute, join } from "node:path";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
@@ -26,10 +26,18 @@ export function setExecFileAsyncForTest(fn: ExecFileAsyncFn | null): void {
   execFileAsync = (fn || defaultExecFileAsync) as typeof execFileAsync;
 }
 
-const CONFIG_PATH = join(
-  homedir(),
-  process.env.UPPIDI_FLEET_ROLE_MODELS_CONFIG || "uppidi-fleet-role-models.json"
-);
+const CONFIG_BASENAME = "uppidi-fleet-role-models.json";
+
+// Resolved per call rather than at import time so an override set after the
+// module loads still takes effect, and so an absolute override is honored
+// instead of being re-rooted under the operator's home (#945).
+function getRoleModelsConfigPath(): string {
+  const override = process.env.UPPIDI_FLEET_ROLE_MODELS_CONFIG?.trim();
+  if (override) {
+    return isAbsolute(override) ? override : join(homedir(), override);
+  }
+  return join(homedir(), CONFIG_BASENAME);
+}
 
 export const DEFAULT_ROLE_MODELS: Record<string, RoleModelConfig> = {
   "front-desk": {
@@ -71,8 +79,9 @@ export const DEFAULT_ROLE_MODELS: Record<string, RoleModelConfig> = {
 
 export function loadSavedRoleModels(): Record<string, RoleModelConfig> {
   try {
-    if (existsSync(CONFIG_PATH)) {
-      const raw = readFileSync(CONFIG_PATH, "utf-8");
+    const configPath = getRoleModelsConfigPath();
+    if (existsSync(configPath)) {
+      const raw = readFileSync(configPath, "utf-8");
       const parsed = JSON.parse(raw);
       if (typeof parsed === "object" && parsed !== null) {
         return { ...DEFAULT_ROLE_MODELS, ...parsed };
@@ -86,11 +95,12 @@ export function loadSavedRoleModels(): Record<string, RoleModelConfig> {
 
 export function saveRoleModels(roles: Record<string, RoleModelConfig>): void {
   try {
-    const dir = join(homedir(), ".paseo");
+    const configPath = getRoleModelsConfigPath();
+    const dir = dirname(configPath);
     if (!existsSync(dir)) {
       mkdirSync(dir, { recursive: true });
     }
-    writeFileSync(CONFIG_PATH, JSON.stringify(roles, null, 2), "utf-8");
+    writeFileSync(configPath, JSON.stringify(roles, null, 2), "utf-8");
   } catch {
     // Ignore write errors if permission denied
   }

@@ -1,4 +1,4 @@
-import { describe, it } from "node:test";
+import { describe, it, before, after, beforeEach } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -10,6 +10,34 @@ if (!process.env.NODE_ENV) {
 if (!process.env.HOOK_STATE_DIR) {
   process.env.HOOK_STATE_DIR = path.join(os.tmpdir(), `paseo-fleet-test-${process.pid}`);
 }
+
+// Role-model persistence resolves through `UPPIDI_FLEET_ROLE_MODELS_CONFIG`.
+// Point it at a throwaway file so the suite never reads or writes the
+// operator's live role-model config (#945).
+let roleModelsConfigDir = "";
+let roleModelsConfigPath = "";
+const originalRoleModelsConfig = process.env.UPPIDI_FLEET_ROLE_MODELS_CONFIG;
+
+before(() => {
+  roleModelsConfigDir = fs.mkdtempSync(
+    path.join(os.tmpdir(), `paseo-fleet-role-models-${process.pid}-`)
+  );
+  roleModelsConfigPath = path.join(roleModelsConfigDir, "uppidi-fleet-role-models.json");
+  process.env.UPPIDI_FLEET_ROLE_MODELS_CONFIG = roleModelsConfigPath;
+});
+
+beforeEach(() => {
+  fs.rmSync(roleModelsConfigPath, { force: true });
+});
+
+after(() => {
+  if (originalRoleModelsConfig === undefined) {
+    delete process.env.UPPIDI_FLEET_ROLE_MODELS_CONFIG;
+  } else {
+    process.env.UPPIDI_FLEET_ROLE_MODELS_CONFIG = originalRoleModelsConfig;
+  }
+  fs.rmSync(roleModelsConfigDir, { recursive: true, force: true });
+});
 
 import {
   categorizeAgent,
@@ -439,6 +467,10 @@ describe("role models configuration", () => {
       {} as any
     );
     assert.equal(updateRes.ok, true);
+    assert.ok(
+      fs.existsSync(roleModelsConfigPath),
+      "role-model writes must land in the isolated test config, not the live home file (#945)"
+    );
   });
 });
 
