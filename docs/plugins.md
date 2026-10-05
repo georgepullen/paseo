@@ -278,10 +278,11 @@ Agents with MCP access should call one of these. Neither handler parses `setting
 ```sh
 curl -fsS "http://<hook-host>:<port>/info"     # host, port, url, frontDeskAgentId, uptime, isListening
 curl -fsS "http://<hook-host>:<port>/health"   # → {"ok":true,"status":"healthy",...,"port":8099}
-curl -fsS "http://<hook-host>:<port>/status"   # front desk record, paused queues, totals
+curl -fsS "http://<hook-host>:<port>/status"   # front desk record, paused queues, totals, enrolledRepos
+curl -fsS "http://<hook-host>:<port>/enrolled"  # canonical enrolled repository keys
 ```
 
-`GET /info` is the JSON equivalent of the `hook.info` RPC (same in-process resolver). `GET /health` remains the liveness probe; `GET /status` gives the fuller queue overview.
+`GET /info` is the JSON equivalent of the `hook.info` RPC (same in-process resolver). `GET /health` remains the liveness probe; `GET /status` gives the fuller queue overview, including the canonical `enrolledRepos` list. `GET /enrolled` returns that same list directly (`GET /repos/enrolled` is an alias).
 
 If `/health` times out on your first guess, do not retry against loopback blindly — **ask the operator** which interface the router binds, or call `uppidi-fleet.hook.info` and use the returned `url`.
 

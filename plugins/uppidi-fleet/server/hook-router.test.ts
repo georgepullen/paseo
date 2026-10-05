@@ -577,6 +577,7 @@ describe("hook-router HTTP server endpoints", () => {
     assert.equal(body.ok, true);
     assert.equal(body.service, "uppidi-fleet-hook-router");
     assert.equal(typeof body.totalQueued, "number");
+    assert.ok(Array.isArray(body.enrolledRepos), "Status must include enrolledRepos (#911)");
   });
 
   it("responds to GET /queues", async () => {
@@ -585,6 +586,39 @@ describe("hook-router HTTP server endpoints", () => {
     const body = await res.json();
     assert.equal(body.ok, true);
     assert.ok(Array.isArray(body.queues));
+  });
+
+  it("responds to GET /enrolled with canonical enrolled repository keys (#911)", async () => {
+    router.enrollRepo("xpufx-org/enrolled-http-repo");
+
+    const res = await fetch(`http://127.0.0.1:${router.port}/enrolled`);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.count, body.enrolledRepos.length);
+    assert.ok(
+      body.enrolledRepos.includes("forge.mrs.uppidi.com/xpufx-org/enrolled-http-repo"),
+      `Expected canonical key, got ${JSON.stringify(body.enrolledRepos)}`,
+    );
+    assert.ok(!body.enrolledRepos.includes("xpufx-org/enrolled-http-repo"), "Non-canonical keys must not leak");
+  });
+
+  it("aliases GET /repos/enrolled to the enrolled repository list (#911)", async () => {
+    router.enrollRepo("xpufx-org/enrolled-alias-repo");
+
+    const res = await fetch(`http://127.0.0.1:${router.port}/repos/enrolled`);
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.ok(body.enrolledRepos.includes("forge.mrs.uppidi.com/xpufx-org/enrolled-alias-repo"));
+  });
+
+  it("includes canonical enrolledRepos in GET /status (#911)", async () => {
+    router.enrollRepo("xpufx-org/status-enrolled-repo");
+
+    const res = await fetch(`http://127.0.0.1:${router.port}/status`);
+    const body = await res.json();
+    assert.ok(body.enrolledRepos.includes("forge.mrs.uppidi.com/xpufx-org/status-enrolled-repo"));
+    assert.ok(body.repoCount >= body.enrolledRepos.length);
   });
 
   it("responds to GET /info with host/port/url/frontdesk/uptime (#545)", async () => {

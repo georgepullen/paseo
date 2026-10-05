@@ -3175,6 +3175,17 @@ export class HookRouter {
     return Array.from(set);
   }
 
+  /** Enrolled repository keys in canonical `host/owner/repo` form (#911). */
+  public getCanonicalEnrolledRepos(): string[] {
+    const keys = new Set<string>();
+    for (const enrolled of this.getEnrolledRepos()) {
+      const trimmed = enrolled?.trim();
+      if (!trimmed) continue;
+      keys.add(canonicalRepoKey(trimmed) ?? trimmed);
+    }
+    return Array.from(keys);
+  }
+
   /** True when `repo` is enrolled in the fleet under any known key form (#889). */
   public isEnrolledRepo(repo: string): boolean {
     const candidate = String(repo ?? "").trim();
@@ -6315,8 +6326,8 @@ export class HookRouter {
     const frontDesk = this.readFrontDesk();
     const totalQueued = this.getTotalQueued();
 
-    const allKeys = new Set<string>();
-    for (const r of this.getEnrolledRepos()) allKeys.add(r);
+    const enrolledRepos = this.getCanonicalEnrolledRepos();
+    const allKeys = new Set<string>(enrolledRepos);
     for (const k of this.queues.keys()) allKeys.add(k);
 
     return {
@@ -6324,6 +6335,7 @@ export class HookRouter {
       service: "uppidi-fleet-hook-router",
       version: 1,
       uptime: this.getUptime(),
+      enrolledRepos,
       frontDesk: frontDesk
         ? {
             version: frontDesk.version ?? 1,
@@ -6566,6 +6578,12 @@ export class HookRouter {
 
       if (req.method === "GET" && pathname === "/status") {
         this.sendJson(res, 200, this.getStatusOverview());
+        return;
+      }
+
+      if (req.method === "GET" && (pathname === "/enrolled" || pathname === "/repos/enrolled")) {
+        const enrolledRepos = this.getCanonicalEnrolledRepos();
+        this.sendJson(res, 200, { ok: true, count: enrolledRepos.length, enrolledRepos });
         return;
       }
 
