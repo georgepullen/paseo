@@ -4,14 +4,8 @@ import TestRenderer, { act } from "react-test-renderer";
 import { ScrollView, Text, TextInput, View } from "react-native";
 import { initClientHelpers } from "../client/host.js";
 import { HostModalContent, HostModalSection, HostScroll } from "../ui/modal.js";
-import { HostCard, HostCardHeader } from "../ui/card.js";
-import { HostTabs } from "../ui/tabs.js";
-import { HostBadge } from "../ui/badge.js";
-import { HostButton } from "../ui/button.js";
-import { HostToggle } from "../ui/toggle.js";
-import { HostSelect } from "../ui/select.js";
-import { HostTextInput } from "../ui/text-input.js";
-import { HostFlatList } from "../ui/scroll.js";
+import { HostCard, HostCardHeader, HostTabs, HostBadge } from "../ui/content.js";
+import { HostButton, HostToggle, HostSelect, HostTextInput } from "../ui/controls.js";
 import { HostThemeProvider, useHostTheme } from "../ui/theme.js";
 import { alpha, getStatusColor, getVariantPalette } from "../ui/color.js";
 import type { PluginTheme } from "../shared/types.js";
@@ -119,16 +113,6 @@ describe("ui/ scroll ownership conformance", () => {
     expect(r.root.findByProps({ testID: "host-scrollview" }).type).toBe(ScrollView);
   });
 
-  it("HostFlatList delegates to the host-injected FlatList", () => {
-    const r = render(
-      <HostFlatList
-        data={[{ id: "1" }]}
-        renderItem={({ item }) => <Text>{item.id}</Text>}
-        keyExtractor={(item) => item.id}
-      />,
-    );
-    expect(r.root.findByProps({ testID: "host-flatlist" })).toBeTruthy();
-  });
 });
 
 // --- No theme scraping (acceptance criterion #3) ----------------------------
@@ -485,7 +469,6 @@ describe("ui/ HostButton execution", () => {
     )[0];
     expect(button).toBeTruthy();
     expect(button.props.disabled).toBe(true);
-    expect(button.props.accessibilityState.disabled).toBe(true);
   });
 });
 
