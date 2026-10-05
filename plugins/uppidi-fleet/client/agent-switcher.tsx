@@ -6,7 +6,7 @@ import type {
   PluginSurfaceProps,
 } from "@getpaseo/plugin/client";
 
-import { Icon, ScrollView } from "@getpaseo/plugin/client/react-native";
+import { Icon } from "@getpaseo/plugin/client/react-native";
 import {
   StatusDot,
   InteractiveRow,
@@ -218,9 +218,11 @@ export function AgentSwitcherDropdown({
 }
 
 export function AgentSwitcherPopover(
-  props: PluginButtonContentProps & { navigation?: PluginSurfaceProps["navigation"] },
+  props: PluginButtonContentProps & {
+    navigation?: PluginSurfaceProps["navigation"];
+    client?: { paseo?: { agents?: { openAgent?: (input: { agentId: string }) => void } }; navigation?: PluginSurfaceProps["navigation"] };
+  },
 ) {
-
   const { data: agentsData } = useRpcQuery(
     uppidiAgentsContract,
     {},
@@ -232,6 +234,15 @@ export function AgentSwitcherPopover(
   const handleSelectAgent = (agentId: string) => {
     if (props.navigation?.openAgent) {
       props.navigation.openAgent({ agentId });
+      return;
+    }
+    if (props.client?.navigation?.openAgent) {
+      props.client.navigation.openAgent({ agentId });
+      return;
+    }
+    if (props.client?.paseo?.agents?.openAgent) {
+      props.client.paseo.agents.openAgent({ agentId });
+      return;
     }
   };
 
@@ -247,24 +258,24 @@ export function AgentSwitcherPopover(
   return (
     <Responsive
       desktop={
-        <ScrollView style={{ maxHeight: 420, width: 320 }}>
+        <View style={{ width: 320 }}>
           {content}
-        </ScrollView>
+        </View>
       }
       compact={
-        <ScrollView style={{ width: "100%", maxHeight: 480 }}>
+        <View style={{ width: "100%" }}>
           {content}
-        </ScrollView>
+        </View>
       }
       mobile={
-        <ScrollView style={{ width: "100%", maxHeight: 520 }}>
+        <View style={{ width: "100%" }}>
           {content}
-        </ScrollView>
+        </View>
       }
     >
-      <ScrollView style={{ maxHeight: 420, width: 320 }}>
+      <View style={{ width: 320 }}>
         {content}
-      </ScrollView>
+      </View>
     </Responsive>
   );
 }

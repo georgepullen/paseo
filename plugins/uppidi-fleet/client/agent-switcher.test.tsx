@@ -291,6 +291,87 @@ describe("Issue #893: Desktop Agent Switcher Dropdown", () => {
       });
       assert.equal(openedAgents[1], "orch-pop-id");
     });
+
+    it("keeps exactly one scroll owner (no nested ScrollView inside popover content)", async () => {
+      const harness = await getFleetHarness();
+      const { AgentSwitcherPopover } = await import("./agent-switcher.js");
+
+      harness.payloads["uppidi-fleet.agents"] = {
+        ok: true,
+        frontDesk: [makeAgent({ id: "fd-1", category: "front-desk" })],
+        orchestrators: [makeAgent({ id: "orch-1", category: "orchestrator", project: "xpufx-org/paseo" })],
+        workers: [],
+        tree: [],
+        enrolledRepos: ["xpufx-org/paseo"],
+        mutedRepos: [],
+        repoQueuedHooks: {},
+      };
+
+      const { root } = await harness.renderWithRoot(
+        React.createElement(AgentSwitcherPopover, {
+          close: () => {},
+          workspaceId: "ws-test",
+          context: "workspace",
+        } as any),
+      );
+
+      await harness.TestRenderer.act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 60));
+      });
+
+      // The popover relies on the host popover container as single scroll owner
+      // and must NOT render an inner ScrollView.
+      const scrollViews = root.findAll((n: any) => n.type === "mock-scrollview" || n.type?.name === "ScrollView");
+      assert.equal(
+        scrollViews.length,
+        0,
+        "AgentSwitcherPopover must not contain a nested ScrollView; host popover owns scroll",
+      );
+    });
+
+    it("falls back to client.navigation or client.paseo.agents navigation when props.navigation is absent", async () => {
+      const harness = await getFleetHarness();
+      const { AgentSwitcherPopover } = await import("./agent-switcher.js");
+
+      harness.payloads["uppidi-fleet.agents"] = {
+        ok: true,
+        frontDesk: [makeAgent({ id: "fd-fallback-id", category: "front-desk" })],
+        orchestrators: [],
+        workers: [],
+        tree: [],
+        enrolledRepos: [],
+        mutedRepos: [],
+        repoQueuedHooks: {},
+      };
+
+      const openedViaClientNav: string[] = [];
+      const clientWithNav = {
+        navigation: {
+          openAgent: (input: { agentId: string }) => openedViaClientNav.push(input.agentId),
+        },
+      };
+
+      const { root } = await harness.renderWithRoot(
+        React.createElement(AgentSwitcherPopover, {
+          close: () => {},
+          client: clientWithNav,
+          workspaceId: "ws-test",
+          context: "workspace",
+        } as any),
+      );
+
+      await harness.TestRenderer.act(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 60));
+      });
+
+      const fdRow = root.find((n: any) => n.props?.testID === "agent-row-fd-fallback-id");
+      assert.ok(fdRow, "must find Front Desk row");
+
+      await harness.TestRenderer.act(async () => {
+        fdRow.props.onPress();
+      });
+      assert.equal(openedViaClientNav[0], "fd-fallback-id");
+    });
   });
 });
 

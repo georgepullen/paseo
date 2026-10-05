@@ -41,7 +41,7 @@ export default function contribute(client: PluginClientContext) {
           icon: AgentSwitcherHeaderIcon,
           behavior: {
             kind: "popover",
-            Content: AgentSwitcherPopover,
+            Content: (props) => <AgentSwitcherPopover {...props} client={client as any} />,
           },
         },
       });
