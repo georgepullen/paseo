@@ -161,10 +161,6 @@ export const McpToolsSettingsSchema = z.object({
   healthDigestRows: z.boolean().default(false),
   gatewayInject: z.boolean().default(true),
   gatewayUrl: z.string().default("http://127.0.0.1:37374/mcp"),
-  flairRadius: z.enum(["sharp", "rounded", "pill"]).default("rounded"),
-  flairDensity: z.enum(["compact", "comfortable", "spacious"]).default("comfortable"),
-  flairSurface: z.enum(["flat", "tinted", "elevated"]).default("flat"),
-  flairAccentColor: z.string().default("#6366f1"),
 });
 
 export type McpToolsSettings = z.infer<typeof McpToolsSettingsSchema>;
@@ -172,7 +168,7 @@ export type McpToolsSettings = z.infer<typeof McpToolsSettingsSchema>;
 export const mcpToolsSettingsContract = defineSettingsContract({
   name: "mcp-tools.settings",
   schema: McpToolsSettingsSchema,
-  description: "mcp-tools cache, polling and visual flair settings",
+  description: "mcp-tools cache and polling settings",
 });
 
 // Short source label rendered on everything this plugin puts into

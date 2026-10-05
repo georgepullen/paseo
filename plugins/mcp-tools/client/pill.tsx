@@ -1,31 +1,31 @@
 import { useRpc } from "@getpaseo/plugin/client";
-import { Icon, useToast, ScrollView, FlatList, TextInput as HostTextInput, copyText } from "@getpaseo/plugin/client/react-native";
-
-initClientHelpers({ Icon, Modal, useRpc, useToast, copyText, ScrollView, FlatList, TextInput: HostTextInput });
+import { Icon, Modal, useToast } from "@getpaseo/plugin/client/react-native";
 import { useMemo, useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
-import { Modal } from "@getpaseo/plugin/client/react-native";
 import {
-  AboutSection,
-  ActionBar,
-  Badge,
-  Button,
-  Card,
-  CodeBlock,
-  EmptyState,
-  FormRow,
-  ModalBody,
-  PluginThemeProvider,
-  SearchInput,
-  StatusDot,
-  Tabs,
-  TextInput,
-  Toggle,
-  usePluginTheme,
-  type TabItem,
-} from "paseo-plugin-helper/client";
-import { copyToClipboard, registerComposerPill, triggerHaptic, type RenderModalProps } from "paseo-plugin-helper/lifecycle";
+  registerComposerPill,
+  triggerHaptic,
+  useHostTheme,
+  type RenderModalProps,
+} from "paseo-plugin-helper/lifecycle";
 import { initClientHelpers, usePluginSettings, type ComposerPillRegistrar } from "paseo-plugin-helper/core";
+import {
+  HostAboutSection,
+  HostActionBar,
+  HostBadge,
+  HostButton,
+  HostCard,
+  HostCodeBlock,
+  HostEmptyState,
+  HostFormRow,
+  HostModalSection,
+  HostSearchInput,
+  HostStatusDot,
+  HostTabs,
+  HostTextInput,
+  HostToggle,
+  type HostTabItem,
+} from "./host-ui";
 import { useMcpHealthQuery, useMcpQuery } from "./mcp-query";
 import {
   callMcpTool,
@@ -36,6 +36,8 @@ import {
   type ToolInfo,
 } from "../shared/mcp";
 import { PLUGIN_VERSION } from "../shared/version";
+
+initClientHelpers({ Icon, Modal, useRpc, useToast });
 
 type HealthInfo = {
   serverId: string;
@@ -49,15 +51,15 @@ type HealthInfo = {
   error: string | null;
 };
 
-const TABS: TabItem[] = [
+const TABS: HostTabItem[] = [
   { id: "servers", label: "Servers", shortLabel: "Servers", icon: "Plug" },
   { id: "diagnostics", label: "Diagnostics", shortLabel: "Diag", icon: "Activity" },
   { id: "settings", label: "Settings", shortLabel: "Settings", icon: "Sliders" },
   { id: "about", label: "About", shortLabel: "About", icon: "Info" },
 ];
 
-function McpModalContent({ agentId, close, theme, layout }: RenderModalProps) {
-  const { colors } = usePluginTheme();
+function McpModalContent({ agentId, close }: RenderModalProps) {
+  const { colors } = useHostTheme();
   const toast = useToast();
   const [activeTab, setActiveTab] = useState("servers");
   const { settings, updateSettings, resetSettings, isUpdating } =
@@ -102,9 +104,6 @@ function McpModalContent({ agentId, close, theme, layout }: RenderModalProps) {
     discoveredServerCount: number;
     error: string | null;
   } | null>(null);
-
-  const copy = (value: string, label = "Value") =>
-    copyToClipboard(value, { toast, toastMessage: label });
 
   const healthMap = useMemo(() => {
     const map = new Map<string, HealthInfo>();
@@ -283,7 +282,7 @@ function McpModalContent({ agentId, close, theme, layout }: RenderModalProps) {
       if (activeTool) {
         return (
           <View key={`runner:${selected}:${activeTool.name}`} style={{ gap: 12 }}>
-            <Button
+            <HostButton
               label="← Back to server"
               variant="ghost"
               size="sm"
@@ -291,17 +290,17 @@ function McpModalContent({ agentId, close, theme, layout }: RenderModalProps) {
                 resetExecutionState();
               }}
             />
-            <Card>
-              <Card.Header title={activeTool.name} icon="Play" />
+            <HostCard>
+              <HostCard.Header title={activeTool.name} icon="Play" />
               {activeTool.description ? (
                 <Text style={{ color: colors.foregroundMuted, fontSize: 12, lineHeight: 16 }}>
                   {activeTool.description}
                 </Text>
               ) : null}
-            </Card>
+            </HostCard>
 
-            <Card>
-              <Card.Header
+            <HostCard>
+              <HostCard.Header
                 title={`Parameters (${activeTool.inputSchema?.properties ? Object.keys(activeTool.inputSchema.properties).length : 0})`}
               />
               {activeTool.inputSchema?.properties && Object.keys(activeTool.inputSchema.properties).length > 0 ? (
@@ -314,7 +313,7 @@ function McpModalContent({ agentId, close, theme, layout }: RenderModalProps) {
                       typeRaw === "object" || typeRaw === "array" ||
                       (Array.isArray(typeRaw) && (typeRaw.includes("object") || typeRaw.includes("array")));
                     return (
-                      <TextInput
+                      <HostTextInput
                         key={paramName}
                         label={`${paramName}${isRequired ? " *" : ""}${typeLabel ? ` (${typeLabel})` : ""}`}
                         helperText={prop.description}
@@ -335,7 +334,7 @@ function McpModalContent({ agentId, close, theme, layout }: RenderModalProps) {
                   This tool takes no parameters.
                 </Text>
               )}
-              <Button
+              <HostButton
                 label={toolExecuting ? "Executing tool…" : "Execute Tool"}
                 variant="primary"
                 icon="Play"
@@ -343,25 +342,25 @@ function McpModalContent({ agentId, close, theme, layout }: RenderModalProps) {
                 disabled={toolExecuting}
                 onPress={() => void handleExecuteTool()}
               />
-            </Card>
+            </HostCard>
 
             {toolResult ? (
-              <Card>
-                <Card.Header
+              <HostCard>
+                <HostCard.Header
                   title={toolResult.isError ? "✕ Execution Failed" : "✓ Result"}
                   badge={
-                    <Badge
+                    <HostBadge
                       label={toolResult.isError ? "error" : "ok"}
                       variant={toolResult.isError ? "danger" : "success"}
                     />
                   }
                 />
-                <CodeBlock
+                <HostCodeBlock
                   language="json"
                   code={toolResult.content.map((c) => c.text ?? JSON.stringify(c, null, 2)).join("\n\n")}
                   copyable
                 />
-              </Card>
+              </HostCard>
             ) : null}
           </View>
         );
@@ -374,15 +373,15 @@ function McpModalContent({ agentId, close, theme, layout }: RenderModalProps) {
         );
       }
       if (!detail) {
-        return <EmptyState icon="Plug" title="No detail" description="Could not load server detail." />;
+        return <HostEmptyState icon="Plug" title="No detail" description="Could not load server detail." />;
       }
       return (
         <View style={{ gap: 12 }}>
-          <Button label="← Back to list" variant="ghost" size="sm" onPress={backToList} />
-          <Card>
-            <Card.Header
+          <HostButton label="← Back to list" variant="ghost" size="sm" onPress={backToList} />
+          <HostCard>
+            <HostCard.Header
               title={server?.name ?? selected}
-              badge={server ? <Badge label={server.transport} variant="neutral" /> : undefined}
+              badge={server ? <HostBadge label={server.transport} variant="neutral" /> : undefined}
             />
             <Text style={{ color: colors.foregroundMuted, fontSize: 11, fontFamily: "monospace" }}>
               {detail.path}
@@ -394,7 +393,7 @@ function McpModalContent({ agentId, close, theme, layout }: RenderModalProps) {
               </View>
             ) : health ? (
               <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
-                <StatusDot variant={statusVariant(health.status)} />
+                <HostStatusDot variant={statusVariant(health.status)} />
                 <Text style={{ color: colors.foreground, fontSize: 13, fontWeight: "700" }}>
                   {health.latencyMs}ms · {health.toolCount ?? "?"} tools
                 </Text>
@@ -403,29 +402,29 @@ function McpModalContent({ agentId, close, theme, layout }: RenderModalProps) {
                 ) : null}
               </View>
             ) : null}
-          </Card>
+          </HostCard>
 
           {health?.instructions ? (
-            <Card>
-              <Card.Header title="Instructions" />
+            <HostCard>
+              <HostCard.Header title="Instructions" />
               <Text selectable style={{ color: colors.foreground, fontSize: 12, lineHeight: 18 }}>
                 {health.instructions}
               </Text>
-            </Card>
+            </HostCard>
           ) : null}
 
           {health?.tools && health.tools.length > 0 ? (
-            <Card>
-              <Card.Header
+            <HostCard>
+              <HostCard.Header
                 title={`Available Tools (${filteredTools.length}${filteredTools.length !== health.tools.length ? ` of ${health.tools.length}` : ""}) — tap to run`}
               />
-              <SearchInput
+              <HostSearchInput
                 value={toolSearch}
                 onChangeText={setToolSearch}
                 placeholder="Filter tools by name or description..."
               />
               {filteredTools.length === 0 ? (
-                <EmptyState
+                <HostEmptyState
                   icon="Search"
                   title="No tools match"
                   description={`Nothing matches "${toolSearch}"`}
@@ -435,7 +434,7 @@ function McpModalContent({ agentId, close, theme, layout }: RenderModalProps) {
                   {filteredTools.map((toolName) => {
                     const details = health?.toolDetails?.find((d) => d.name === toolName);
                     return (
-                      <Button
+                      <HostButton
                         key={toolName}
                         variant="ghost"
                         onPress={() => openToolRunner(toolName)}
@@ -468,18 +467,18 @@ function McpModalContent({ agentId, close, theme, layout }: RenderModalProps) {
                           <Icon name="Play" size={10} color={colors.accent} />
                           <Text style={{ color: colors.accent, fontSize: 11, fontWeight: "600" }}>Run</Text>
                         </View>
-                      </Button>
+                      </HostButton>
                     );
                   })}
                 </View>
               )}
-            </Card>
+            </HostCard>
           ) : null}
 
-          <Card>
-            <Card.Header title="Raw Config (redacted)" />
-            <CodeBlock language="json" code={detail.redacted} maxHeight={240} copyable />
-          </Card>
+          <HostCard>
+            <HostCard.Header title="Raw Config (redacted)" />
+            <HostCodeBlock language="json" code={detail.redacted} maxHeight={240} copyable />
+          </HostCard>
         </View>
       );
     }
@@ -493,8 +492,8 @@ function McpModalContent({ agentId, close, theme, layout }: RenderModalProps) {
             {` · ${PLUGIN_VERSION}`}
             {query.isFetching ? " • checking…" : ""}
           </Text>
-          <ActionBar align="flex-end">
-            <Button
+          <HostActionBar align="flex-end">
+            <HostButton
               label="Diagnose"
               variant="ghost"
               size="sm"
@@ -505,7 +504,7 @@ function McpModalContent({ agentId, close, theme, layout }: RenderModalProps) {
                 void runDiagnostics();
               }}
             />
-            <Button
+            <HostButton
               label="Refresh"
               variant="ghost"
               size="sm"
@@ -514,9 +513,9 @@ function McpModalContent({ agentId, close, theme, layout }: RenderModalProps) {
               disabled={query.isFetching}
               onPress={() => void query.refetch()}
             />
-          </ActionBar>
+          </HostActionBar>
         </View>
-        <SearchInput
+        <HostSearchInput
           value={search}
           onChangeText={setSearch}
           placeholder="Search servers & tools"
@@ -526,7 +525,7 @@ function McpModalContent({ agentId, close, theme, layout }: RenderModalProps) {
         ) : query.isError ? (
           <Text style={{ color: colors.statusDanger }}>{(query.error as Error).message}</Text>
         ) : servers.length === 0 ? (
-          <EmptyState
+          <HostEmptyState
             icon="Plug"
             title={term ? "No matches" : "No MCP servers found"}
             description={term ? `Nothing matches "${term}"` : "No MCP servers discovered for this agent session."}
@@ -541,7 +540,7 @@ function McpModalContent({ agentId, close, theme, layout }: RenderModalProps) {
                 {items.map((s) => {
                   const h = healthMap.get(s.id) ?? healthMap.get(s.name);
                   return (
-                    <Button
+                    <HostButton
                       key={s.id}
                       variant="ghost"
                       onPress={() => {
@@ -559,11 +558,11 @@ function McpModalContent({ agentId, close, theme, layout }: RenderModalProps) {
                     >
                       <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", gap: 6 }}>
                         <View style={{ flexDirection: "row", alignItems: "center", gap: 6, flex: 1, minWidth: 0 }}>
-                          <StatusDot variant={statusVariant(h?.status)} size="sm" />
+                          <HostStatusDot variant={statusVariant(h?.status)} size="sm" />
                           <Text numberOfLines={1} style={{ color: colors.foreground, fontWeight: "600", flexShrink: 1 }}>
                             {s.name}
                           </Text>
-                          <Badge label={s.transport} variant="neutral" />
+                          <HostBadge label={s.transport} variant="neutral" />
                           {s.hasSecrets ? <Icon name="KeyRound" size={12} color={colors.foregroundMuted} /> : null}
                         </View>
                         {h ? (
@@ -577,7 +576,7 @@ function McpModalContent({ agentId, close, theme, layout }: RenderModalProps) {
                       <Text style={{ color: colors.foregroundMuted, fontSize: 12, marginTop: 2 }} numberOfLines={2}>
                         {s.description || s.command || s.url || "—"}
                       </Text>
-                    </Button>
+                    </HostButton>
                   );
                 })}
               </View>
@@ -598,8 +597,8 @@ function McpModalContent({ agentId, close, theme, layout }: RenderModalProps) {
 
   const renderDiagnostics = () => (
     <View style={{ gap: 12 }}>
-      <ActionBar align="flex-end">
-        <Button
+      <HostActionBar align="flex-end">
+        <HostButton
           label="Re-run"
           variant="ghost"
           size="sm"
@@ -608,7 +607,7 @@ function McpModalContent({ agentId, close, theme, layout }: RenderModalProps) {
           disabled={diagnosticsLoading}
           onPress={() => void runDiagnostics()}
         />
-      </ActionBar>
+      </HostActionBar>
       {diagnosticsLoading ? (
         <View style={{ padding: 24, alignItems: "center", gap: 8 }}>
           <ActivityIndicator color={colors.accent} />
@@ -616,10 +615,10 @@ function McpModalContent({ agentId, close, theme, layout }: RenderModalProps) {
         </View>
       ) : diagnosticData ? (
         <View style={{ gap: 12 }}>
-          <Card>
-            <Card.Header
+          <HostCard>
+            <HostCard.Header
               title={`Probe Diagnostic Report (${PLUGIN_VERSION})`}
-              badge={<Badge label={`${diagnosticData.discoveredServerCount} servers`} variant="success" />}
+              badge={<HostBadge label={`${diagnosticData.discoveredServerCount} servers`} variant="success" />}
             />
             <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>
               Provider: {diagnosticData.provider}
@@ -633,24 +632,24 @@ function McpModalContent({ agentId, close, theme, layout }: RenderModalProps) {
                 Probe Error: {diagnosticData.error}
               </Text>
             ) : null}
-            <CodeBlock language="json" code={JSON.stringify(diagnosticData, null, 2)} maxHeight={200} copyable />
-          </Card>
+            <HostCodeBlock language="json" code={JSON.stringify(diagnosticData, null, 2)} maxHeight={200} copyable />
+          </HostCard>
 
           {diagnosticData.steps.map((step, idx) => (
-            <Card key={idx}>
-              <Card.Header
+            <HostCard key={idx}>
+              <HostCard.Header
                 title={step.target}
-                badge={<Badge label={step.status} variant={statusVariant(step.status === "found" ? "healthy" : step.status === "error" ? "down" : "unknown")} />}
+                badge={<HostBadge label={step.status} variant={statusVariant(step.status === "found" ? "healthy" : step.status === "error" ? "down" : "unknown")} />}
               />
               <Text style={{ color: colors.foregroundMuted, fontSize: 11, marginTop: 2 }}>{step.details}</Text>
               {step.contentPreview ? (
-                <CodeBlock language="json" code={step.contentPreview} maxHeight={160} copyable />
+                <HostCodeBlock language="json" code={step.contentPreview} maxHeight={160} copyable />
               ) : null}
-            </Card>
+            </HostCard>
           ))}
         </View>
       ) : (
-        <EmptyState
+        <HostEmptyState
           icon="Activity"
           title="No diagnostics yet"
           description="Run host diagnostics to inspect provider MCP probes."
@@ -662,21 +661,21 @@ function McpModalContent({ agentId, close, theme, layout }: RenderModalProps) {
 
   const renderSettings = () => (
     <View style={{ gap: 12 }}>
-      <Card>
-        <Card.Header title="Health Polling" subtitle="Background refresh rate for server health" />
-        <FormRow label="Timeline digest rows" description="Append a health digest row to the agent timeline after each check">
-          <Toggle
+      <HostCard>
+        <HostCard.Header title="Health Polling" subtitle="Background refresh rate for server health" />
+        <HostFormRow label="Timeline digest rows" description="Append a health digest row to the agent timeline after each check">
+          <HostToggle
             value={settings.healthDigestRows}
             onValueChange={(val) => {
               triggerHaptic("light");
               updateSettings({ healthDigestRows: val });
             }}
           />
-        </FormRow>
-        <FormRow label="Polling rate" description="Paused disables background health polling">
+        </HostFormRow>
+        <HostFormRow label="Polling rate" description="Paused disables background health polling">
           <View style={{ flexDirection: "row", gap: 6, flexWrap: "wrap" }}>
             {(["1s", "2s", "5s", "10s", "15s", "30s", "60s", "5m", "paused"] as const).map((r) => (
-              <Button
+              <HostButton
                 key={r}
                 label={r}
                 size="sm"
@@ -688,95 +687,35 @@ function McpModalContent({ agentId, close, theme, layout }: RenderModalProps) {
               />
             ))}
           </View>
-        </FormRow>
-      </Card>
+        </HostFormRow>
+      </HostCard>
 
-      <Card>
-        <Card.Header title="Gateway Injection" subtitle="Auto-register the gateway on agent.create" />
-        <FormRow label="Inject gateway" description="Add the gateway MCP server to every new agent">
-          <Toggle
+      <HostCard>
+        <HostCard.Header title="Gateway Injection" subtitle="Auto-register the gateway on agent.create" />
+        <HostFormRow label="Inject gateway" description="Add the gateway MCP server to every new agent">
+          <HostToggle
             value={settings.gatewayInject}
             onValueChange={(val) => {
               triggerHaptic("light");
               updateSettings({ gatewayInject: val });
             }}
           />
-        </FormRow>
-        <FormRow label="Gateway endpoint" description="HTTP URL injected into new agents">
-          <TextInput
+        </HostFormRow>
+        <HostFormRow label="Gateway endpoint" description="HTTP URL injected into new agents">
+          <HostTextInput
             value={settings.gatewayUrl}
             onChangeText={(text) => updateSettings({ gatewayUrl: text })}
             placeholder="http://127.0.0.1:37374/mcp"
             mono
           />
-        </FormRow>
-      </Card>
+        </HostFormRow>
+      </HostCard>
 
-      <Card>
-        <Card.Header title="Visual Flair" subtitle="Corner radius, density, surface and accent" />
-        <FormRow label="Corner radius" description={`Active preset: "${settings.flairRadius}"`}>
-          <View style={{ flexDirection: "row", gap: 6, flexWrap: "wrap" }}>
-            {(["sharp", "rounded", "pill"] as const).map((r) => (
-              <Button
-                key={r}
-                label={r.toUpperCase()}
-                size="sm"
-                variant={settings.flairRadius === r ? "primary" : "ghost"}
-                onPress={() => {
-                  triggerHaptic("light");
-                  updateSettings({ flairRadius: r });
-                }}
-              />
-            ))}
-          </View>
-        </FormRow>
-        <FormRow label="Layout density" description={`Active density: "${settings.flairDensity}"`}>
-          <View style={{ flexDirection: "row", gap: 6, flexWrap: "wrap" }}>
-            {(["compact", "comfortable", "spacious"] as const).map((d) => (
-              <Button
-                key={d}
-                label={d.charAt(0).toUpperCase() + d.slice(1)}
-                size="sm"
-                variant={settings.flairDensity === d ? "primary" : "ghost"}
-                onPress={() => {
-                  triggerHaptic("light");
-                  updateSettings({ flairDensity: d });
-                }}
-              />
-            ))}
-          </View>
-        </FormRow>
-        <FormRow label="Surface treatment" description={`Active surface: "${settings.flairSurface}"`}>
-          <View style={{ flexDirection: "row", gap: 6, flexWrap: "wrap" }}>
-            {(["flat", "tinted", "elevated"] as const).map((s) => (
-              <Button
-                key={s}
-                label={s.charAt(0).toUpperCase() + s.slice(1)}
-                size="sm"
-                variant={settings.flairSurface === s ? "primary" : "ghost"}
-                onPress={() => {
-                  triggerHaptic("light");
-                  updateSettings({ flairSurface: s });
-                }}
-              />
-            ))}
-          </View>
-        </FormRow>
-        <FormRow label="Brand accent color" description={`Current accent: ${settings.flairAccentColor}`}>
-          <TextInput
-            value={settings.flairAccentColor}
-            onChangeText={(text) => updateSettings({ flairAccentColor: text })}
-            placeholder="#6366f1"
-            mono
-          />
-        </FormRow>
-      </Card>
-
-      <ActionBar align="space-between">
+      <HostActionBar align="space-between">
         <Text style={{ fontSize: 11, color: colors.foregroundMuted }}>
           {isUpdating ? "Saving to disk..." : "Saved to settings.json atomically"}
         </Text>
-        <Button
+        <HostButton
           label="Reset Defaults"
           variant="secondary"
           size="sm"
@@ -785,23 +724,13 @@ function McpModalContent({ agentId, close, theme, layout }: RenderModalProps) {
             void resetSettings();
           }}
         />
-      </ActionBar>
+      </HostActionBar>
     </View>
   );
 
   return (
-    <PluginThemeProvider
-      theme={{ ...theme, colors: { ...theme.colors, accent: settings.flairAccentColor } }}
-      layout={layout}
-      flair={{
-        radius: settings.flairRadius,
-        density: settings.flairDensity,
-        surfaceStyle: settings.flairSurface,
-        accentColor: settings.flairAccentColor,
-      }}
-    >
-    <ModalBody refreshing={query.isFetching} onRefresh={() => void query.refetch()}>
-      <Tabs
+    <HostModalSection>
+      <HostTabs
         tabs={TABS}
         activeTab={activeTab}
         onTabChange={(tab) => {
@@ -814,7 +743,7 @@ function McpModalContent({ agentId, close, theme, layout }: RenderModalProps) {
       {activeTab === "diagnostics" ? renderDiagnostics() : null}
       {activeTab === "settings" ? renderSettings() : null}
       {activeTab === "about" ? (
-        <AboutSection
+        <HostAboutSection
           name="MCP Tools"
           description="Live MCP server inspector, health probes, diagnostics and tool runner for Paseo agents."
           version={PLUGIN_VERSION}
@@ -830,8 +759,8 @@ function McpModalContent({ agentId, close, theme, layout }: RenderModalProps) {
           ]}
         />
       ) : null}
-      <ActionBar align="flex-end">
-        <Button
+      <HostActionBar align="flex-end">
+        <HostButton
           label="Close"
           variant="ghost"
           onPress={() => {
@@ -839,14 +768,13 @@ function McpModalContent({ agentId, close, theme, layout }: RenderModalProps) {
             close();
           }}
         />
-      </ActionBar>
+      </HostActionBar>
       <View style={{ alignItems: "center", paddingVertical: 8 }}>
         <Text style={{ fontSize: 10, color: colors.foregroundMuted, opacity: 0.7 }}>
           {PLUGIN_ATTRIBUTION} {PLUGIN_VERSION}
         </Text>
       </View>
-    </ModalBody>
-    </PluginThemeProvider>
+    </HostModalSection>
   );
 }
 
@@ -857,11 +785,6 @@ export function contributeClient(client: ComposerPillRegistrar) {
     compactTitle: "MCP",
     modalTitle: "MCP Tools",
     icon: "Plug",
-    flair: {
-      radius: "rounded",
-      density: "comfortable",
-      accentColor: "#6366f1",
-    },
     renderModal: (props) => <McpModalContent {...props} />,
   });
 }
