@@ -6,19 +6,21 @@ import type {
 import { useRpc } from "@getpaseo/plugin/client";
 import { Icon, ScrollView, useToast } from "@getpaseo/plugin/client/react-native";
 import {
-  Badge,
-  Button,
-  Card,
-  EmptyState,
-  KeyValue,
-  KeyValueGroup,
-  PluginThemeProvider,
-  ProgressBar,
-  Row,
-  SectionHeader,
-  StatusDot,
-  usePluginTheme,
-} from "paseo-plugin-helper/client";
+  HostBadge,
+  HostButton,
+  HostCard,
+  HostEmptyState,
+  HostKeyValue,
+  HostKeyValueGroup,
+  HostProgressBar,
+  HostRow,
+  HostSectionHeader,
+  HostStatusDot,
+  HostThemeProvider,
+  popoverPadding,
+  typography,
+  useHostTheme,
+} from "./host-ui";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { ActivityIndicator, Linking, Text, View } from "react-native";
@@ -34,6 +36,7 @@ import { buildOrphanSection, partitionedRows, type OrphanSection } from "./orpha
 
 const QUERY_KEY = ["plugin-updates"];
 const POLL_MS = 30_000;
+const GAP = 8;
 
 function usePluginUpdates(workspaceId: string) {
   const check = useRpc(pluginUpdatesCheckRpc);
@@ -111,7 +114,7 @@ function PluginRow({
   forceNeeded: boolean;
   onUpdate: (pluginId: string, force: boolean) => void;
 }) {
-  const { colors, typography, padding } = usePluginTheme();
+  const { colors } = useHostTheme();
   const detail = fallbackDetail(plugin);
   const note = reportOnlyNote(plugin);
   const isOrphan = plugin.status === "orphaned";
@@ -120,13 +123,13 @@ function PluginRow({
   // Errors carry actionable text; clamp only the one-line status sentences.
   const detailLines = plugin.error ? undefined : 1;
   return (
-    <Card variant="elevated">
-      <View style={{ gap: padding.gap }}>
-        <Row align="center">
-          <StatusDot variant={statusVariant(plugin.status)} pulse={plugin.status === "checking"} />
+    <HostCard variant="elevated">
+      <View style={{ gap: GAP }}>
+        <HostRow align="center">
+          <HostStatusDot variant={statusVariant(plugin.status)} pulse={plugin.status === "checking"} />
           <Text style={{ color: colors.foreground, ...typography.bodyStrong, flex: 1 }}>{plugin.id}</Text>
           {source ? (
-            <Button
+            <HostButton
               icon={source.icon}
               label={source.label}
               variant="ghost"
@@ -137,9 +140,9 @@ function PluginRow({
               }}
             />
           ) : null}
-          {plugin.dirty === true && !isOrphan ? <Badge label="dirty" variant="warning" dot /> : null}
+          {plugin.dirty === true && !isOrphan ? <HostBadge label="dirty" variant="warning" dot /> : null}
           {plugin.updateAvailable && !isOrphan ? (
-            <Button
+            <HostButton
               label={forceNeeded ? "Force update" : "Update"}
               variant={forceNeeded ? "primary" : "secondary"}
               size="sm"
@@ -148,7 +151,7 @@ function PluginRow({
               onPress={() => onUpdate(plugin.id, forceNeeded)}
             />
           ) : null}
-        </Row>
+        </HostRow>
         <Text selectable numberOfLines={detailLines} style={{ color: colors.foregroundMuted, ...typography.caption }}>
           {detail}
         </Text>
@@ -157,8 +160,8 @@ function PluginRow({
         ) : null}
         {isOrphan ? null : (
           <>
-            <KeyValueGroup columns={2} collapse="never" minColumnWidth={180} gap={0}>
-              <KeyValue
+            <HostKeyValueGroup columns={2} gap={0}>
+              <HostKeyValue
                 layout="inline"
                 label="Version"
                 value={version}
@@ -166,15 +169,15 @@ function PluginRow({
                 mono
                 copyable
               />
-              <KeyValue layout="inline" label="Remote" value={hashValue(plugin.remoteTree)} mono copyable />
-              <KeyValue layout="inline" label="Ref" value={refLabel(plugin)} truncate="end" />
-              <KeyValue
+              <HostKeyValue layout="inline" label="Remote" value={hashValue(plugin.remoteTree)} mono copyable />
+              <HostKeyValue layout="inline" label="Ref" value={refLabel(plugin)} truncate="end" />
+              <HostKeyValue
                 layout="inline"
                 label="Subdir"
                 value={plugin.subdir === "" ? "(repo root)" : plugin.subdir}
                 truncate="path"
               />
-            </KeyValueGroup>
+            </HostKeyValueGroup>
             {plugin.latestChange?.subject ? (
               <Text selectable numberOfLines={1} style={{ color: colors.foregroundMuted, ...typography.caption }}>
                 Latest remote change: {plugin.latestChange.subject}
@@ -184,15 +187,15 @@ function PluginRow({
           </>
         )}
       </View>
-    </Card>
+    </HostCard>
   );
 }
 
 function OrphanSection({ section }: { section: OrphanSection }) {
-  const { colors, typography } = usePluginTheme();
+  const { colors } = useHostTheme();
   return (
     <View style={{ gap: 6 }}>
-      <SectionHeader title={section.title} count={section.items.length} />
+      <HostSectionHeader title={section.title} count={section.items.length} />
       <Text style={{ color: colors.foregroundMuted, ...typography.caption }}>{section.detail}</Text>
       <View style={{ gap: 6 }}>
         {section.items.map((item) => (
@@ -246,9 +249,9 @@ function PluginUpdatesIconInner(props: PluginButtonIconProps) {
 
 export function PluginUpdatesIcon(props: PluginButtonIconProps) {
   return (
-    <PluginThemeProvider theme={{ colors: props.theme.colors }}>
+    <HostThemeProvider theme={props.theme}>
       <PluginUpdatesIconInner {...props} />
-    </PluginThemeProvider>
+    </HostThemeProvider>
   );
 }
 
@@ -259,7 +262,7 @@ interface Failure {
 }
 
 function PluginUpdatesPopoverInner(props: PluginButtonContentProps) {
-  const { colors, typography, padding } = usePluginTheme();
+  const { colors } = useHostTheme();
   const toast = useToast();
   const queryClient = useQueryClient();
   const query = usePluginUpdates(props.workspaceId);
@@ -356,106 +359,104 @@ function PluginUpdatesPopoverInner(props: PluginButtonContentProps) {
   }, [query.isError, toast]);
 
   return (
-    <PluginThemeProvider theme={props.theme} layout={props.layout}>
-      <ScrollView
-        contentContainerStyle={{
-          paddingHorizontal: padding.horizontal,
-          paddingVertical: padding.vertical,
-          gap: padding.gap,
-        }}
-      >
-        <Row align="center">
-          <View style={{ flex: 1 }}>
-            <Text style={{ color: colors.foreground, ...typography.heading }}>Plugin updates</Text>
-            <Text style={{ color: colors.foregroundMuted, ...typography.caption }}>
-              {query.isFetching ? "Checking installed plugins…" : `${staleCount} update${staleCount === 1 ? "" : "s"} available`}
+    <ScrollView
+      contentContainerStyle={{
+        paddingHorizontal: popoverPadding.horizontal,
+        paddingVertical: popoverPadding.vertical,
+        gap: popoverPadding.gap,
+      }}
+    >
+      <HostRow align="center">
+        <View style={{ flex: 1 }}>
+          <Text style={{ color: colors.foreground, ...typography.heading }}>Plugin updates</Text>
+          <Text style={{ color: colors.foregroundMuted, ...typography.caption }}>
+            {query.isFetching ? "Checking installed plugins…" : `${staleCount} update${staleCount === 1 ? "" : "s"} available`}
+          </Text>
+        </View>
+        <HostButton
+          icon="RefreshCw"
+          variant="ghost"
+          size="sm"
+          loading={query.isFetching}
+          disabled={query.isFetching || activeUpdate !== null}
+          accessibilityLabel="Refresh plugin update check"
+          onPress={refresh}
+        />
+      </HostRow>
+      {activeUpdate ? <HostProgressBar value={progress} autoStatusColor label="Updating plugins" showValueText /> : null}
+      {query.isLoading && !query.data ? (
+        <View style={{ alignItems: "center", paddingVertical: popoverPadding.vertical * 2 }}>
+          <ActivityIndicator color={colors.foregroundMuted} />
+        </View>
+      ) : plugins.length === 0 ? (
+        <HostEmptyState title="No installed plugins" description="Paseo did not report any installed plugins." />
+      ) : (
+        <>
+          {rows.map((plugin) => (
+            <PluginRow
+              key={plugin.id}
+              plugin={plugin}
+              updating={activeUpdate === plugin.id}
+              forceNeeded={failures.some((failure) => failure.pluginId === plugin.id && failure.requiresForce)}
+              onUpdate={runUpdate}
+            />
+          ))}
+          {orphanSection ? <OrphanSection section={orphanSection} /> : null}
+        </>
+      )}
+      {failures.map((failure) => (
+        <HostCard key={`failure-${failure.pluginId}`} variant="elevated">
+          <View style={{ gap: GAP }}>
+            <HostRow align="center">
+              <HostStatusDot variant="danger" />
+              <Text style={{ color: colors.statusDanger, ...typography.bodyStrong, flex: 1 }}>
+                {failure.pluginId} update failed
+              </Text>
+              {failure.requiresForce ? (
+                <HostButton
+                  label="Force"
+                  variant="secondary"
+                  size="sm"
+                  loading={activeUpdate === failure.pluginId}
+                  disabled={activeUpdate !== null}
+                  onPress={() => runUpdate(failure.pluginId, true)}
+                />
+              ) : null}
+            </HostRow>
+            <Text selectable style={{ color: colors.foregroundMuted, ...typography.caption }}>
+              {failure.error}
             </Text>
           </View>
-          <Button
-            icon="RefreshCw"
-            variant="ghost"
-            size="sm"
-            loading={query.isFetching}
-            disabled={query.isFetching || activeUpdate !== null}
-            accessibilityLabel="Refresh plugin update check"
-            onPress={refresh}
-          />
-        </Row>
-        {activeUpdate ? <ProgressBar value={progress} autoStatusColor label="Updating plugins" showValueText /> : null}
-        {query.isLoading && !query.data ? (
-          <View style={{ alignItems: "center", paddingVertical: padding.vertical * 2 }}>
-            <ActivityIndicator color={colors.foregroundMuted} />
-          </View>
-        ) : plugins.length === 0 ? (
-          <EmptyState title="No installed plugins" description="Paseo did not report any installed plugins." />
-        ) : (
-          <>
-            {rows.map((plugin) => (
-              <PluginRow
-                key={plugin.id}
-                plugin={plugin}
-                updating={activeUpdate === plugin.id}
-                forceNeeded={failures.some((failure) => failure.pluginId === plugin.id && failure.requiresForce)}
-                onUpdate={runUpdate}
-              />
-            ))}
-            {orphanSection ? <OrphanSection section={orphanSection} /> : null}
-          </>
-        )}
-        {failures.map((failure) => (
-          <Card key={`failure-${failure.pluginId}`} variant="elevated">
-            <View style={{ gap: padding.gap }}>
-              <Row align="center">
-                <StatusDot variant="danger" />
-                <Text style={{ color: colors.statusDanger, ...typography.bodyStrong, flex: 1 }}>
-                  {failure.pluginId} update failed
-                </Text>
-                {failure.requiresForce ? (
-                  <Button
-                    label="Force"
-                    variant="secondary"
-                    size="sm"
-                    loading={activeUpdate === failure.pluginId}
-                    disabled={activeUpdate !== null}
-                    onPress={() => runUpdate(failure.pluginId, true)}
-                  />
-                ) : null}
-              </Row>
-              <Text selectable style={{ color: colors.foregroundMuted, ...typography.caption }}>
-                {failure.error}
-              </Text>
-            </View>
-          </Card>
-        ))}
-        {forceCount > 0 ? (
-          <Button
-            label="Force update all"
-            variant="secondary"
-            icon="AlertTriangle"
-            loading={activeUpdate === "all"}
-            disabled={activeUpdate !== null}
-            onPress={() => runUpdateAll(true)}
-          />
-        ) : staleCount > 1 ? (
-          <Button
-            label={`Update all (${staleCount})`}
-            variant="primary"
-            icon="DownloadCloud"
-            loading={activeUpdate === "all"}
-            disabled={activeUpdate !== null}
-            onPress={() => runUpdateAll(false)}
-          />
-        ) : null}
-      </ScrollView>
-    </PluginThemeProvider>
+        </HostCard>
+      ))}
+      {forceCount > 0 ? (
+        <HostButton
+          label="Force update all"
+          variant="secondary"
+          icon="AlertTriangle"
+          loading={activeUpdate === "all"}
+          disabled={activeUpdate !== null}
+          onPress={() => runUpdateAll(true)}
+        />
+      ) : staleCount > 1 ? (
+        <HostButton
+          label={`Update all (${staleCount})`}
+          variant="primary"
+          icon="DownloadCloud"
+          loading={activeUpdate === "all"}
+          disabled={activeUpdate !== null}
+          onPress={() => runUpdateAll(false)}
+        />
+      ) : null}
+    </ScrollView>
   );
 }
 
 export function PluginUpdatesPopover(props: PluginButtonContentProps) {
   return (
-    <PluginThemeProvider theme={props.theme} layout={props.layout}>
+    <HostThemeProvider theme={props.theme}>
       <PluginUpdatesPopoverInner {...props} />
-    </PluginThemeProvider>
+    </HostThemeProvider>
   );
 }
 
