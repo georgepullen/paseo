@@ -206,7 +206,7 @@ that enforces the invariant; this table is the readable view of the same fact.
 | `server/agents.test.ts` | Agent normalisation, state derivation, spawn-authority and archive paths | `test:node` | 1244 | `deterministic` |
 | `server/fleet-reset.test.ts` | server/fleet-reset | `test:node` | 168 | `deterministic` |
 | `server/fleet.test.ts` | Cross-surface fleet behaviour | `test:node` | 1337 | `deterministic` |
-| `server/hook-router.test.ts` | Webhook classification, coalescing, queueing, watchdog taxonomy, handoff | `test:node` | 6008 | `deterministic` |
+| `server/hook-router.test.ts` | Webhook classification, coalescing, queueing, watchdog taxonomy, handoff | `test:node` | 6016 | `deterministic` |
 | `server/hook.test.ts` | Hook-service handlers, endpoint resolution, unreachable-path shapes | `test:node` | 407 | `deterministic` |
 | `server/issues-check.test.ts` | Ported stale-WIP sweep fixtures, checker retirement guard (#733) | `test:node` | 165 | `deterministic` |
 | `server/issues.test.ts` | server/issues | `test:node` | 181 | `deterministic` |
@@ -289,7 +289,7 @@ matrix above is the judgement half.
 | `server/fleet-reset.test.ts` | server | 168 | 0 | — |
 | `server/fleet.test.ts` | server | 1337 | 0 | — |
 | `server/forgejo-api.ts` | server | 180 | 12 | `DEFAULT_FORGEJO_HOST`, `FORGEJO_API_TIMEOUT_MS`, `FetchLike`, `ForgejoApiResult`, `TokenResolverFn`, `forgejoApiGet`, `forgejoApiRequest`, `forgejoToken`, `resolveForgejoHost`, `resolveForgejoToken`, `setFetchForTest`, `setTokenResolverForTest` |
-| `server/hook-router.test.ts` | server | 6008 | 0 | — |
+| `server/hook-router.test.ts` | server | 6016 | 0 | — |
 | `server/hook-router.ts` | server | 7203 | 152 | `BoardCandidate`, `BoardCheckResult`, `BoardSweepResult`, `CANCELLATION_TIMEOUT_MARKER`, `CHILD_WAKEUP_EVENTS`, `CI_FAILURE_LABELS`, `CLOSE_GUARD_ACCEPTED_LABELS`, `CLOSE_GUARD_POLICY_COMMENT`, `ChildWakeupAssessment`, `ChildWakeupContext`, `ChildWakeupKind`, `CiFailureDetails` …+140 more |
 | `server/hook.test.ts` | server | 407 | 0 | — |
 | `server/hook.ts` | server | 316 | 16 | `HookAuthPosture`, `HookEndpointSource`, `ResolvedHookEndpoint`, `handleHookConfigure`, `handleHookDrain`, `handleHookInfo`, `handleHookLogTail`, `handleHookPause`, `handleHookQueues`, `handleHookResume`, `handleHookServiceAction`, `handleHookServiceStatus` …+4 more |

@@ -549,9 +549,10 @@ export function HostCopyButton({
   textStyle,
 }: HostCopyButtonProps): React.ReactElement | null {
   const { Icon, useToast } = getClientHost();
-  const { colors } = useHostTheme();
+  const { colors, alpha: alphaColor } = useHostTheme();
   const toast = useToast();
   const [copied, setCopied] = useState(false);
+  const [hovered, setHovered] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
 
   React.useEffect(() => {
@@ -585,12 +586,23 @@ export function HostCopyButton({
     const ok = await copyToClipboard(value, { toast, toastMessage });
     if (ok) {
       setCopied(true);
-      setTimeout(() => setCopied(false), feedbackDurationMs);
+      if (timer.current) clearTimeout(timer.current);
+      timer.current = setTimeout(() => setCopied(false), feedbackDurationMs);
     }
   };
 
+  // RN-web hover hooks (same passthrough `InteractiveRow` uses). On desktop a
+  // copy affordance must respond to the pointer, not only to a press.
+  const hoverProps = {
+    onMouseEnter: () => {
+      if (!disabled) setHovered(true);
+    },
+    onMouseLeave: () => setHovered(false),
+  } as any;
+
   return (
     <Pressable
+      {...hoverProps}
       onPress={handleCopy}
       disabled={disabled}
       accessibilityRole="button"
@@ -598,12 +610,18 @@ export function HostCopyButton({
       hitSlop={4}
       style={({ pressed }) => [
         styles.copyButton,
+        { cursor: disabled ? "auto" : "pointer" },
         {
-          backgroundColor: bg,
+          paddingVertical: size === "sm" ? 3 : 5,
+          paddingHorizontal: size === "sm" ? 8 : 10,
+          backgroundColor:
+            !disabled && (pressed || hovered)
+              ? alphaColor(colors.surface2, secondary ? 1 : 0.7)
+              : bg,
           borderColor: border,
           borderWidth: border !== "transparent" ? 1 : 0,
-          borderRadius: 8,
-          opacity: disabled ? 0.45 : pressed ? 0.7 : 1,
+          borderRadius: size === "sm" ? 6 : 8,
+          opacity: disabled ? 0.45 : 1,
         },
         style,
       ]}
@@ -613,15 +631,20 @@ export function HostCopyButton({
         size={size === "sm" ? 12 : 14}
         color={copied ? colors.statusSuccess : colors.foregroundMuted}
       />
-      <Text
-        style={[
-          styles.copyButtonText,
-          { color: copied ? colors.statusSuccess : colors.foregroundMuted },
-          textStyle,
-        ]}
-      >
-        {feedbackLabel}
-      </Text>
+      {feedbackLabel !== "" ? (
+        <Text
+          style={[
+            styles.copyButtonText,
+            {
+              fontSize: size === "sm" ? 11 : 12,
+              color: copied ? colors.statusSuccess : colors.foregroundMuted,
+            },
+            textStyle,
+          ]}
+        >
+          {feedbackLabel}
+        </Text>
+      ) : null}
     </Pressable>
   );
 }
