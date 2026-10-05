@@ -283,6 +283,20 @@ const PARTS = [
     note: "Issues are labelled by humans and agents, so the input is not reproducible, but the projection is: same payload, same counts.",
   },
   {
+    file: `${PLUGIN}/server/repos.ts`,
+    part: "Repo enrollment surface: Forgejo listing, roster/mute/queue/orchestrator projection, enroll/unenroll",
+    layer: "server",
+    label: DETERMINISTIC,
+    anchors: { exports: ["handleUppidiRepos", "handleUppidiEnrollRepo", "handleUppidiUnenrollRepo"] },
+    evidence: [
+      [`repos.ts:39-60`, "one classified GET (`/repos/search`) with a `/user/repos` 404 fallback; 401 maps to a fixed message and an empty list"],
+      [`repos.ts:73-95`, "each row is built by matching the roster (enrolled, muted, summed queue depth) and the active router's orchestrator record"],
+      [`repos.ts:127-150`, "enroll canonicalises the key, delegates to the router, or patches the persisted config when no router is active"],
+      [`repos.ts:177-195`, "unenroll is the same shape with a membership filter"],
+    ],
+    note: "Reads Forgejo and the hook router's persisted state and does set membership over it; no inference anywhere. Enrolling a repo is a control-plane edit that later gates deliveries, not a spawn.",
+  },
+  {
     file: `${PLUGIN}/server/hook.ts`,
     part: "Hook-service RPC handlers, endpoint resolution, x-comms presence probe",
     layer: "server",
@@ -595,6 +609,32 @@ const PARTS = [
       [`panel.tsx:37-46`, "registration wraps `client.addWorkspacePanel`"],
     ],
     note: "Chrome around the tree view. No model.",
+  },
+  {
+    file: `${PLUGIN}/client/agent-switcher-data.ts`,
+    part: "Agent switcher data projection: Front Desk extraction and per-repo orchestrator grouping",
+    layer: "client",
+    label: DETERMINISTIC,
+    anchors: { exports: ["AgentSwitcherData", "AgentSwitcherGroup", "mapAgentSwitcherData"] },
+    evidence: [
+      [`agent-switcher-data.ts:22-24`, "a missing snapshot returns the empty shape rather than a guess"],
+      [`agent-switcher-data.ts:35-43`, "repo key falls through `project`, `attributedWork.repo`, `labels.repo`, then `\"unassigned\"`; the first orchestrator per repo wins"],
+      [`agent-switcher-data.ts:45-52`, "rows are ordered with `localeCompare` and mapped, no model"],
+    ],
+    note: "Pure snapshot-to-rows projection. It reads fields the server already derived from model-backed sessions and groups them; the grouping is arithmetic over strings.",
+  },
+  {
+    file: `${PLUGIN}/client/agent-switcher.tsx`,
+    part: "Agent switcher popover: header icon, Front Desk and per-repo rows, live agent query, navigation on select",
+    layer: "client",
+    label: DETERMINISTIC,
+    anchors: { exports: ["AgentSwitcherHeaderIcon", "AgentSwitcherDropdownProps", "AgentRowItem", "AgentSwitcherDropdown", "AgentSwitcherPopover"] },
+    evidence: [
+      [`agent-switcher.tsx:35-51`, "`AgentRowItem` derives its status dot from `getDeterministicStateConfig` over the agent's precomputed state"],
+      [`agent-switcher.tsx:148-200`, "front desk and orchestrator rows render directly from props, with literal empty states"],
+      [`agent-switcher.tsx:224-236`, "`useRpcQuery` polls `uppidiAgentsContract`; selecting a row calls `navigation.openAgent`"],
+    ],
+    note: "Displays the agents array and switches the host view to one of them. Reading a model session's classified state, or navigating to it, is not producing model output.",
   },
   {
     file: `${PLUGIN}/client/surface.tsx`,
