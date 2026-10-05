@@ -29,6 +29,7 @@ import { createDefaultIssuesCheckIo, runIssuesCheck, type IssuesCheckIo } from "
 import { resolveWorkspaceForRepo, type ResolvedWorkspace } from "./workspace-lookup.js";
 import { isRepoMatching } from "../shared/sort-filter.js";
 import { DEFAULT_ROLE_MODELS, loadSavedRoleModels } from "./role-models.js";
+import { getEffectiveSkillPath } from "./skills.js";
 
 const defaultExecFileAsync = promisify(execFile);
 let execFileAsync = defaultExecFileAsync;
@@ -3934,7 +3935,7 @@ export class HookRouter {
     const providerModeInfo = await this.getProviderModeInfo(targetProvider);
     const targetMode = resolveProviderSpawnMode(providerModeInfo, requestedMode);
     const title = `Orchestrator · ${canonicalKey}`;
-    const prompt = `You are the project orchestrator for ${repo}. Follow the orchestrator skill to coordinate tasks, supervise worker agents, and manage pull requests and issues.`;
+    const prompt = `You are the project orchestrator for ${repo}. Follow the orchestrator skill at ${getEffectiveSkillPath("orchestrator")} to coordinate tasks, supervise worker agents, and manage pull requests and issues.`;
     const labels: Record<string, string> = {
       role: "orchestrator",
       category: "orchestrator",

@@ -350,6 +350,33 @@ export function runnersPayload(): Record<string, unknown> {
   };
 }
 
+export function skillsPayload(): Record<string, unknown> {
+  return {
+    ok: true,
+    skills: [
+      {
+        id: "orchestrator",
+        title: "Orchestrator skill",
+        content: "# Orchestrator Skill\n\nBundled content.",
+        origin: "bundled",
+      },
+      {
+        id: "front-desk",
+        title: "Front Desk skill",
+        content: "# Front Desk Skill\n\nOperator override.",
+        origin: "override",
+        updatedAt: "2026-09-25T10:00:00.000Z",
+      },
+      {
+        id: "coding-agent",
+        title: "Coding agent skill",
+        content: "# Coding Agent Skill\n\nBundled content.",
+        origin: "bundled",
+      },
+    ],
+  };
+}
+
 export function hookQueuesPayload(): Record<string, unknown> {
   return {
     ok: true,
@@ -381,6 +408,7 @@ export function installPayloads(
     "uppidi-fleet.hook-service-status": { ok: true, state: "running", pid: 4242 },
     "uppidi-fleet.hook-log-tail": { ok: true, lines: [] },
     "uppidi-fleet.role-models": { ok: true, roles: {} },
+    "uppidi-fleet.skills": skillsPayload(),
     "plugin-settings": { host: "forge.mrs.uppidi.com", port: "8099" },
   });
   return payloads;

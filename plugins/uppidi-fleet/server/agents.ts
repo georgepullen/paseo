@@ -64,6 +64,7 @@ import {
 import { resolveHookAuthPosture, resolveHookEndpoint } from "./hook.js";
 import { resolveWorkspaceForRepo } from "./workspace-lookup.js";
 import { loadSavedRoleModels, DEFAULT_ROLE_MODELS } from "./role-models.js";
+import { getEffectiveSkillPath } from "./skills.js";
 
 
 export type ExecFileAsyncFn = (
@@ -2238,7 +2239,7 @@ function enrollPersistedRepo(repo: string): void {
 export function buildFrontDeskIntroPrompt(basePrompt?: string): string {
   const base =
     basePrompt?.trim() ||
-    "You are the Fleet Front Desk liaison. Monitor incoming events, coordinate with project orchestrators, and triage requests across the workspace.";
+    `You are the Fleet Front Desk liaison. Follow the front desk skill at ${getEffectiveSkillPath("front-desk")}. Monitor incoming events, coordinate with project orchestrators, and triage requests across the workspace.`;
   const endpoint = resolveHookEndpoint();
   const auth = resolveHookAuthPosture();
   const authLine = auth.available
@@ -2444,7 +2445,8 @@ export async function handleUppidiAddOrchestrator(
     const title = input.title?.trim() || `Orchestrator · ${repo}`;
     const defaultPrompt =
       `You are the project orchestrator for ${repo}.\n` +
-      `Follow the orchestrator skill at ${path.join(os.homedir(), "code/platform/skills/orchestrator/SKILL.md")}.\n` +
+      `Follow the orchestrator skill at ${getEffectiveSkillPath("orchestrator")}.\n` +
+      `Dispatch workers with the coding-agent skill at ${getEffectiveSkillPath("coding-agent")}.\n` +
       `Coordinate tasks, supervise worker agents, and manage pull requests and issues for this repository using the forge CLI (teax) and Paseo conventions.`;
     const prompt = input.prompt?.trim() || defaultPrompt;
 

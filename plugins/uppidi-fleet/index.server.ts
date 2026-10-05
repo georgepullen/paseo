@@ -14,6 +14,8 @@ import {
   uppidiAgentsContract,
   uppidiRoleModelsContract,
   uppidiSetRoleModelContract,
+  uppidiSkillsContract,
+  uppidiSetSkillContract,
   uppidiRunnersContract,
   uppidiFleetMetricsContract,
   uppidiArchiveAgentContract,
@@ -69,6 +71,7 @@ import {
 } from "./server/agents.js";
 
 import { handleUppidiRoleModels, handleUppidiSetRoleModel } from "./server/role-models.js";
+import { handleUppidiSkills, handleUppidiSetSkill } from "./server/skills.js";
 import { handleUppidiRunners } from "./server/runners.js";
 import { handleUppidiFleetMetrics } from "./server/metrics.js";
 import { handleFleetToolList, handleFleetToolExecute } from "./server/mcp-tools.js";
@@ -114,6 +117,8 @@ export default function contribute(server: PluginServerContext) {
   server.handle(uppidiAgentsContract, handleUppidiAgents);
   server.handle(uppidiRoleModelsContract, handleUppidiRoleModels);
   server.handle(uppidiSetRoleModelContract, handleUppidiSetRoleModel);
+  server.handle(uppidiSkillsContract, handleUppidiSkills);
+  server.handle(uppidiSetSkillContract, handleUppidiSetSkill);
   server.handle(uppidiRunnersContract, handleUppidiRunners);
   server.handle(uppidiFleetMetricsContract, handleUppidiFleetMetrics);
   server.handle(uppidiArchiveAgentContract, handleUppidiArchiveAgent);

@@ -890,6 +890,60 @@ export const uppidiSetRoleModelContract = defineContract({
   output: UppidiSetRoleModelOutputSchema,
 });
 
+// Fleet Skills (Issue #883)
+export const FleetSkillIdSchema = z.enum(["orchestrator", "front-desk", "coding-agent"]);
+export type FleetSkillId = z.infer<typeof FleetSkillIdSchema>;
+
+/** Where the effective skill text was read from: a saved override or the bundled default. */
+export const SkillOriginSchema = z.enum(["override", "bundled"]);
+export type SkillOrigin = z.infer<typeof SkillOriginSchema>;
+
+export const FleetSkillSchema = z.object({
+  id: FleetSkillIdSchema,
+  title: z.string(),
+  description: z.string().optional(),
+  content: z.string(),
+  origin: SkillOriginSchema,
+  updatedAt: z.string().optional(),
+});
+export type FleetSkill = z.infer<typeof FleetSkillSchema>;
+
+export const UppidiSkillsOutputSchema = z.object({
+  ok: z.boolean(),
+  skills: z.array(FleetSkillSchema).default([]),
+  error: z.string().optional(),
+});
+export type UppidiSkillsOutput = z.infer<typeof UppidiSkillsOutputSchema>;
+
+export const uppidiSkillsContract = defineContract({
+  name: "uppidi-fleet.skills",
+  description: "Get every fleet skill with its effective content and origin (override or bundled)",
+  input: z.object({}),
+  output: UppidiSkillsOutputSchema,
+});
+
+export const UppidiSetSkillInputSchema = z.object({
+  id: z.string(),
+  /** New override text, or null to reset the skill back to the bundled default. */
+  content: z.string().nullable(),
+});
+export type UppidiSetSkillInput = z.infer<typeof UppidiSetSkillInputSchema>;
+
+export const UppidiSetSkillOutputSchema = z.object({
+  ok: z.boolean(),
+  skill: FleetSkillSchema.optional(),
+  message: z.string().optional(),
+  error: z.string().optional(),
+});
+export type UppidiSetSkillOutput = z.infer<typeof UppidiSetSkillOutputSchema>;
+
+export const uppidiSetSkillContract = defineContract({
+  name: "uppidi-fleet.set-skill",
+  description: "Save a skill override or reset it back to the bundled default",
+  input: UppidiSetSkillInputSchema,
+  output: UppidiSetSkillOutputSchema,
+});
+
 // CI Runner List and Status (Issue #366; re-sourced to the Forgejo API in #632)
 export const UppidiRunnerScopeSchema = z.enum(["repo", "org", "user"]);
 export type UppidiRunnerScope = z.infer<typeof UppidiRunnerScopeSchema>;

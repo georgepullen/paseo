@@ -345,6 +345,13 @@ and adapt for your own environment:
 
 ### 6.1 The three roles
 
+> [!NOTE]
+> **Skills are editable in the app.** Settings → **Fleet Skills** lists the three
+> skills with their content and origin, and saves operator overrides under
+> `~/.paseo/plugin-data/xpufx/uppidi-fleet/skills/<id>.md`. Spawned orchestrators
+> and workers are pointed at the effective path, so an override takes effect on
+> the next spawn without editing the repository or `.agents/` (#883).
+
 **Orchestrator** — delegates, never implements. Its contract, in short:
 
 - Only two binding stops exist: `priority/0-SOS` and `flag/stop-work`.
@@ -957,6 +964,7 @@ these gaps yourself.
 | `~/.paseo/uppidi-fleet-role-models.json` | Per-role primary model + fallback group. |
 | `~/.paseo/plugin-data/xpufx/uppidi-fleet/metrics.json` | Fleet capability metrics (scoped storage; fallback/migration from legacy `~/.paseo/uppidi-fleet-metrics.json`). |
 | `~/.paseo/plugin-data/xpufx/uppidi-fleet/settings.json` | Plugin settings (`hookHost`, `hookPort`, `enrolledRepos`, `mutedRepos`). |
+| `~/.paseo/plugin-data/xpufx/uppidi-fleet/skills/<id>.md` | Operator overrides for the fleet skills (Settings → Fleet Skills). Absent means the bundled `examples/skills/<id>/SKILL.md` is effective. |
 | `<repo-root>/.agents/skills/` | The fleet's operational skills, at the repository root (outside the plugin package). |
 
 Environment variables: `FORGE_HOOK_HOST`, `FORGE_HOOK_PORT`/`HOOK_PORT`,
@@ -1020,10 +1028,17 @@ agent at its SKILL.md and the board CLI conventions:
 
 ```text
 You are the project orchestrator for <repo>.
-Follow the orchestrator skill at <home>/code/platform/skills/orchestrator/SKILL.md.
+Follow the orchestrator skill at <effective skill path>.
+Dispatch workers with the coding-agent skill at <effective skill path>.
 Coordinate tasks, supervise worker agents, and manage pull requests and issues
 for this repository using the forge CLI (teax) and Paseo conventions.
 ```
+
+The `<effective skill path>` is the operator override under
+`~/.paseo/plugin-data/xpufx/uppidi-fleet/skills/<id>.md` when one is saved in
+Settings → Fleet Skills, otherwise the bundled copy under
+`examples/skills/<id>/SKILL.md` (#883). The Front Desk prompt resolves its skill
+the same way.
 
 If you pass a custom `prompt`, keep the same contract: name the repo, point at
 the skill file, say whether it expects a board CLI to be installed, and state the

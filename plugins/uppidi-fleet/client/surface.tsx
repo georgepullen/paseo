@@ -56,6 +56,8 @@ import {
   uppidiAgentsContract,
   uppidiRoleModelsContract,
   uppidiSetRoleModelContract,
+  uppidiSkillsContract,
+  uppidiSetSkillContract,
   uppidiRunnersContract,
   uppidiFleetMetricsContract,
   uppidiArchiveAgentContract,
@@ -72,6 +74,7 @@ import {
   type KanbanColumnId,
   type AttentionLabel,
   type RoleModelConfig,
+  type FleetSkill,
   type UppidiRunner,
   type UppidiFleetStatus,
   type UppidiLocalRunner,
@@ -785,6 +788,7 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
   const [queueSortDir, setQueueSortDir] = useState<SortDirection>("asc");
   const [hookLogExpanded, setHookLogExpanded] = useState(false);
   const [roleModelsExpanded, setRoleModelsExpanded] = useState(false);
+  const [skillsExpanded, setSkillsExpanded] = useState(false);
 
   // Section 4: CI Runners sort & filter state
   const [runnersExpanded, setRunnersExpanded] = useState(false);
@@ -849,6 +853,13 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
   } = useRpcQuery(uppidiRoleModelsContract, {}, { refetchInterval: 10000 });
 
   const {
+    data: skillsData,
+    isLoading: skillsLoading,
+    error: skillsQueryError,
+    refetch: refetchSkills,
+  } = useRpcQuery(uppidiSkillsContract, {}, { refetchInterval: 15000 });
+
+  const {
     data: runnersData,
     refetch: refetchRunners,
   } = useRpcQuery(uppidiRunnersContract, {}, { refetchInterval: 15000 });
@@ -877,6 +888,7 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
   const serviceActionMutation = useRpcMutation(uppidiHookServiceActionContract);
   const configureMutation = useRpcMutation(uppidiHookConfigureContract);
   const setRoleModelMutation = useRpcMutation(uppidiSetRoleModelContract);
+  const setSkillMutation = useRpcMutation(uppidiSetSkillContract);
   const archiveAgentMutation = useRpcMutation(uppidiArchiveAgentContract);
   const archiveBulkMutation = useRpcMutation(uppidiArchiveInactiveAgentsContract);
 
@@ -895,6 +907,29 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
 
   // Issue Kanban state transition (#755)
   const transitionIssueMutation = useRpcMutation(uppidiTransitionIssueContract);
+
+  // Fleet Skills editor (#883)
+  const [skillDrafts, setSkillDrafts] = useState<Record<string, string>>({});
+  const [skillSaved, setSkillSaved] = useState<Record<string, boolean>>({});
+  const [savingSkillId, setSavingSkillId] = useState<string | null>(null);
+
+  React.useEffect(() => {
+    const skills = skillsData?.skills;
+    if (!skills) return;
+    setSkillDrafts((prev) => {
+      const next = { ...prev };
+      let changed = false;
+      // Seed a draft the first time a skill is seen. A draft that already
+      // exists is left alone so a refetch never clobbers in-progress edits.
+      for (const skill of skills) {
+        if (next[skill.id] === undefined) {
+          next[skill.id] = skill.content;
+          changed = true;
+        }
+      }
+      return changed ? next : prev;
+    });
+  }, [skillsData]);
 
   const handleTransitionIssue = async (
     issue: UppidiIssue,
@@ -997,6 +1032,7 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
     void refetchLogTail();
     void refetchAgents();
     void refetchRoleModels();
+    void refetchSkills();
     void refetchRunners();
     void refetchMetrics();
     void refetchRepos();
@@ -1051,6 +1087,46 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
       }
     } catch (e) {
       toast.error(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const handleSaveSkill = async (skill: FleetSkill) => {
+    const draft = skillDrafts[skill.id];
+    if (draft === undefined || draft === skill.content) return;
+    try {
+      setSavingSkillId(skill.id);
+      const res = await setSkillMutation.mutateAsync({ id: skill.id, content: draft });
+      if (res.ok && res.skill) {
+        setSkillDrafts((prev) => ({ ...prev, [skill.id]: res.skill!.content }));
+        setSkillSaved((prev) => ({ ...prev, [skill.id]: true }));
+        toast.show(res.message || `Saved ${skill.title}`);
+        void refetchSkills();
+      } else {
+        toast.error(res.error || `Failed to save ${skill.title}`);
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSavingSkillId(null);
+    }
+  };
+
+  const handleResetSkill = async (skill: FleetSkill) => {
+    try {
+      setSavingSkillId(skill.id);
+      const res = await setSkillMutation.mutateAsync({ id: skill.id, content: null });
+      if (res.ok && res.skill) {
+        setSkillDrafts((prev) => ({ ...prev, [skill.id]: res.skill!.content }));
+        setSkillSaved((prev) => ({ ...prev, [skill.id]: false }));
+        toast.show(res.message || `Reset ${skill.title}`);
+        void refetchSkills();
+      } else {
+        toast.error(res.error || `Failed to reset ${skill.title}`);
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSavingSkillId(null);
     }
   };
 
@@ -1944,6 +2020,138 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
                   </Card>
                   );
                 })}
+              </Stack>
+            </Card>
+          </Collapsible>
+
+          {/* Collapsible Section: Fleet Skills (#883) */}
+          <Collapsible
+            title={`Fleet Skills${skillsData?.skills?.length ? ` (${skillsData.skills.length})` : ""}`}
+            icon="BookOpen"
+            isExpanded={skillsExpanded}
+            onToggle={(exp) => setSkillsExpanded(exp)}
+          >
+            <Card variant="flat">
+              <Stack gap="sm">
+                <Row justify="space-between" align="center" wrap gap="xs">
+                  <Text style={{ color: colors.foregroundMuted, ...typography.caption, flex: 1 }}>
+                    Edit the skill text fleet agents load. Overrides live under
+                    ~/.paseo/plugin-data/xpufx/uppidi-fleet/skills/; Reset restores the bundled default.
+                  </Text>
+                  <Button
+                    label="Refresh"
+                    size="sm"
+                    variant="ghost"
+                    icon="RefreshCw"
+                    disabled={skillsLoading}
+                    onPress={() => void refetchSkills()}
+                  />
+                </Row>
+
+                {skillsLoading && !skillsData ? (
+                  <Card variant="flat">
+                    <Stack gap="xs" align="center" style={{ paddingVertical: 16 }}>
+                      <Text style={{ color: colors.foregroundMuted, ...typography.caption }}>
+                        Loading fleet skills...
+                      </Text>
+                    </Stack>
+                  </Card>
+                ) : (skillsData && !skillsData.ok) || skillsQueryError ? (
+                  <Card variant="elevated" style={{ borderColor: colors.statusDanger }}>
+                    <Row justify="space-between" align="center" wrap gap="xs">
+                      <Row align="center" gap="xs">
+                        <StatusDot variant="danger" />
+                        <Text style={{ color: colors.statusDanger, ...typography.body }}>
+                          {skillsData?.error ||
+                            (skillsQueryError instanceof Error
+                              ? skillsQueryError.message
+                              : "Failed to load fleet skills")}
+                        </Text>
+                      </Row>
+                      <Button
+                        label="Retry"
+                        size="sm"
+                        variant="primary"
+                        icon="RefreshCw"
+                        onPress={() => void refetchSkills()}
+                      />
+                    </Row>
+                  </Card>
+                ) : (skillsData?.skills ?? []).length === 0 ? (
+                  <EmptyState
+                    title="No fleet skills"
+                    description="The plugin reported no skills to edit."
+                  />
+                ) : (
+                  (skillsData?.skills ?? []).map((skill) => {
+                    const draft = skillDrafts[skill.id] ?? skill.content;
+                    const isDirty = draft !== skill.content;
+                    const isSaving = savingSkillId === skill.id;
+                    const wasSaved = skillSaved[skill.id] === true && !isDirty;
+                    return (
+                      <Card key={skill.id} variant="elevated">
+                        <Stack gap="xs">
+                          <Row justify="space-between" align="center" wrap gap="xs">
+                            <Stack gap="xxs" style={{ flex: 1, minWidth: 200 }}>
+                              <Row align="center" gap="xs" wrap>
+                                <Text style={{ color: colors.foreground, ...typography.heading }}>
+                                  {skill.title}
+                                </Text>
+                                <Badge
+                                  label={skill.origin === "override" ? "Override" : "Bundled"}
+                                  variant={skill.origin === "override" ? "warning" : "neutral"}
+                                  size="sm"
+                                />
+                                {isDirty && <Badge label="Unsaved" variant="info" size="sm" />}
+                                {wasSaved && <Badge label="Saved" variant="success" size="sm" />}
+                              </Row>
+                              {skill.description ? (
+                                <Text style={{ color: colors.foregroundMuted, ...typography.caption }}>
+                                  {skill.description}
+                                </Text>
+                              ) : null}
+                              <Text style={{ color: colors.foregroundMuted, ...typography.caption, fontSize: 11 }}>
+                                {skill.id}
+                                {skill.updatedAt
+                                  ? ` \u00b7 updated ${new Date(skill.updatedAt).toLocaleString()}`
+                                  : ""}
+                              </Text>
+                            </Stack>
+                            <Row gap="xs">
+                              <Button
+                                label={isSaving ? "Saving..." : "Save"}
+                                size="sm"
+                                variant="primary"
+                                disabled={!isDirty || isSaving}
+                                loading={isSaving}
+                                onPress={() => void handleSaveSkill(skill)}
+                              />
+                              <Button
+                                label="Reset"
+                                size="sm"
+                                variant="secondary"
+                                disabled={isSaving || skill.origin === "bundled"}
+                                onPress={() => void handleResetSkill(skill)}
+                              />
+                            </Row>
+                          </Row>
+                          <TextInput
+                            value={draft}
+                            onChangeText={(text) => {
+                              setSkillDrafts((prev) => ({ ...prev, [skill.id]: text }));
+                              setSkillSaved((prev) => ({ ...prev, [skill.id]: false }));
+                            }}
+                            multiline
+                            numberOfLines={14}
+                            mono
+                            inputStyle={{ minHeight: 220, textAlignVertical: "top" }}
+                            placeholder={`${skill.title} markdown`}
+                          />
+                        </Stack>
+                      </Card>
+                    );
+                  })
+                )}
               </Stack>
             </Card>
           </Collapsible>

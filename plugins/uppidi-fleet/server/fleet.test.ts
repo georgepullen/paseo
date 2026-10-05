@@ -32,6 +32,7 @@ import {
 } from "./agents.js";
 
 import { DEFAULT_ROLE_MODELS, handleUppidiRoleModels, handleUppidiSetRoleModel, setExecFileAsyncForTest as setRoleModelsExecFileAsyncForTest } from "./role-models.js";
+import { getBundledSkillPath } from "./skills.js";
 // The runners module owns its own exec seam, distinct from the agents one
 // above; stubbing only the agents seam would leave the runner path shelling
 // out to the real container runtime of whichever host runs the suite.
@@ -1105,10 +1106,9 @@ describe("orchestrator workspace resolution and state isolation (#485, #486)", (
       assert.equal(capturedPayload.workspaceId, "wks_sample_repo");
       assert.equal(capturedPayload.cwd, "/home/user/code/sample-repo");
       assert.ok(
-        capturedPayload.prompt.includes(
-          path.join(os.homedir(), "code/platform/skills/orchestrator/SKILL.md")
-        )
+        capturedPayload.prompt.includes(getBundledSkillPath("orchestrator"))
       );
+      assert.ok(capturedPayload.prompt.includes(getBundledSkillPath("coding-agent")));
       assert.ok(capturedPayload.prompt.includes("teax"));
     } finally {
       setExecFileAsyncForTest(null);

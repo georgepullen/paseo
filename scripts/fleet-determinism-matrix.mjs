@@ -490,6 +490,30 @@ const PARTS = [
     note: "Performs no inference and takes no decision that depends on one, so by the test used everywhere else in this table it is deterministic. It is contested because it is the plugin's only surface whose entire purpose is choosing which model other rows spawn -- the AI/LLM character of the fleet is set here and executed in `agents.ts`. The bucket depends on whether you classify a control surface or the thing it controls.",
   },
   {
+    file: `${PLUGIN}/server/skills.ts`,
+    part: "Fleet skill effective resolution, override persistence, and Settings RPC handlers",
+    layer: "server",
+    label: DETERMINISTIC,
+    anchors: {
+      exports: [
+        "FLEET_SKILL_DEFINITIONS",
+        "resolveEffectiveSkill",
+        "getEffectiveSkillPath",
+        "listFleetSkills",
+        "setSkillContent",
+        "handleUppidiSkills",
+        "handleUppidiSetSkill",
+      ],
+    },
+    evidence: [
+      [`skills.ts:31-61`, "the three fleet skills are a literal id/title/bundled-path table"],
+      [`skills.ts:87-101`, "override storage is a PluginStorage path under plugin-data, never the checkout or ~/.agents"],
+      [`skills.ts:131-164`, "effective text is override-else-bundled, a filesystem existence check with no model"],
+      [`skills.ts:191-219`, "save writes raw Markdown with a tmp-file rename; null unlinks the override"],
+    ],
+    note: "Reads and writes skill Markdown on disk and resolves it for spawn prompts. No inference: the operator or the bundled default supplies every byte.",
+  },
+  {
     file: `${PLUGIN}/server/runners.ts`,
     part: "CI runner discovery across repo/org/user scopes plus local containers",
     layer: "server",
@@ -967,6 +991,7 @@ const SUITE_NOTES = {
   "server/issues-check.test.ts": "Ported stale-WIP sweep fixtures, checker retirement guard (#733)",
   "server/metrics.test.ts": "Rollup arithmetic, candidate derivation, receipt persistence",
   "server/runners.test.ts": "Runner scope merge, normalisation, fleet-status decision table",
+  "server/skills.test.ts": "Fleet skill resolution, override persistence, and spawn-prompt wiring",
   "server/mcp-tools.test.ts": "MCP tool definitions, schema validation, and dispatch fixtures",
   "test/fleet-board-check-cli.test.mjs": "Standalone fleet-board-check CLI options and exit codes",
   "test/fleet-watchdog-cli.test.mjs": "Standalone fleet-watchdog CLI options, recency validation, and diagnostic run",
