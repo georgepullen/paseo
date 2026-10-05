@@ -150,6 +150,17 @@ Read `theme.colors.*` (`surface0/1/2`, `border`, `foreground`,
 `foregroundMuted`, `accent`, `accentForeground`, `statusSuccess/Warning/Danger`)
 directly. Delete flair/density/surfaceStyle options — the host owns those.
 
+The `ui/` adapters (`HostCard`, `HostBadge`, …) do not take the `theme` prop;
+they read colors from `HostThemeProvider` via `useHostTheme()`. Every helper
+registration wrapper — `registerSidebarSurface`, `registerWorkspacePanel`,
+`registerAgentPanel`, and both `registerComposerPill` presentations — mounts
+`HostThemeProvider` for its subtree and forwards the same host `theme`, so
+adapters inside a registered surface/panel/pill track light/dark automatically.
+If you render `ui/` adapters outside a registration wrapper, mount
+`HostThemeProvider` yourself: without one they degrade to a static dark
+fallback rather than throwing, so a missing provider is silently wrong on a
+light desktop instead of obviously broken.
+
 ### 3.3 Settings screens
 
 No change required — `registerHelperSettingsScreen` already delegates to the

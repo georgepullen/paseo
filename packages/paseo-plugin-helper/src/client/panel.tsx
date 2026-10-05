@@ -11,6 +11,7 @@ import type {
   HostAgentPanelProps as PluginAgentPanelProps,
 } from "./host.js";
 import { PluginThemeProvider } from "./theme/provider.js";
+import { HostThemeProvider } from "../ui/theme.js";
 import type { VisualFlair } from "./theme/flair.js";
 
 /**
@@ -51,7 +52,9 @@ export function registerWorkspacePanel(
 
   const WrappedComponent: ComponentType<PluginWorkspacePanelProps> = (props) => (
     <PluginThemeProvider theme={props.theme} layout={props.layout} flair={flair}>
-      <Component {...props} />
+      <HostThemeProvider theme={props.theme}>
+        <Component {...props} />
+      </HostThemeProvider>
     </PluginThemeProvider>
   );
 
@@ -82,7 +85,9 @@ export function registerAgentPanel(
 
   const WrappedComponent: ComponentType<PluginAgentPanelProps> = (props) => (
     <PluginThemeProvider theme={props.theme} layout={props.layout} flair={flair}>
-      <Component {...props} />
+      <HostThemeProvider theme={props.theme}>
+        <Component {...props} />
+      </HostThemeProvider>
     </PluginThemeProvider>
   );
 

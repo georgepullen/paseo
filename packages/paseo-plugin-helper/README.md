@@ -20,6 +20,14 @@
 > primitives (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
 > See the [migration guide](docs/client-migration.md). The headless hooks and
 > lifecycle engines in `client/` remain supported until their extraction.
+>
+> Registration wrappers (`registerSidebarSurface`, `registerWorkspacePanel`,
+> `registerAgentPanel`, `registerComposerPill`) mount the `ui/`
+> `HostThemeProvider` for their subtree, forwarding the host `theme` to every
+> `paseo-plugin-helper/ui` adapter below. Rendering `ui/` adapters outside a
+> registrar requires mounting `HostThemeProvider` yourself — without it they
+> fall back to a static dark palette, which masks the missing provider on a
+> light desktop.
 
 ---
 
@@ -38,7 +46,7 @@
 - ℹ️ **Plugin About & Diagnostics Card**: `<AboutSection>` standardizes plugin branding, license tags, version badges, external navigation buttons, 1-tap "Copy Diagnostics" for issue triage, and auto-resolves official GitHub logos from author or repository URLs.
 - **Composer Pill Lifecycle Engine**: Complete management of agent subscriptions, pill contributions, and modal states in one function call (`registerComposerPill`).
 - **Composable Feature Modules**: `FeatureModule` + `composeFeatureModules` assemble a plugin from droppable units of functionality — each contributes server/client behavior, returns an idempotent disposer, and is torn down in reverse order with partial-failure cleanup and eager composition validation (see [docs/features.md](docs/features.md)).
-- **Panels & Surfaces**: One-line registration for sidebar surfaces (`registerSidebarSurface`), panels (`registerWorkspacePanel`, `registerAgentPanel`), and Ctrl+K command-center items (`registerCommandCenterItem`) with automatic theme and flair propagation.
+- **Panels & Surfaces**: One-line registration for sidebar surfaces (`registerSidebarSurface`), panels (`registerWorkspacePanel`, `registerAgentPanel`), and Ctrl+K command-center items (`registerCommandCenterItem`) with automatic host-theme and flair propagation.
 - **Zero-Dependency MCP Client**: Built-in stdio client (`McpClient`) with stderr ring buffering, non-JSON stdout line filtering, cross-platform process tree cleanup, and fallback ping readiness checks.
 - **Agent MCP Config Writer**: `upsertMcpServer` and `removeMcpServer` safely register plugin or Gateway MCP servers into Claude Desktop, Claude Code, OpenCode, Cursor, and Gemini configs with JSONC parsing, atomic writes, deep-equality idempotency, and automated backups.
 - **React Query RPC Bridge**: `useRpcQuery` & `useRpcMutation` with automatic caching, refetching, and input hashing.

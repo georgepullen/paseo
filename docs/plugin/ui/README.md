@@ -73,6 +73,17 @@ Modal • Icon • useToast"]
 2. **Monorepo Design System (`paseo-plugin-helper/client`)**:
    Eliminates boilerplate by providing pre-composed, theme-aware, mobile-optimized React Native UI components, smart layout primitives, automatic modal gesture handling, and React Query data-fetching bridges.
 
+> **Theme ownership for `paseo-plugin-helper/ui` adapters.** The newer
+> `paseo-plugin-helper/ui` adapters (`HostCard`, `HostBadge`, …) read colors from
+> `HostThemeProvider` (`useHostTheme()`), not from `PluginThemeProvider`. The
+> helper's registration wrappers — `registerSidebarSurface`,
+> `registerWorkspacePanel`, `registerAgentPanel`, and both
+> `registerComposerPill` presentations — mount `HostThemeProvider` for their
+> subtree and forward the host `theme`, so registered surfaces/panels/pills
+> track light/dark automatically. Rendering `ui/` adapters outside a registrar
+> requires mounting `HostThemeProvider` yourself; with no provider they silently
+> fall back to a static dark palette, which is why a light desktop painted dark.
+
 ---
 
 ## 3. Client Initialization (`initClientHelpers`)
