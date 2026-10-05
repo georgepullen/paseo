@@ -23,6 +23,7 @@
  */
 
 export * from "../shared/rpc.js";
+export * from "../shared/features.js";
 export * from "../shared/settings.js";
 export * from "../shared/suite-settings.js";
 export * from "../shared/formatters.js";

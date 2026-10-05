@@ -1,5 +1,6 @@
 export * from "./types.js";
 export * from "./rpc.js";
+export * from "./features.js";
 export * from "./formatters.js";
 export * from "./settings.js";
 export * from "./suite-settings.js";

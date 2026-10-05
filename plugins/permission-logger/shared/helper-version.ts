@@ -3,4 +3,4 @@
 // aliased by tsconfig paths into ../../packages/paseo-plugin-helper/src.
 export const HELPER_VERSION = "0.4.0-beta.12";
 export const HELPER_SERVED_FROM = "checkout";
-export const HELPER_REVISION = "sha256:92ce552e58a9";
+export const HELPER_REVISION = "sha256:bbdc338aa992";

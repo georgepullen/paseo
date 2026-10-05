@@ -145,7 +145,29 @@ truncate("Very long string here", 8); // "Very lo…"
 
 ---
 
-## 3. Shared Types
+## 5. Feature Modules: `FeatureModule` & `composeFeatureModules`
+
+`shared` exports the composition primitive for modular plugins. A
+`FeatureModule` is a droppable unit of functionality —
+`{ id, contributeServer?, contributeClient?, contracts? }` — whose contribution
+hooks return idempotent disposers. `composeFeatureModules` runs them in
+composition order and returns a combined, idempotent disposer that tears them
+down in reverse order.
+
+```ts
+import {
+  composeFeatureModules,
+  type FeatureModule,
+  type FeatureDisposer,
+} from "paseo-plugin-helper/shared";
+```
+
+See [Feature Modules (`docs/features.md`)](features.md) for the lifecycle
+contract, the `FeatureComposition` return shape, and error semantics.
+
+---
+
+## 6. Shared Types
 
 - `PlatformType`: `"web" | "ios" | "android" | "macos" | "windows" | "linux" | "unknown"`
 - `ResponsiveLayout`: `{ compact: boolean; platform: PlatformType; width?: number; height?: number }`

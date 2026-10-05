@@ -37,6 +37,7 @@
 - **Layout Vocabulary**: `Row`, `Stack`/`VStack`, and `Grid` replace hand-rolled flexbox `View` styles with theme-derived gaps and width-aware wrapping, while `KeyValueGroup` gains `collapse`/`minColumnWidth` so compact surfaces stay multi-column when there is room.
 - ℹ️ **Plugin About & Diagnostics Card**: `<AboutSection>` standardizes plugin branding, license tags, version badges, external navigation buttons, 1-tap "Copy Diagnostics" for issue triage, and auto-resolves official GitHub logos from author or repository URLs.
 - **Composer Pill Lifecycle Engine**: Complete management of agent subscriptions, pill contributions, and modal states in one function call (`registerComposerPill`).
+- **Composable Feature Modules**: `FeatureModule` + `composeFeatureModules` assemble a plugin from droppable units of functionality — each contributes server/client behavior, returns an idempotent disposer, and is torn down in reverse order with partial-failure cleanup and eager composition validation (see [docs/features.md](docs/features.md)).
 - **Panels & Surfaces**: One-line registration for sidebar surfaces (`registerSidebarSurface`), panels (`registerWorkspacePanel`, `registerAgentPanel`), and Ctrl+K command-center items (`registerCommandCenterItem`) with automatic theme and flair propagation.
 - **Zero-Dependency MCP Client**: Built-in stdio client (`McpClient`) with stderr ring buffering, non-JSON stdout line filtering, cross-platform process tree cleanup, and fallback ping readiness checks.
 - **Agent MCP Config Writer**: `upsertMcpServer` and `removeMcpServer` safely register plugin or Gateway MCP servers into Claude Desktop, Claude Code, OpenCode, Cursor, and Gemini configs with JSONC parsing, atomic writes, deep-equality idempotency, and automated backups.
@@ -61,7 +62,7 @@ To guarantee compliance with Paseo's bundler and compiler rules (no Node builtin
 | `paseo-plugin-helper/server` | Node.js 20+ | `createPluginLogger`, `resolvePluginVersion`, `stampVersion`, `getSystemMetrics`, `PluginStorage`, `safeSpawn`, `redactSecrets` | [docs/server.md](docs/server.md) |
 | `paseo-plugin-helper/mcp` | Node.js 20+ | Zero-dependency stdio `McpClient`, ring buffer, process tree killer | [docs/mcp.md](docs/mcp.md) |
 | `paseo-plugin-helper/cli` | Node.js 20+ | `auditProject` programmatic scanner and reporting | [docs/cli.md](docs/cli.md) |
-| `paseo-plugin-helper/shared` | Universal | `defineContract`, formatters (`formatBytes`, `formatUptime`, `resolveMetricStatus`) | [docs/shared.md](docs/shared.md) |
+| `paseo-plugin-helper/shared` | Universal | `defineContract`, `FeatureModule` + `composeFeatureModules`, formatters (`formatBytes`, `formatUptime`, `resolveMetricStatus`) | [docs/shared.md](docs/shared.md) |
 | `paseo-plugin-helper/testing` | Universal | Mock client and server contexts for unit and integration testing | [docs/testing.md](docs/testing.md) |
 
 ## Capability Map
@@ -75,6 +76,7 @@ flowchart TB
     H --> RPC["RPC contracts\ndefineContract • defineSettingsContract\nuseRpcQuery • useRpcMutation\nuseAutoRefreshQuery"]
     H --> UI["UI components\nCard • Badge • Button • Tabs\nMetricGauge • ProgressBar\nDataTable • SearchInput\nHighlightedText • InteractiveRow\nToggle • TextInput • Select • FormRow\nModalBody • ActionBar\nRow • Stack • Grid\nAboutSection • EmptyState\nStatusDot • ForgeIcon • AttentionBeacon"]
     H --> PILL["Surfaces\nregisterComposerPill\nregisterSidebarSurface\nregisterWorkspacePanel\nregisterAgentPanel"]
+    H --> MOD["Feature modules\nFeatureModule • composeFeatureModules"]
     H --> SET["Settings\nusePluginSettings\nuseSharedPluginSettings\nuseSuiteSettings"]
     H --> SRV["Daemon utilities\ncreatePluginLogger • PluginStorage\nregisterSettingsRpc\ngetSystemMetrics • safeSpawn\nredactSecrets • guardRpcHandler"]
     H --> MCP["MCP\nMcpClient • upsertMcpServer\nremoveMcpServer"]
@@ -307,6 +309,42 @@ export const contributePlugin: PluginContribution = (plugin) => {
 
 ---
 
+## Composable Feature Modules
+
+A plugin entry can be assembled from `FeatureModule`s instead of one monolithic
+`contribute` body. Each module owns one concern, contributes to the server
+and/or client side, and returns an **idempotent disposer**. A plugin entry
+composes them and returns the combined disposer Paseo calls on unload.
+
+```ts
+import type { PluginClientContext } from "@getpaseo/plugin/client";
+import type { PluginServerContext } from "@getpaseo/plugin/server";
+import { composeFeatureModules } from "paseo-plugin-helper/shared";
+import { customPills } from "./features/custom-pills.js";
+import { timelineTelemetry } from "./features/timeline-telemetry.js";
+
+const features = composeFeatureModules<PluginServerContext, PluginClientContext>([
+  customPills,
+  timelineTelemetry,
+]);
+
+export function contributeServer(server: PluginServerContext) {
+  return features.contributeServer(server);
+}
+
+export function contributeClient(client: PluginClientContext) {
+  return features.contributeClient(client);
+}
+```
+
+Lifecycle guarantees: contributions run in composition order, teardown runs in
+reverse order, the combined disposer is idempotent, a failed contribution tears
+down what already mounted, and duplicate module ids / contract names throw at
+composition time. This phase is additive — existing plugins are unchanged. See
+[docs/features.md](docs/features.md) for the full contract.
+
+---
+
 ## Plugin Registry & Presence (`listPlugins(context)`, `isPluginInstalled(context, id)`)
 
 Detect and enumerate other installed plugins through the **sanctioned daemon channel** — never by
@@ -462,6 +500,7 @@ Comprehensive API and module documentation:
 - [Server Daemon Utilities (`docs/server.md`)](docs/server.md)
 - [MCP Client & Transports (`docs/mcp.md`)](docs/mcp.md)
 - [Shared Types & Formatters (`docs/shared.md`)](docs/shared.md)
+- [Composable Feature Modules (`docs/features.md`)](docs/features.md)
 - [Testing Harness (`docs/testing.md`)](docs/testing.md)
 
 ---
