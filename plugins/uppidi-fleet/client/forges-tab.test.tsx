@@ -200,4 +200,66 @@ describe("Issue #791: Uppidi Fleet sidebar issues tab and repo dropdown", () => 
     const text = renderedText(renderer.toJSON());
     assert.match(text, /All Enrolled Repositories/);
   });
+
+  describe("Issue #888: toCanonicalForgeUrl normalizes bare forge host/root and repo scopes", () => {
+    it("normalizes bare forge root URL without owner/repo to valid repo scope", async () => {
+      const { toCanonicalForgeUrl } = await import("./forges-tab.js");
+      assert.equal(
+        toCanonicalForgeUrl("https://forge.mrs.uppidi.com/agent-mux"),
+        "https://forge.mrs.uppidi.com/xpufx-org/paseo",
+      );
+      assert.equal(
+        toCanonicalForgeUrl("https://forge.mrs.uppidi.com/agent-mux", "2fado"),
+        "https://forge.mrs.uppidi.com/xpufx-org/2fado",
+      );
+      assert.equal(
+        toCanonicalForgeUrl("https://forge.mrs.uppidi.com/agent-mux", "xpufx-org/2fado"),
+        "https://forge.mrs.uppidi.com/xpufx-org/2fado",
+      );
+    });
+
+    it("normalizes bare forge host root without path", async () => {
+      const { toCanonicalForgeUrl } = await import("./forges-tab.js");
+      assert.equal(
+        toCanonicalForgeUrl("https://forge.mrs.uppidi.com"),
+        "https://forge.mrs.uppidi.com/xpufx-org/paseo",
+      );
+      assert.equal(
+        toCanonicalForgeUrl("https://forge.mrs.uppidi.com/"),
+        "https://forge.mrs.uppidi.com/xpufx-org/paseo",
+      );
+      assert.equal(
+        toCanonicalForgeUrl("forge.mrs.uppidi.com"),
+        "https://forge.mrs.uppidi.com/xpufx-org/paseo",
+      );
+    });
+
+    it("qualifies a bare repo name or keeps full remote URL", async () => {
+      const { toCanonicalForgeUrl } = await import("./forges-tab.js");
+      assert.equal(
+        toCanonicalForgeUrl("paseo"),
+        "https://forge.mrs.uppidi.com/xpufx-org/paseo",
+      );
+      assert.equal(
+        toCanonicalForgeUrl("xpufx-org/paseo"),
+        "https://forge.mrs.uppidi.com/xpufx-org/paseo",
+      );
+      assert.equal(
+        toCanonicalForgeUrl("https://forge.mrs.uppidi.com/xpufx-org/paseo"),
+        "https://forge.mrs.uppidi.com/xpufx-org/paseo",
+      );
+      assert.equal(
+        toCanonicalForgeUrl("https://github.com/someone/other-repo"),
+        "https://github.com/someone/other-repo",
+      );
+    });
+
+    it("returns undefined for empty or all repo filters", async () => {
+      const { toCanonicalForgeUrl } = await import("./forges-tab.js");
+      assert.equal(toCanonicalForgeUrl("all"), undefined);
+      assert.equal(toCanonicalForgeUrl(""), undefined);
+      assert.equal(toCanonicalForgeUrl(null), undefined);
+      assert.equal(toCanonicalForgeUrl(undefined), undefined);
+    });
+  });
 });

@@ -83,12 +83,42 @@ export const forgeContextContract = defineContract({
   }),
 });
 
-export function toCanonicalForgeUrl(repoOrUrl: string | undefined | null): string | undefined {
+export function toCanonicalForgeUrl(
+  repoOrUrl: string | undefined | null,
+  fallbackRepo?: string | null,
+): string | undefined {
   if (!repoOrUrl || repoOrUrl === "all") return undefined;
   const trimmed = repoOrUrl.trim();
   if (!trimmed) return undefined;
-  if (trimmed.includes("://") || trimmed.includes("@")) return trimmed;
-  return `https://forge.mrs.uppidi.com/${trimmed.replace(/^\/+/, "")}`;
+
+  const defaultOwnerRepo = fallbackRepo?.trim() && fallbackRepo.trim() !== "all"
+    ? (fallbackRepo.trim().includes("/") ? fallbackRepo.trim() : `xpufx-org/${fallbackRepo.trim()}`)
+    : "xpufx-org/paseo";
+
+  if (trimmed.includes("://") || trimmed.includes("@")) {
+    try {
+      const url = new URL(trimmed);
+      const segments = url.pathname.replace(/^\/+/, "").replace(/\/+$/, "").split("/").filter(Boolean);
+      if (segments.length < 2) {
+        return `${url.origin}/${defaultOwnerRepo}`;
+      }
+    } catch {
+      // Keep trimmed on parse error
+    }
+    return trimmed;
+  }
+
+  const cleaned = trimmed.replace(/^\/+/, "").replace(/\/+$/, "");
+  const segments = cleaned.split("/").filter(Boolean);
+  if (segments.length === 1 && (cleaned === "forge.mrs.uppidi.com" || !cleaned.includes("."))) {
+    // Single segment: if it's the host or a bare repo name, qualify with owner/repo
+    if (cleaned === "forge.mrs.uppidi.com") {
+      return `https://${cleaned}/${defaultOwnerRepo}`;
+    }
+    return `https://forge.mrs.uppidi.com/xpufx-org/${cleaned}`;
+  }
+
+  return `https://forge.mrs.uppidi.com/${cleaned}`;
 }
 
 class SafeWorkspaceBoundary extends React.Component<
