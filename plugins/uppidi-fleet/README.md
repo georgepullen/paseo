@@ -70,6 +70,12 @@ which pieces you must supply because the plugin does not ship them ([§10](#10-g
 
 ## 1. The concept in one picture
 
+[![Forgejo orchestration architecture (dark variant)](screenshots/forgejo-orchestration-dark.png)](screenshots/forgejo-orchestration-dark.png)
+*Forgejo orchestration architecture — dark variant.*
+
+[![Forgejo orchestration architecture (light variant)](screenshots/forgejo-orchestration-light.png)](screenshots/forgejo-orchestration-light.png)
+*Forgejo orchestration architecture — light variant.*
+
 ```
   Forgejo board (source of truth)
   ┌───────────────────────────────────────────────────────────────┐
