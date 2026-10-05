@@ -12,8 +12,130 @@ import type {
   UppidiSkillsOutput,
 } from "../shared/contracts.js";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PLUGIN_ROOT = path.resolve(__dirname, "..");
+/** Plugin ids this plugin may be installed under (`uppidi-forge` is an alias). */
+const SELF_PLUGIN_IDS = ["uppidi-fleet", "uppidi-forge"];
+
+/** Bundled defaults live under `<pluginRoot>/examples/skills`. */
+const BUNDLED_SKILLS_DIR = path.join("examples", "skills");
+
+export interface PluginRootOptions {
+  /** Explicit plugin root; callers that already know it skip discovery. */
+  rootDir?: string;
+  env?: NodeJS.ProcessEnv;
+  home?: string;
+  cwd?: string;
+  /**
+   * Test seam: the module URL to consult. `null` simulates the daemon's bundle,
+   * where `import.meta.url` is absent; `undefined` reads it, guarded.
+   */
+  moduleUrl?: string | null;
+}
+
+/** Explicit override for unusual host layouts (packaged app, moved checkout). */
+function overrideCandidates(env: NodeJS.ProcessEnv, cwd: string): string[] {
+  const raw = env.PASEO_UPPIDI_FLEET_ROOT?.trim();
+  if (!raw) return [];
+  return [path.isAbsolute(raw) ? raw : path.join(cwd, raw)];
+}
+
+/**
+ * Directories the daemon records for installed plugins, this plugin's own ids
+ * first so a sibling install can never shadow it.
+ */
+function configCandidates(home: string): string[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(path.join(home, ".paseo", "config.json"), "utf8"));
+  } catch {
+    return [];
+  }
+  const plugins = (parsed as { plugins?: unknown })?.plugins;
+  if (!plugins || typeof plugins !== "object") return [];
+
+  const preferred: string[] = [];
+  const rest: string[] = [];
+  for (const [id, entry] of Object.entries(plugins as Record<string, unknown>)) {
+    const dir = (entry as { path?: unknown })?.path;
+    if (typeof dir !== "string" || !dir.trim()) continue;
+    (SELF_PLUGIN_IDS.includes(id) ? preferred : rest).push(dir);
+  }
+  return [...preferred, ...rest];
+}
+
+/** Managed-install layout: `~/.paseo/plugins/<pluginId>/<commit>/checkout`. */
+function managedCandidates(home: string): string[] {
+  const out: string[] = [];
+  for (const pluginId of SELF_PLUGIN_IDS) {
+    const base = path.join(home, ".paseo", "plugins", pluginId);
+    if (!fs.existsSync(base)) continue;
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(base, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      out.push(path.join(base, entry.name, "checkout"));
+    }
+  }
+  return out;
+}
+
+/**
+ * `import.meta.url` exists only when the server runs unbundled. Paseo bundles
+ * and inlines plugin servers, so the read is guarded: an unguarded
+ * `fileURLToPath(import.meta.url)` throws at module load and takes the plugin
+ * down (#926). Kept for tests and any executor that runs the sources directly.
+ */
+function moduleCandidates(moduleUrl: string | null): string[] {
+  if (!moduleUrl) return [];
+  try {
+    const here = path.dirname(fileURLToPath(moduleUrl));
+    return [here, path.join(here, "..")];
+  } catch {
+    return [];
+  }
+}
+
+function readModuleUrl(explicit: string | null | undefined): string | null {
+  if (explicit !== undefined) return explicit;
+  try {
+    return (import.meta as unknown as { url?: string })?.url ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Ordered candidate plugin roots, highest-confidence first. A plugin server is
+ * bundled and inlined before it runs, so neither `import.meta.url` nor
+ * `process.cwd()` identifies the checkout (#926). The dependable locator is the
+ * install path the daemon records in `~/.paseo/config.json`, with an explicit
+ * env override on top and the managed-checkout / module / cwd layouts below.
+ */
+export function pluginRootCandidates(options: PluginRootOptions = {}): string[] {
+  const env = options.env ?? process.env;
+  const home = options.home ?? os.homedir();
+  const cwd = options.cwd ?? process.cwd();
+  return [
+    ...(options.rootDir ? [options.rootDir] : []),
+    ...overrideCandidates(env, cwd),
+    ...configCandidates(home),
+    ...managedCandidates(home),
+    ...moduleCandidates(readModuleUrl(options.moduleUrl)),
+    cwd,
+    path.join(cwd, ".."),
+  ];
+}
+
+/** Plugin root that actually holds `examples/skills`, or null when none does. */
+export function resolvePluginRoot(options: PluginRootOptions = {}): string | null {
+  for (const root of pluginRootCandidates(options)) {
+    if (fs.existsSync(path.join(root, BUNDLED_SKILLS_DIR))) return root;
+  }
+  return null;
+}
 
 export interface FleetSkillDefinition {
   id: FleetSkillId;
@@ -58,7 +180,7 @@ export function isFleetSkillId(value: string): value is FleetSkillId {
   return FLEET_SKILL_IDS.has(value);
 }
 
-export interface SkillStorageOptions {
+export interface SkillStorageOptions extends PluginRootOptions {
   /** Overrides the plugin-data base directory (used by tests). */
   baseDir?: string;
 }
@@ -100,13 +222,31 @@ function getDefinition(skillId: string): FleetSkillDefinition {
   return def;
 }
 
-export function getBundledSkillPath(skillId: string): string {
-  return path.join(PLUGIN_ROOT, getDefinition(skillId).bundledRelPath);
+/**
+ * Absolute path of a bundled skill's default file, or null when no resolved
+ * plugin root holds it. Never throws: a missing bundled copy falls back to the
+ * operator override, and an empty default rather than a load-time crash (#926).
+ */
+export function getBundledSkillPath(
+  skillId: string,
+  options: PluginRootOptions = {},
+): string | null {
+  const def = getDefinition(skillId);
+  for (const root of pluginRootCandidates(options)) {
+    const candidate = path.join(root, def.bundledRelPath);
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return null;
 }
 
-export function readBundledSkillContent(skillId: string): string {
+export function readBundledSkillContent(
+  skillId: string,
+  options: PluginRootOptions = {},
+): string {
+  const bundledPath = getBundledSkillPath(skillId, options);
+  if (!bundledPath) return "";
   try {
-    return fs.readFileSync(getBundledSkillPath(skillId), "utf8");
+    return fs.readFileSync(bundledPath, "utf8");
   } catch {
     return "";
   }
@@ -151,11 +291,12 @@ export function resolveEffectiveSkill(
     }
   }
 
+  const bundledPath = getBundledSkillPath(skillId, options);
   return {
     ...def,
-    content: readBundledSkillContent(skillId),
+    content: readBundledSkillContent(skillId, options),
     origin: "bundled",
-    effectivePath: getBundledSkillPath(skillId),
+    effectivePath: bundledPath ?? "",
   };
 }
 

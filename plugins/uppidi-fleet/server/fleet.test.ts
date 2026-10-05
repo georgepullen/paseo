@@ -1105,10 +1105,15 @@ describe("orchestrator workspace resolution and state isolation (#485, #486)", (
       assert.equal(res.agentId, "agent-orch-skill-test");
       assert.equal(capturedPayload.workspaceId, "wks_sample_repo");
       assert.equal(capturedPayload.cwd, "/home/user/code/sample-repo");
+      const orchestratorBundledPath = getBundledSkillPath("orchestrator");
+      const codingAgentBundledPath = getBundledSkillPath("coding-agent");
       assert.ok(
-        capturedPayload.prompt.includes(getBundledSkillPath("orchestrator"))
+        orchestratorBundledPath !== null &&
+          capturedPayload.prompt.includes(orchestratorBundledPath)
       );
-      assert.ok(capturedPayload.prompt.includes(getBundledSkillPath("coding-agent")));
+      assert.ok(
+        codingAgentBundledPath !== null && capturedPayload.prompt.includes(codingAgentBundledPath)
+      );
       assert.ok(capturedPayload.prompt.includes("teax"));
     } finally {
       setExecFileAsyncForTest(null);

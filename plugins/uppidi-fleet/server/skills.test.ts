@@ -3,6 +3,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
+import { build } from "esbuild";
 
 if (!process.env.NODE_ENV) {
   process.env.NODE_ENV = "test";
@@ -17,8 +20,10 @@ import {
   getEffectiveSkillPath,
   handleUppidiSetSkill,
   handleUppidiSkills,
+  pluginRootCandidates,
   readBundledSkillContent,
   resolveEffectiveSkill,
+  resolvePluginRoot,
   setSkillContent,
   setSkillsBaseDirForTest,
 } from "./skills.js";
@@ -192,14 +197,132 @@ describe("spawned agents use the effective skill (#883)", () => {
       );
       assert.equal(fs.readFileSync(overridePath, "utf8"), sentinel);
       // Workers are pointed at the effective coding-agent skill too.
+      const codingAgentOverridePath = path.join(
+        baseDir,
+        "uppidi-fleet",
+        "skills",
+        "coding-agent.md",
+      );
+      const codingAgentBundledPath = getBundledSkillPath("coding-agent");
       assert.ok(
-        capturedPayload.prompt.includes(
-          path.join(baseDir, "uppidi-fleet", "skills", "coding-agent.md"),
-        ) ||
-          capturedPayload.prompt.includes(getBundledSkillPath("coding-agent")),
+        capturedPayload.prompt.includes(codingAgentOverridePath) ||
+          (codingAgentBundledPath !== null &&
+            capturedPayload.prompt.includes(codingAgentBundledPath)),
       );
     } finally {
       setExecFileAsyncForTest(null);
+    }
+  });
+});
+
+describe("bundle-safe plugin root resolution (#926)", () => {
+  const pluginRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+  function scratchDir(): string {
+    return fs.mkdtempSync(path.join(os.tmpdir(), "paseo-fleet-skillroot-"));
+  }
+
+  function writeConfig(home: string, pluginPath: string): void {
+    fs.mkdirSync(path.join(home, ".paseo"), { recursive: true });
+    fs.writeFileSync(
+      path.join(home, ".paseo", "config.json"),
+      JSON.stringify({
+        plugins: {
+          "uppidi-fleet": { source: "directory", path: pluginPath, enabled: true },
+        },
+      }),
+    );
+  }
+
+  it("resolves the bundled default through the config path with import.meta.url absent", () => {
+    const home = scratchDir();
+    const cwd = scratchDir();
+    try {
+      writeConfig(home, pluginRoot);
+      const options = { env: {}, home, cwd, moduleUrl: null };
+      const expected = path.join(pluginRoot, "examples", "skills", "orchestrator", "SKILL.md");
+      assert.equal(getBundledSkillPath("orchestrator", options), expected);
+      assert.ok(readBundledSkillContent("orchestrator", options).length > 0);
+      assert.equal(resolvePluginRoot(options), pluginRoot);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("honours PASEO_UPPIDI_FLEET_ROOT over the config path", () => {
+    const envRoot = scratchDir();
+    const home = scratchDir();
+    const cwd = scratchDir();
+    try {
+      const skillDir = path.join(envRoot, "examples", "skills", "orchestrator");
+      fs.mkdirSync(skillDir, { recursive: true });
+      fs.writeFileSync(path.join(skillDir, "SKILL.md"), "# env-root\n");
+      writeConfig(home, "/nonexistent/config-root");
+      const options = { env: { PASEO_UPPIDI_FLEET_ROOT: envRoot }, home, cwd, moduleUrl: null };
+      assert.equal(pluginRootCandidates(options)[0], envRoot);
+      assert.equal(getBundledSkillPath("orchestrator", options), path.join(skillDir, "SKILL.md"));
+      assert.equal(readBundledSkillContent("orchestrator", options), "# env-root\n");
+    } finally {
+      fs.rmSync(envRoot, { recursive: true, force: true });
+      fs.rmSync(home, { recursive: true, force: true });
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("degrades to an empty bundled default instead of throwing when nothing resolves", () => {
+    const home = scratchDir();
+    const cwd = scratchDir();
+    const baseDir = scratchDir();
+    try {
+      const options = { env: {}, home, cwd, moduleUrl: null };
+      assert.equal(resolvePluginRoot(options), null);
+      assert.equal(getBundledSkillPath("orchestrator", options), null);
+      assert.equal(readBundledSkillContent("orchestrator", options), "");
+
+      const skill = resolveEffectiveSkill("orchestrator", { ...options, baseDir });
+      assert.equal(skill.origin, "bundled");
+      assert.equal(skill.content, "");
+      assert.equal(skill.effectivePath, "");
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+      fs.rmSync(cwd, { recursive: true, force: true });
+      fs.rmSync(baseDir, { recursive: true, force: true });
+    }
+  });
+
+  it("loads the daemon-style bundle (no import.meta.url) and resolves via config", async () => {
+    const scratch = scratchDir();
+    const home = scratchDir();
+    try {
+      const outfile = path.join(scratch, "skills.bundle.cjs");
+      await build({
+        entryPoints: [path.join(pluginRoot, "server", "skills.ts")],
+        bundle: true,
+        format: "cjs",
+        jsx: "automatic",
+        platform: "node",
+        target: "node20",
+        external: ["@getpaseo/plugin", "@getpaseo/plugin/server"],
+        treeShaking: true,
+        logLevel: "silent",
+        absWorkingDir: pluginRoot,
+        outfile,
+      });
+      writeConfig(home, pluginRoot);
+      const require = createRequire(outfile);
+      // Pre-#926 this threw ERR_INVALID_ARG_TYPE at load: the bundle inlines the
+      // module with import.meta.url absent, and PLUGIN_ROOT read it unguarded.
+      const mod = require(outfile) as typeof import("./skills.js");
+      const options = { env: {}, home, cwd: scratch, moduleUrl: null };
+      assert.equal(
+        mod.getBundledSkillPath("coding-agent", options),
+        path.join(pluginRoot, "examples", "skills", "coding-agent", "SKILL.md"),
+      );
+      assert.ok(mod.readBundledSkillContent("coding-agent", options).length > 0);
+    } finally {
+      fs.rmSync(scratch, { recursive: true, force: true });
+      fs.rmSync(home, { recursive: true, force: true });
     }
   });
 });
