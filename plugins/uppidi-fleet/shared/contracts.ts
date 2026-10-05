@@ -1276,6 +1276,84 @@ export const uppidiToggleRepoMuteContract = defineContract({
   output: UppidiToggleRepoMuteOutputSchema,
 });
 
+// Repository Enrollment (Issue #867)
+export const UppidiRepoSchema = z.object({
+  key: z.string(),
+  name: z.string(),
+  fullName: z.string(),
+  owner: z.string(),
+  host: z.string(),
+  url: z.string(),
+  private: z.boolean(),
+  enrolled: z.boolean(),
+  muted: z.boolean(),
+  hasOrchestrator: z.boolean().default(false).optional(),
+  queueDepth: z.number().default(0).optional(),
+});
+export type UppidiRepo = z.infer<typeof UppidiRepoSchema>;
+
+export const UppidiReposInputSchema = z.object({
+  query: z.string().optional(),
+});
+export type UppidiReposInput = z.infer<typeof UppidiReposInputSchema>;
+
+export const UppidiReposOutputSchema = z.object({
+  ok: z.boolean(),
+  repos: z.array(UppidiRepoSchema).default([]),
+  error: z.string().optional(),
+});
+export type UppidiReposOutput = z.infer<typeof UppidiReposOutputSchema>;
+
+export const uppidiReposContract = defineContract({
+  name: "uppidi-fleet.repos",
+  description: "List repositories from Forgejo with enrollment and mute status",
+  input: UppidiReposInputSchema,
+  output: UppidiReposOutputSchema,
+});
+
+export const UppidiEnrollRepoInputSchema = z.object({
+  repo: z.string(),
+});
+export type UppidiEnrollRepoInput = z.infer<typeof UppidiEnrollRepoInputSchema>;
+
+export const UppidiEnrollRepoOutputSchema = z.object({
+  ok: z.boolean(),
+  repo: z.string(),
+  enrolledRepos: z.array(z.string()).default([]),
+  message: z.string().optional(),
+  error: z.string().optional(),
+});
+export type UppidiEnrollRepoOutput = z.infer<typeof UppidiEnrollRepoOutputSchema>;
+
+export const uppidiEnrollRepoContract = defineContract({
+  name: "uppidi-fleet.enroll-repo",
+  description: "Enroll repository into fleet roster",
+  input: UppidiEnrollRepoInputSchema,
+  output: UppidiEnrollRepoOutputSchema,
+});
+
+export const UppidiUnenrollRepoInputSchema = z.object({
+  repo: z.string(),
+});
+export type UppidiUnenrollRepoInput = z.infer<typeof UppidiUnenrollRepoInputSchema>;
+
+export const UppidiUnenrollRepoOutputSchema = z.object({
+  ok: z.boolean(),
+  repo: z.string(),
+  enrolledRepos: z.array(z.string()).default([]),
+  message: z.string().optional(),
+  error: z.string().optional(),
+});
+export type UppidiUnenrollRepoOutput = z.infer<typeof UppidiUnenrollRepoOutputSchema>;
+
+export const uppidiUnenrollRepoContract = defineContract({
+  name: "uppidi-fleet.unenroll-repo",
+  description: "Unenroll repository from fleet roster",
+  input: UppidiUnenrollRepoInputSchema,
+  output: UppidiUnenrollRepoOutputSchema,
+});
+
+
 // Fleet Teardown (Issue #742)
 export const FleetTeardownTargetSchema = z.enum(["workers", "orchestrators", "frontdesk"]);
 export type FleetTeardownTarget = z.infer<typeof FleetTeardownTargetSchema>;

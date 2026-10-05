@@ -23,6 +23,9 @@ import {
   uppidiAddOrchestratorContract,
   uppidiReplaceOrchestratorContract,
   uppidiToggleRepoMuteContract,
+  uppidiReposContract,
+  uppidiEnrollRepoContract,
+  uppidiUnenrollRepoContract,
   uppidiFleetSettingsContract,
   uppidiFleetTeardownContract,
   uppidiFleetToolListContract,
@@ -33,6 +36,11 @@ import {
   uppidiTransitionIssueContract,
 } from "./shared/contracts.js";
 import { handleUppidiIssues, handleUppidiTransitionIssue } from "./server/issues.js";
+import {
+  handleUppidiRepos,
+  handleUppidiEnrollRepo,
+  handleUppidiUnenrollRepo,
+} from "./server/repos.js";
 import {
   handleHookStatus,
   handleHookInfo,
@@ -115,6 +123,9 @@ export default function contribute(server: PluginServerContext) {
   server.handle(uppidiAddOrchestratorContract, handleUppidiAddOrchestrator);
   server.handle(uppidiReplaceOrchestratorContract, handleUppidiReplaceOrchestrator);
   server.handle(uppidiToggleRepoMuteContract, handleUppidiToggleRepoMute);
+  server.handle(uppidiReposContract, handleUppidiRepos);
+  server.handle(uppidiEnrollRepoContract, handleUppidiEnrollRepo);
+  server.handle(uppidiUnenrollRepoContract, handleUppidiUnenrollRepo);
   server.handle(uppidiFleetTeardownContract, handleFleetTeardown);
   server.handle(uppidiFleetResetStateContract, handleFleetResetState);
   server.handle(uppidiFleetToolListContract, handleFleetToolList);

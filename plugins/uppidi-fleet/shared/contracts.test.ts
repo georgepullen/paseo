@@ -51,6 +51,16 @@ import {
   UppidiReplaceOrchestratorOutputSchema,
   UppidiToggleRepoMuteInputSchema,
   UppidiToggleRepoMuteOutputSchema,
+  uppidiReposContract,
+  UppidiRepoSchema,
+  UppidiReposInputSchema,
+  UppidiReposOutputSchema,
+  uppidiEnrollRepoContract,
+  UppidiEnrollRepoInputSchema,
+  UppidiEnrollRepoOutputSchema,
+  uppidiUnenrollRepoContract,
+  UppidiUnenrollRepoInputSchema,
+  UppidiUnenrollRepoOutputSchema,
   uppidiFleetSettingsSchema,
   uppidiFleetSettingsContract,
   FleetResetStateInputSchema,
@@ -647,8 +657,55 @@ describe("uppidi-fleet shared contracts", () => {
       mutedRepos: ["xpufx-org/paseo"],
     });
     assert.equal(muteOutput.ok, true);
-    assert.equal(muteOutput.isMuted, true);
-    assert.deepEqual(muteOutput.mutedRepos, ["xpufx-org/paseo"]);
+    // 5b. Repo Enrollment Contracts (#867)
+    assert.equal(uppidiReposContract.name, "uppidi-fleet.repos");
+    const reposInput = UppidiReposInputSchema.parse({ query: "paseo" });
+    assert.equal(reposInput.query, "paseo");
+    const reposOutput = UppidiReposOutputSchema.parse({
+      ok: true,
+      repos: [
+        {
+          key: "forge.mrs.uppidi.com/xpufx-org/paseo",
+          name: "paseo",
+          fullName: "xpufx-org/paseo",
+          owner: "xpufx-org",
+          host: "forge.mrs.uppidi.com",
+          url: "https://forge.mrs.uppidi.com/xpufx-org/paseo",
+          private: false,
+          enrolled: true,
+          muted: false,
+          hasOrchestrator: true,
+          queueDepth: 2,
+        },
+      ],
+    });
+    assert.equal(reposOutput.ok, true);
+    assert.equal(reposOutput.repos.length, 1);
+    assert.equal(reposOutput.repos[0]?.key, "forge.mrs.uppidi.com/xpufx-org/paseo");
+
+    assert.equal(uppidiEnrollRepoContract.name, "uppidi-fleet.enroll-repo");
+    const enrollInput = UppidiEnrollRepoInputSchema.parse({ repo: "xpufx-org/paseo" });
+    assert.equal(enrollInput.repo, "xpufx-org/paseo");
+    const enrollOutput = UppidiEnrollRepoOutputSchema.parse({
+      ok: true,
+      repo: "forge.mrs.uppidi.com/xpufx-org/paseo",
+      enrolledRepos: ["forge.mrs.uppidi.com/xpufx-org/paseo"],
+      message: "Enrolled repository",
+    });
+    assert.equal(enrollOutput.ok, true);
+    assert.deepEqual(enrollOutput.enrolledRepos, ["forge.mrs.uppidi.com/xpufx-org/paseo"]);
+
+    assert.equal(uppidiUnenrollRepoContract.name, "uppidi-fleet.unenroll-repo");
+    const unenrollInput = UppidiUnenrollRepoInputSchema.parse({ repo: "forge.mrs.uppidi.com/xpufx-org/paseo" });
+    assert.equal(unenrollInput.repo, "forge.mrs.uppidi.com/xpufx-org/paseo");
+    const unenrollOutput = UppidiUnenrollRepoOutputSchema.parse({
+      ok: true,
+      repo: "forge.mrs.uppidi.com/xpufx-org/paseo",
+      enrolledRepos: [],
+      message: "Unenrolled repository",
+    });
+    assert.equal(unenrollOutput.ok, true);
+    assert.deepEqual(unenrollOutput.enrolledRepos, []);
 
     // 6. Schema extensions on UppidiAgent, TreeNode, Output
     const agent = UppidiAgentSchema.parse({

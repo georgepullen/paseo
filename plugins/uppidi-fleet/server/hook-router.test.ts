@@ -1228,6 +1228,10 @@ describe("hook-router per-repository muting circuit breaker and fleet roster (#4
     // Enroll repo
     router.enrollRepo("xpufx-org/new-repo");
     assert.ok(router.getEnrolledRepos().includes("xpufx-org/new-repo"));
+
+    // Unenroll repo (#867)
+    router.unenrollRepo("xpufx-org/new-repo");
+    assert.ok(!router.getEnrolledRepos().includes("xpufx-org/new-repo"));
   });
 
   it("suppresses queue drain when repository is muted and resumes on unmute", async () => {

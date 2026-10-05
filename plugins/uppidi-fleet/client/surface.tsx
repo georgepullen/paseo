@@ -63,6 +63,10 @@ import {
   uppidiFleetTeardownContract,
   uppidiFleetResetStateContract,
   uppidiTransitionIssueContract,
+  uppidiReposContract,
+  uppidiEnrollRepoContract,
+  uppidiUnenrollRepoContract,
+  type UppidiRepo,
   type UppidiAgent,
   type UppidiIssue,
   type KanbanColumnId,
@@ -772,6 +776,8 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
   // Section 2: Hook Queues sort & filter state
   const [hookServiceExpanded, setHookServiceExpanded] = useState(false);
   const [hookQueuesExpanded, setHookQueuesExpanded] = useState(false);
+  const [repoEnrollmentExpanded, setRepoEnrollmentExpanded] = useState(false);
+  const [repoSearchQuery, setRepoSearchQuery] = useState("");
   const [queuePreset, setQueuePreset] = useState<QueuePreset>("all");
   const [queueQuery, setQueueQuery] = useState("");
   const [queueSortField, setQueueSortField] = useState<QueueSortField>("repo");
@@ -851,7 +857,19 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
     refetch: refetchMetrics,
   } = useRpcQuery(uppidiFleetMetricsContract, {}, { refetchInterval: 15000 });
 
+  const {
+    data: reposData,
+    isLoading: reposLoading,
+    error: reposQueryError,
+    refetch: refetchRepos,
+  } = useRpcQuery(uppidiReposContract, {}, { refetchInterval: 15000 });
+
   // Mutations
+  const enrollRepoMutation = useRpcMutation(uppidiEnrollRepoContract);
+  const unenrollRepoMutation = useRpcMutation(uppidiUnenrollRepoContract);
+  const [enrollingRepoKey, setEnrollingRepoKey] = useState<string | null>(null);
+  const [unenrollingRepoKey, setUnenrollingRepoKey] = useState<string | null>(null);
+
   const pauseMutation = useRpcMutation(uppidiHookPauseContract);
   const resumeMutation = useRpcMutation(uppidiHookResumeContract);
   const drainMutation = useRpcMutation(uppidiHookDrainContract);
@@ -980,7 +998,44 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
     void refetchRoleModels();
     void refetchRunners();
     void refetchMetrics();
+    void refetchRepos();
     toast.show("Dashboard refreshed");
+  };
+
+  const handleEnrollRepo = async (repoKey: string) => {
+    try {
+      setEnrollingRepoKey(repoKey);
+      const res = await enrollRepoMutation.mutateAsync({ repo: repoKey });
+      if (res.ok) {
+        toast.show(res.message || `Enrolled ${repoKey}`);
+        void refetchRepos();
+        void refetchAgents();
+      } else {
+        toast.error(res.error || `Failed to enroll ${repoKey}`);
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setEnrollingRepoKey(null);
+    }
+  };
+
+  const handleUnenrollRepo = async (repoKey: string) => {
+    try {
+      setUnenrollingRepoKey(repoKey);
+      const res = await unenrollRepoMutation.mutateAsync({ repo: repoKey });
+      if (res.ok) {
+        toast.show(res.message || `Unenrolled ${repoKey}`);
+        void refetchRepos();
+        void refetchAgents();
+      } else {
+        toast.error(res.error || `Failed to unenroll ${repoKey}`);
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setUnenrollingRepoKey(null);
+    }
   };
 
 
@@ -1581,6 +1636,200 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
               </Stack>
             </Card>
           </Collapsible>
+
+          {/* Collapsible Section: Repository Enrollment (#867) */}
+          {(() => {
+            const allReposList: UppidiRepo[] = toList(reposData?.repos);
+            const queryClean = repoSearchQuery.trim().toLowerCase();
+            const filtered = queryClean
+              ? allReposList.filter((r) =>
+                  r.name.toLowerCase().includes(queryClean) ||
+                  r.fullName.toLowerCase().includes(queryClean) ||
+                  r.key.toLowerCase().includes(queryClean) ||
+                  r.owner.toLowerCase().includes(queryClean),
+                )
+              : allReposList;
+            const enrolledList = filtered.filter((r) => r.enrolled);
+            const availableList = filtered.filter((r) => !r.enrolled);
+            const totalEnrolledCount = allReposList.filter((r) => r.enrolled).length;
+
+            return (
+              <Collapsible
+                title={`Repository Enrollment (${totalEnrolledCount} enrolled)`}
+                icon="GitFork"
+                isExpanded={repoEnrollmentExpanded}
+                onToggle={(exp) => setRepoEnrollmentExpanded(exp)}
+              >
+                <Card variant="flat">
+                  <Stack gap="sm">
+                    <Row justify="space-between" align="center" wrap gap="xs">
+                      <Row align="center" gap="xs">
+                        <Text style={{ color: colors.foregroundMuted, ...typography.caption }}>
+                          Manage repositories enrolled in the fleet roster.
+                        </Text>
+                      </Row>
+                      <Button
+                        label="Refresh"
+                        size="sm"
+                        variant="ghost"
+                        icon="RefreshCw"
+                        disabled={reposLoading}
+                        onPress={() => void refetchRepos()}
+                      />
+                    </Row>
+
+                    <SearchInput
+                      value={repoSearchQuery}
+                      onChangeText={setRepoSearchQuery}
+                      onClear={() => setRepoSearchQuery("")}
+                      placeholder="Filter repositories by name or owner..."
+                      height={26}
+                    />
+
+                    {reposLoading ? (
+                      <Card variant="flat">
+                        <Stack gap="xs" align="center" style={{ paddingVertical: 16 }}>
+                          <Text style={{ color: colors.foregroundMuted, ...typography.caption }}>
+                            Loading repositories from Forgejo...
+                          </Text>
+                        </Stack>
+                      </Card>
+                    ) : (reposData && !reposData.ok) || reposQueryError ? (
+                      <Card variant="elevated" style={{ borderColor: colors.statusDanger }}>
+                        <Row justify="space-between" align="center" wrap gap="xs">
+                          <Row align="center" gap="xs">
+                            <StatusDot variant="danger" />
+                            <Text style={{ color: colors.statusDanger, ...typography.body }}>
+                              {reposData?.error || (reposQueryError instanceof Error ? reposQueryError.message : "Failed to load repositories from Forgejo")}
+                            </Text>
+                          </Row>
+                          <Button
+                            label="Retry"
+                            size="sm"
+                            variant="primary"
+                            icon="RefreshCw"
+                            onPress={() => void refetchRepos()}
+                          />
+                        </Row>
+                      </Card>
+                    ) : filtered.length === 0 ? (
+                      <EmptyState
+                        title="No repositories match"
+                        description={queryClean ? `No repositories matching "${repoSearchQuery}"` : "No repositories discovered on Forgejo."}
+                      />
+                    ) : (
+                      <Row gap="md" wrap style={{ alignItems: "flex-start" }}>
+                        {/* Enrolled Repositories */}
+                        <Stack gap="xs" style={{ flex: 1, minWidth: 280 }}>
+                          <Row justify="space-between" align="center">
+                            <Text style={{ color: colors.foreground, ...typography.heading }}>
+                              Enrolled ({enrolledList.length})
+                            </Text>
+                          </Row>
+                          {enrolledList.length === 0 ? (
+                            <Card variant="flat">
+                              <Text style={{ color: colors.foregroundMuted, ...typography.caption, fontStyle: "italic" }}>
+                                No enrolled repositories.
+                              </Text>
+                            </Card>
+                          ) : (
+                            enrolledList.map((r) => {
+                              const isUnenrolling = unenrollingRepoKey === r.key;
+                              return (
+                                <Card key={r.key} variant="elevated">
+                                  <Row justify="space-between" align="center" wrap gap="xs">
+                                    <Stack gap="xxs" style={{ flex: 1, minWidth: 160 }}>
+                                      <Row align="center" gap="xs" wrap>
+                                        <Text
+                                          style={{ color: colors.foreground, ...typography.body, fontWeight: "600" }}
+                                          numberOfLines={1}
+                                        >
+                                          {r.key}
+                                        </Text>
+                                        {r.private && <Badge label="Private" variant="neutral" size="sm" />}
+                                        {r.muted && <Badge label="Muted" variant="warning" size="sm" />}
+                                        {r.hasOrchestrator && <Badge label="Orchestrator" variant="info" size="sm" />}
+                                        {(r.queueDepth ?? 0) > 0 && (
+                                          <Badge label={`${r.queueDepth} queued`} variant="info" size="sm" />
+                                        )}
+                                      </Row>
+                                      {r.owner && (
+                                        <Text style={{ color: colors.foregroundMuted, ...typography.caption }}>
+                                          Owner: {r.owner}
+                                        </Text>
+                                      )}
+                                    </Stack>
+                                    <Button
+                                      label={isUnenrolling ? "Unenrolling..." : "Unenroll"}
+                                      size="sm"
+                                      variant="danger"
+                                      disabled={isUnenrolling}
+                                      loading={isUnenrolling}
+                                      onPress={() => void handleUnenrollRepo(r.key)}
+                                    />
+                                  </Row>
+                                </Card>
+                              );
+                            })
+                          )}
+                        </Stack>
+
+                        {/* Available from Forgejo */}
+                        <Stack gap="xs" style={{ flex: 1, minWidth: 280 }}>
+                          <Row justify="space-between" align="center">
+                            <Text style={{ color: colors.foreground, ...typography.heading }}>
+                              Available from Forgejo ({availableList.length})
+                            </Text>
+                          </Row>
+                          {availableList.length === 0 ? (
+                            <Card variant="flat">
+                              <Text style={{ color: colors.foregroundMuted, ...typography.caption, fontStyle: "italic" }}>
+                                All discovered repositories are enrolled.
+                              </Text>
+                            </Card>
+                          ) : (
+                            availableList.map((r) => {
+                              const isEnrolling = enrollingRepoKey === r.key;
+                              return (
+                                <Card key={r.key} variant="elevated">
+                                  <Row justify="space-between" align="center" wrap gap="xs">
+                                    <Stack gap="xxs" style={{ flex: 1, minWidth: 160 }}>
+                                      <Row align="center" gap="xs" wrap>
+                                        <Text
+                                          style={{ color: colors.foreground, ...typography.body, fontWeight: "600" }}
+                                          numberOfLines={1}
+                                        >
+                                          {r.key}
+                                        </Text>
+                                        {r.private && <Badge label="Private" variant="neutral" size="sm" />}
+                                      </Row>
+                                      {r.owner && (
+                                        <Text style={{ color: colors.foregroundMuted, ...typography.caption }}>
+                                          Owner: {r.owner}
+                                        </Text>
+                                      )}
+                                    </Stack>
+                                    <Button
+                                      label={isEnrolling ? "Enrolling..." : "Enroll"}
+                                      size="sm"
+                                      variant="primary"
+                                      disabled={isEnrolling}
+                                      loading={isEnrolling}
+                                      onPress={() => void handleEnrollRepo(r.key)}
+                                    />
+                                  </Row>
+                                </Card>
+                              );
+                            })
+                          )}
+                        </Stack>
+                      </Row>
+                    )}
+                  </Stack>
+                </Card>
+              </Collapsible>
+            );
+          })()}
 
           {/* Collapsible Section: Hook Log Section (#365) */}
           <Collapsible

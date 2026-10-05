@@ -23,6 +23,8 @@ import { forgejoApiGet, forgejoApiRequest, forgejoToken, resolveForgejoHost } fr
 import { appendRollupReceipt } from "./metrics.js";
 import { createDefaultIssuesCheckIo, runIssuesCheck, type IssuesCheckIo } from "./issues-check.js";
 import { resolveWorkspaceForRepo, type ResolvedWorkspace } from "./workspace-lookup.js";
+import { isRepoMatching } from "../shared/sort-filter.js";
+
 
 export interface RouterConfig {
   host?: string;
@@ -2664,6 +2666,17 @@ export class HookRouter {
     this.saveConfigState();
     return Array.from(this.enrolledRepos);
   }
+
+  public unenrollRepo(repoKey: string): string[] {
+    for (const enrolled of Array.from(this.enrolledRepos)) {
+      if (enrolled === repoKey || isRepoMatching(enrolled, repoKey)) {
+        this.enrolledRepos.delete(enrolled);
+      }
+    }
+    this.saveConfigState();
+    return Array.from(this.enrolledRepos);
+  }
+
 
   public getEnrolledRepos(): string[] {
     const set = new Set<string>(this.enrolledRepos);

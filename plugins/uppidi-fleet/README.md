@@ -208,7 +208,7 @@ The plugin registers one primary surface with three tabs:
 | --- | --- |
 | **Agents & Fleet** (tree) | Hierarchical view: projects → orchestrators → workers, with deterministic state badges (working / running / permission-prompt / attention-required / sleeping / idle / quota / failed), worktree names, parentage, and per-repo enrolment/mute flags. Hosts the `+ Create Front Desk`, `+ Add Orchestrator`, `Replace`, archive, and repo-mute controls. |
 | **Work Queue** (dashboard) | Open issues from the board with status, owner, and labels; a **Fleet Needs Attention** board at the top surfaces blocked agents, filter presets (Needs Attention, Triage/Review, In Progress, Verify). Also the collapsible Hook Service, Hook Queues, log tail, Agent Role Models, CI Runner fleet, and fleet-metrics sections. |
-| **Settings** | Hook service management (start/stop/restart, listen host + port), links into role-model editing. |
+| **Settings** | Hook service management (start/stop/restart, listen host + port), Repository Enrollment (browse Forgejo repos, enroll/unenroll repos into the fleet roster, status badges), and links into role-model editing. |
 
 Key behaviours:
 
@@ -493,6 +493,10 @@ https://forge.example.com/your-org/your-repo/issues/42
   without steering; normal messages steer into the active turn queue.
 - **Muting** a repo is a circuit breaker: drains for that key are suppressed
   until unmuted. Toggle it from the Cockpit or `uppidi-fleet.toggle-repo-mute`.
+- **Enrollment** manages fleet roster membership:
+  - `uppidi-fleet.repos`: lists Forgejo repositories with enrollment, mute status, orchestrator presence, and queue depth.
+  - `uppidi-fleet.enroll-repo`: enrolls a repository key (`canonicalRepoKey()`, normalized to `forge.mrs.uppidi.com/owner/repo`) into the router and settings storage.
+  - `uppidi-fleet.unenroll-repo`: unenrolls a repository from the roster without destroying orchestrator registrations or queue history.
 
 ### 7.4 Control endpoints
 
