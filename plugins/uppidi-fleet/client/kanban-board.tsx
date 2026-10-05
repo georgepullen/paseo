@@ -12,6 +12,7 @@ import {
 import { HostScroll } from "paseo-plugin-helper/ui";
 import { useFleetTheme } from "./theme.js";
 import type { UppidiIssue, AttentionLabel, KanbanColumnId } from "../shared/contracts.js";
+import { isRepoMatching } from "../shared/sort-filter.js";
 
 export interface KanbanColumnDef {
   id: KanbanColumnId;
@@ -371,8 +372,7 @@ export function UppidiFleetKanbanBoard({
   const filteredIssues = useMemo(() => {
     let list = Array.isArray(issues) ? issues : [];
     if (selectedRepo && selectedRepo !== "all") {
-      const targetRepo = selectedRepo.includes("/") ? selectedRepo.split("/")[1] : selectedRepo;
-      list = list.filter((i) => i.repo === targetRepo || i.repo === selectedRepo);
+      list = list.filter((i) => isRepoMatching(i.repo, selectedRepo));
     }
     const q = query.trim().toLowerCase();
     if (!q) return list;

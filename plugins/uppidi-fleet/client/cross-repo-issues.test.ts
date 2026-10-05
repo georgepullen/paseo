@@ -2,6 +2,7 @@ import { describe, it } from "node:test";
 import assert from "node:assert/strict";
 import { getFleetHarness } from "./testing/fleet-harness.js";
 import { agentsPayload, installPayloads } from "./testing/fleet-fixtures.js";
+import { resolveCanonicalRepo } from "../shared/repo-identity.js";
 
 /**
  * #724 cross-repo issue dropdown.
@@ -56,6 +57,9 @@ async function settle(harness: Awaited<ReturnType<typeof getFleetHarness>>, ms =
 const DEFAULT_REPO = "xpufx-org/paseo";
 const OTHER_REPO = "xpufx-org/2fado";
 const OTHER_REPO_ISSUE = 5001;
+
+/** The one canonical name each compact repo must render under (#888). */
+const canonical = (repo: string) => `forge.mrs.uppidi.com/${repo}`;
 
 /** Full-name enrolled roster so the selector lists the repos the test picks. */
 function multiRepoAgentsPayload() {
@@ -146,7 +150,7 @@ async function renderFleetWithIssueResolver() {
   let lastIssuesInput: Record<string, any> | undefined;
   harness.payloads["uppidi-fleet.issues"] = (input: any) => {
     lastIssuesInput = input;
-    const repo = input?.repo || DEFAULT_REPO;
+    const repo = resolveCanonicalRepo(input?.repo)?.compact ?? input?.repo ?? DEFAULT_REPO;
     return repoPayloads[repo] ?? {
       ok: true,
       repo,
@@ -202,22 +206,26 @@ describe("#724 cross-repo Work Queue dropdown", () => {
       trigger.props?.onPress();
       await new Promise((resolve) => setTimeout(resolve, 20));
     });
-    await press(harness, renderer, OTHER_REPO);
+    await press(harness, renderer, canonical(OTHER_REPO));
 
     await eventually(harness, renderer, new RegExp(`#${OTHER_REPO_ISSUE}`));
     const labels = renderedText(renderer.toJSON());
 
     assert.equal(
       lastIssuesInputRef()?.repo,
-      OTHER_REPO,
-      "selecting a repo must issue the issues RPC against that repo, not the default",
+      canonical(OTHER_REPO),
+      "selecting a repo must issue the issues RPC against that repo's canonical name, not the default",
     );
     assert.match(
       labels,
       new RegExp(`#${OTHER_REPO_ISSUE}`),
       "the non-default repo's issue must render in the Work Queue table",
     );
-    assert.match(labels, /Repo: xpufx-org\/2fado/, "the metrics bar must name the selected repo");
+    assert.match(
+      labels,
+      /Repo: forge\.mrs\.uppidi\.com\/xpufx-org\/2fado/,
+      "the metrics bar must name the selected repo canonically",
+    );
   });
 
   it("keeps rendering the default repo's issues when it is re-selected", async () => {
@@ -231,10 +239,10 @@ describe("#724 cross-repo Work Queue dropdown", () => {
       trigger.props?.onPress();
       await new Promise((resolve) => setTimeout(resolve, 20));
     });
-    await press(harness, renderer, DEFAULT_REPO);
+    await press(harness, renderer, canonical(DEFAULT_REPO));
 
     await eventually(harness, renderer, /#621/);
-    assert.equal(lastIssuesInputRef()?.repo, DEFAULT_REPO);
+    assert.equal(lastIssuesInputRef()?.repo, canonical(DEFAULT_REPO));
     assert.match(
       renderedText(renderer.toJSON()),
       /#621/,
@@ -253,12 +261,16 @@ describe("#724 cross-repo Work Queue dropdown", () => {
       trigger.props?.onPress();
       await new Promise((resolve) => setTimeout(resolve, 20));
     });
-    await press(harness, renderer, "xpufx-org/empty");
+    await press(harness, renderer, canonical("xpufx-org/empty"));
 
-    const labels = await eventually(harness, renderer, /No open issues in xpufx-org\/empty/);
+    const labels = await eventually(
+      harness,
+      renderer,
+      /No open issues in forge\.mrs\.uppidi\.com\/xpufx-org\/empty/,
+    );
     assert.match(
       labels,
-      /No open issues in xpufx-org\/empty/,
+      /No open issues in forge\.mrs\.uppidi\.com\/xpufx-org\/empty/,
       "an authoritatively empty repo must render its own empty state, not the filter-blank one",
     );
   });

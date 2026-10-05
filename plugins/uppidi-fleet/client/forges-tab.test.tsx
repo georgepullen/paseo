@@ -201,65 +201,98 @@ describe("Issue #791: Uppidi Fleet sidebar issues tab and repo dropdown", () => 
     assert.match(text, /All Enrolled Repositories/);
   });
 
-  describe("Issue #888: toCanonicalForgeUrl normalizes bare forge host/root and repo scopes", () => {
-    it("normalizes bare forge root URL without owner/repo to valid repo scope", async () => {
-      const { toCanonicalForgeUrl } = await import("./forges-tab.js");
-      assert.equal(
-        toCanonicalForgeUrl("https://forge.mrs.uppidi.com/agent-mux"),
+  it("renders the canonical repo name in the Forge Issues header", async () => {
+    const harness = await getFleetHarness();
+    const { ForgeIssuesView } = await import("./forges-tab.js");
+
+    harness.payloads["forge.open-issues"] = {
+      ok: true,
+      repo: "xpufx-org/paseo",
+      host: "forge.mrs.uppidi.com",
+      issues: [],
+      totalOpenCount: 0,
+    };
+    harness.payloads["forge.context"] = {
+      directory: null,
+      derivedRepo: null,
+      derivedHost: null,
+    };
+
+    const { renderer } = await harness.renderWithRoot(
+      <ForgeIssuesView
+        workspaceId=""
+        enrolledRepos={["xpufx-org/paseo"]}
+        activeRepo="xpufx-org/paseo"
+      />,
+    );
+
+    await harness.TestRenderer.act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 60));
+    });
+
+    const text = renderedText(renderer.toJSON());
+    assert.match(
+      text,
+      /forge\.mrs\.uppidi\.com\/xpufx-org\/paseo/,
+      "the Forge Issues surface must render the one canonical repo name",
+    );
+  });
+
+  describe("Issue #888: canonical repo identity resolution", () => {
+    const KNOWN = [
+      "forge.mrs.uppidi.com/xpufx-org/paseo",
+      "forge.mrs.uppidi.com/xpufx-org/agent-mux",
+      "forge.mrs.uppidi.com/xpufx-org/2fado",
+    ];
+
+    it("resolves every accepted input form to the one canonical name", async () => {
+      const { resolveForgeSelection, canonicalForgeUrl } = await import("./forges-tab.js");
+      const expected = "forge.mrs.uppidi.com/xpufx-org/paseo";
+      for (const input of [
+        "paseo",
+        "xpufx-org/paseo",
+        "forge.mrs.uppidi.com/xpufx-org/paseo",
         "https://forge.mrs.uppidi.com/xpufx-org/paseo",
+        "https://forge.mrs.uppidi.com/xpufx-org/paseo.git",
+        "git@forge.mrs.uppidi.com:xpufx-org/paseo.git",
+        "ssh://git@forge.mrs.uppidi.com:222/xpufx-org/paseo.git",
+      ]) {
+        const resolved = resolveForgeSelection(input, KNOWN);
+        assert.equal(resolved?.key, expected, `${input} must resolve to the canonical name`);
+        assert.equal(resolved?.compact, "xpufx-org/paseo");
+        assert.equal(canonicalForgeUrl(resolved!), `https://${expected}`);
+      }
+    });
+
+    it("resolves a known bare repo to its own canonical name, not the current repo", async () => {
+      const { resolveForgeSelection } = await import("./forges-tab.js");
+      assert.equal(
+        resolveForgeSelection("agent-mux", KNOWN)?.key,
+        "forge.mrs.uppidi.com/xpufx-org/agent-mux",
       );
       assert.equal(
-        toCanonicalForgeUrl("https://forge.mrs.uppidi.com/agent-mux", "2fado"),
-        "https://forge.mrs.uppidi.com/xpufx-org/2fado",
-      );
-      assert.equal(
-        toCanonicalForgeUrl("https://forge.mrs.uppidi.com/agent-mux", "xpufx-org/2fado"),
-        "https://forge.mrs.uppidi.com/xpufx-org/2fado",
+        resolveForgeSelection("https://forge.mrs.uppidi.com/agent-mux", KNOWN)?.key,
+        "forge.mrs.uppidi.com/xpufx-org/agent-mux",
       );
     });
 
-    it("normalizes bare forge host root without path", async () => {
-      const { toCanonicalForgeUrl } = await import("./forges-tab.js");
-      assert.equal(
-        toCanonicalForgeUrl("https://forge.mrs.uppidi.com"),
-        "https://forge.mrs.uppidi.com/xpufx-org/paseo",
-      );
-      assert.equal(
-        toCanonicalForgeUrl("https://forge.mrs.uppidi.com/"),
-        "https://forge.mrs.uppidi.com/xpufx-org/paseo",
-      );
-      assert.equal(
-        toCanonicalForgeUrl("forge.mrs.uppidi.com"),
-        "https://forge.mrs.uppidi.com/xpufx-org/paseo",
-      );
+    it("shows an explicit unresolved state instead of scoping to another repo", async () => {
+      const { resolveForgeSelection } = await import("./forges-tab.js");
+      assert.equal(resolveForgeSelection("agent-mux", []), null);
+      assert.equal(resolveForgeSelection("https://forge.mrs.uppidi.com/agent-mux", []), null);
+      assert.equal(resolveForgeSelection("forge.mrs.uppidi.com", KNOWN), null);
+      assert.equal(resolveForgeSelection("all"), null);
+      assert.equal(resolveForgeSelection(""), null);
+      assert.equal(resolveForgeSelection(null), null);
+      assert.equal(resolveForgeSelection(undefined), null);
     });
 
-    it("qualifies a bare repo name or keeps full remote URL", async () => {
-      const { toCanonicalForgeUrl } = await import("./forges-tab.js");
+    it("keeps a full remote that already names its owner/repo", async () => {
+      const { resolveForgeSelection } = await import("./forges-tab.js");
       assert.equal(
-        toCanonicalForgeUrl("paseo"),
-        "https://forge.mrs.uppidi.com/xpufx-org/paseo",
+        resolveForgeSelection("https://github.com/someone/other-repo")?.key,
+        "github.com/someone/other-repo",
       );
-      assert.equal(
-        toCanonicalForgeUrl("xpufx-org/paseo"),
-        "https://forge.mrs.uppidi.com/xpufx-org/paseo",
-      );
-      assert.equal(
-        toCanonicalForgeUrl("https://forge.mrs.uppidi.com/xpufx-org/paseo"),
-        "https://forge.mrs.uppidi.com/xpufx-org/paseo",
-      );
-      assert.equal(
-        toCanonicalForgeUrl("https://github.com/someone/other-repo"),
-        "https://github.com/someone/other-repo",
-      );
-    });
-
-    it("returns undefined for empty or all repo filters", async () => {
-      const { toCanonicalForgeUrl } = await import("./forges-tab.js");
-      assert.equal(toCanonicalForgeUrl("all"), undefined);
-      assert.equal(toCanonicalForgeUrl(""), undefined);
-      assert.equal(toCanonicalForgeUrl(null), undefined);
-      assert.equal(toCanonicalForgeUrl(undefined), undefined);
     });
   });
 });

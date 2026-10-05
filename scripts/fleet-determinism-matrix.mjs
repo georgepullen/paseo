@@ -824,6 +824,27 @@ const PARTS = [
     note: "44 exports, every one a pure function of its arguments. Shared verbatim by client and server, which is why both halves of the UI agree by construction.",
   },
   {
+    file: `${PLUGIN}/shared/repo-identity.ts`,
+    part: "Canonical repository identity resolution: normalization, coordinate splitting, single-name resolver (#888)",
+    layer: "shared",
+    label: DETERMINISTIC,
+    anchors: {
+      exports: [
+        "normalizeRepoKey",
+        "canonicalRepoKey",
+        "resolveCanonicalRepo",
+        "canonicalRepoName",
+        "compactRepoName",
+      ],
+    },
+    evidence: [
+      [`repo-identity.ts:14-30`, "`normalizeRepoKey` strips protocol, scp, port and `.git` deterministically"],
+      [`repo-identity.ts:83-115`, "`repoCoordinates` splits a fully-qualified key into host/owner/repo"],
+      [`repo-identity.ts:135-176`, "`resolveCanonicalRepo` matches a bare name against the known roster or returns null"],
+    ],
+    note: "Pure string algebra shared by client and server. The single source of repository identity every surface resolves through.",
+  },
+  {
     file: `${PLUGIN}/shared/types.ts`,
     part: "Attention/state label unions and Forgejo issue/repo shapes",
     layer: "shared",

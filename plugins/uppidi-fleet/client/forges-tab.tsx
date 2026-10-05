@@ -27,6 +27,11 @@ import { useFleetTheme } from "./theme.js";
 import { defineContract } from "paseo-plugin-helper/shared";
 import { z } from "zod";
 import { isRepoMatching } from "../shared/sort-filter.js";
+import {
+  canonicalRepoName,
+  resolveCanonicalRepo,
+  type CanonicalRepo,
+} from "../shared/repo-identity.js";
 
 
 
@@ -83,42 +88,24 @@ export const forgeContextContract = defineContract({
   }),
 });
 
-export function toCanonicalForgeUrl(
-  repoOrUrl: string | undefined | null,
-  fallbackRepo?: string | null,
-): string | undefined {
-  if (!repoOrUrl || repoOrUrl === "all") return undefined;
-  const trimmed = repoOrUrl.trim();
-  if (!trimmed) return undefined;
+/**
+ * HTTPS web URL for a canonical repo identity (#888). Every forge link is built
+ * from the one canonical value rather than a hand-parsed remote.
+ */
+export function canonicalForgeUrl(repo: CanonicalRepo): string {
+  return `https://${repo.key}`;
+}
 
-  const defaultOwnerRepo = fallbackRepo?.trim() && fallbackRepo.trim() !== "all"
-    ? (fallbackRepo.trim().includes("/") ? fallbackRepo.trim() : `xpufx-org/${fallbackRepo.trim()}`)
-    : "xpufx-org/paseo";
-
-  if (trimmed.includes("://") || trimmed.includes("@")) {
-    try {
-      const url = new URL(trimmed);
-      const segments = url.pathname.replace(/^\/+/, "").replace(/\/+$/, "").split("/").filter(Boolean);
-      if (segments.length < 2) {
-        return `${url.origin}/${defaultOwnerRepo}`;
-      }
-    } catch {
-      // Keep trimmed on parse error
-    }
-    return trimmed;
-  }
-
-  const cleaned = trimmed.replace(/^\/+/, "").replace(/\/+$/, "");
-  const segments = cleaned.split("/").filter(Boolean);
-  if (segments.length === 1 && (cleaned === "forge.mrs.uppidi.com" || !cleaned.includes("."))) {
-    // Single segment: if it's the host or a bare repo name, qualify with owner/repo
-    if (cleaned === "forge.mrs.uppidi.com") {
-      return `https://${cleaned}/${defaultOwnerRepo}`;
-    }
-    return `https://forge.mrs.uppidi.com/xpufx-org/${cleaned}`;
-  }
-
-  return `https://forge.mrs.uppidi.com/${cleaned}`;
+/**
+ * Resolves a selector value to its canonical identity. Returns null for `all`
+ * and for genuinely unresolvable input, so callers can render an explicit
+ * invalid state instead of silently scoping to another repository.
+ */
+export function resolveForgeSelection(
+  value: string | undefined | null,
+  knownRepos: readonly string[] = [],
+): CanonicalRepo | null {
+  return resolveCanonicalRepo(value, { knownRepos });
 }
 
 class SafeWorkspaceBoundary extends React.Component<
@@ -198,24 +185,39 @@ function ForgeIssuesViewInner({
     contextQuery.data?.derivedRepo ??
     (directory ? directory.split("/").pop() : undefined);
 
-  const reposList = useMemo(() => {
+  const [internalRepo, setInternalRepo] = useState<string>(() => {
+    if (controlledSelectedRepo !== undefined) return controlledSelectedRepo;
+    return derivedActiveRepo ?? "all";
+  });
+
+  const rawRepos = useMemo(() => {
     const set = new Set<string>();
     if (enrolledRepos) {
       for (const r of enrolledRepos) if (r) set.add(r);
     }
     if (activeRepo) set.add(activeRepo);
     if (contextQuery.data?.derivedRepo) set.add(contextQuery.data.derivedRepo);
+    if (derivedActiveRepo) set.add(derivedActiveRepo);
     return Array.from(set);
-  }, [enrolledRepos, activeRepo, contextQuery.data?.derivedRepo]);
+  }, [enrolledRepos, activeRepo, contextQuery.data?.derivedRepo, derivedActiveRepo]);
 
-  const [internalRepo, setInternalRepo] = useState<string>(() => {
-    if (controlledSelectedRepo !== undefined) return controlledSelectedRepo;
-    if (derivedActiveRepo && reposList.includes(derivedActiveRepo)) return derivedActiveRepo;
-    if (derivedActiveRepo) return derivedActiveRepo;
-    return "all";
-  });
+  // One canonical identity per repository; any input that cannot be resolved is
+  // dropped from the selector rather than shown as a second spelling (#888).
+  const reposList = useMemo(() => {
+    const set = new Set<string>();
+    for (const r of rawRepos) {
+      const canonical = canonicalRepoName(r, { knownRepos: rawRepos });
+      if (canonical) set.add(canonical);
+    }
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [rawRepos]);
 
-  const currentRepo = controlledSelectedRepo !== undefined ? controlledSelectedRepo : internalRepo;
+  const selectedValue =
+    controlledSelectedRepo !== undefined ? controlledSelectedRepo : internalRepo;
+  const selectedResolved =
+    selectedValue === "all" ? null : resolveForgeSelection(selectedValue, rawRepos);
+  const currentRepo =
+    selectedValue === "all" ? "all" : selectedResolved?.key ?? selectedValue;
 
   const handleSelectRepo = useCallback(
     (repo: string) => {
@@ -233,8 +235,8 @@ function ForgeIssuesViewInner({
   const issuesQuery = useRpcQuery(forgeOpenIssuesContract, {
     workspaceId: workspaceId || undefined,
     directory: directory ?? undefined,
-    remoteUrl: toCanonicalForgeUrl(currentRepo),
-    repo: currentRepo === "all" ? undefined : currentRepo,
+    remoteUrl: selectedResolved ? canonicalForgeUrl(selectedResolved) : undefined,
+    repo: selectedResolved?.compact,
   });
 
   const handleRefresh = useCallback(() => {
@@ -272,9 +274,13 @@ function ForgeIssuesViewInner({
   const repoName =
     currentRepo !== "all"
       ? currentRepo
-      : issuesQuery.data?.repo ||
-        contextQuery.data?.derivedRepo ||
-        "All Enrolled Repositories";
+      : issuesQuery.data?.repo
+      ? canonicalRepoName(issuesQuery.data.repo, { knownRepos: rawRepos }) ??
+        issuesQuery.data.repo
+      : contextQuery.data?.derivedRepo
+      ? canonicalRepoName(contextQuery.data.derivedRepo, { knownRepos: rawRepos }) ??
+        contextQuery.data.derivedRepo
+      : "All Enrolled Repositories";
 
   const hostName =
     issuesQuery.data?.host || contextQuery.data?.derivedHost || null;
@@ -352,7 +358,15 @@ function ForgeIssuesViewInner({
           </View>
         </Card>
 
-        {issuesQuery.isLoading ? (
+        {currentRepo !== "all" && !selectedResolved ? (
+          <Card variant="tinted" style={{ borderColor: colors.statusWarning, borderWidth: 1 }}>
+            <EmptyState
+              icon="AlertCircle"
+              title="Unknown repository"
+              description={`"${selectedValue}" could not be resolved to a known repository. Pick an enrolled repository instead.`}
+            />
+          </Card>
+        ) : issuesQuery.isLoading ? (
           <Card variant="flat">
             <EmptyState
               icon="RefreshCw"

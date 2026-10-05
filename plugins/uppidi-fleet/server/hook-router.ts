@@ -17,6 +17,11 @@ import type {
   HookInfoOutput,
 } from "../shared/contracts.js";
 import { extractPermissionScope } from "../shared/contracts.js";
+import {
+  candidateRepoKeys,
+  canonicalRepoKey,
+  normalizeRepoKey,
+} from "../shared/repo-identity.js";
 import { getUppidiFleetSettingsStorage } from "./settings.js";
 import { forgejoApiGet, forgejoApiRequest, forgejoToken, resolveForgejoHost } from "./forgejo-api.js";
 import { appendRollupReceipt } from "./metrics.js";
@@ -249,59 +254,7 @@ export function sanitizeKey(raw: string): string {
   return raw.replace(/[^a-zA-Z0-9._-]+/g, "_");
 }
 
-export function normalizeRepoKey(raw: string | null | undefined): string | null {
-  if (!raw || typeof raw !== "string") return null;
-  let s = raw.trim();
-  s = s.replace(/^git@([^:]+):/, "$1/");
-  s = s.replace(/^https?:\/\//, "");
-  s = s.replace(/^ssh:\/\/git@/, "");
-  s = s.replace(/:\d+\//, "/");
-  s = s.replace(/\.git$/, "");
-  s = s.replace(/^\/+|\/+$/g, "");
-  return s || null;
-}
-
-export function candidateRepoKeys(raw: string | null | undefined): string[] {
-  if (!raw || typeof raw !== "string") return [];
-  const trimmed = raw.trim();
-  if (!trimmed) return [];
-
-  const candidates: string[] = [];
-  const pushUnique = (k: string | null | undefined) => {
-    if (k && !candidates.includes(k)) candidates.push(k);
-  };
-
-  pushUnique(trimmed);
-
-  const normalized = normalizeRepoKey(trimmed);
-  if (normalized) {
-    pushUnique(normalized);
-
-    if (normalized.includes("/")) {
-      const parts = normalized.split("/");
-      if (parts[0].includes(".") || parts[0].includes(":")) {
-        const withoutHost = parts.slice(1).join("/");
-        pushUnique(withoutHost);
-      } else {
-        pushUnique(`forge.mrs.uppidi.com/${normalized}`);
-      }
-    }
-  }
-
-  return candidates;
-}
-
-export function canonicalRepoKey(raw: string | null | undefined): string | null {
-  if (!raw || typeof raw !== "string") return null;
-  const normalized = normalizeRepoKey(raw) ?? raw.trim();
-  if (!normalized) return null;
-  if (!normalized.includes("/")) return normalized;
-  const parts = normalized.split("/");
-  if (parts[0].includes(".") || parts[0].includes(":")) {
-    return normalized;
-  }
-  return `forge.mrs.uppidi.com/${normalized}`;
-}
+export { candidateRepoKeys, canonicalRepoKey, normalizeRepoKey };
 
 export function repositoryFromPayload(body: any): any {
   return body?.repository ?? body?.run?.repository ?? {};

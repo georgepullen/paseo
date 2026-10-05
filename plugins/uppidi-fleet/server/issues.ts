@@ -10,14 +10,36 @@ import {
   type KanbanColumnId,
 } from "../shared/contracts.js";
 import { forgejoApiGet, forgejoToken, resolveForgejoHost } from "./forgejo-api.js";
+import { resolveCanonicalRepo, type CanonicalRepo } from "../shared/repo-identity.js";
 
 const DEFAULT_REPO = "xpufx-org/paseo";
+
+/**
+ * Resolves a requested repo to its canonical identity. A bare name is
+ * unresolvable here; only owner/repo, host-qualified, or URL forms pass (#888).
+ */
+function resolveIssueRepo(inputRepo?: string): CanonicalRepo | null {
+  return resolveCanonicalRepo(inputRepo?.trim() || DEFAULT_REPO);
+}
 
 export async function handleUppidiIssues(
   input: UppidiIssuesInput,
   _context?: PluginHandlerContext,
 ): Promise<UppidiIssuesOutput> {
-  const repo = input.repo || DEFAULT_REPO;
+  const resolvedRepo = resolveIssueRepo(input.repo);
+  if (!resolvedRepo) {
+    return {
+      ok: false,
+      repo: null,
+      issues: [],
+      openCount: 0,
+      inFlightCount: 0,
+      reviewCount: 0,
+      needsYouCount: 0,
+      error: `Unknown repository: ${input.repo?.trim() || DEFAULT_REPO}`,
+    };
+  }
+  const repo = resolvedRepo.compact;
   const host = resolveForgejoHost();
   const token = await forgejoToken(host);
 
@@ -38,7 +60,7 @@ export async function handleUppidiIssues(
   if (res.outcome !== "ok") {
     return {
       ok: false,
-      repo,
+      repo: resolvedRepo.key,
       issues: [],
       openCount: 0,
       inFlightCount: 0,
@@ -83,7 +105,7 @@ export async function handleUppidiIssues(
       number: raw.number,
       title: raw.title,
       state: raw.state,
-      repo: repo.split("/")[1] || repo,
+      repo: resolvedRepo.key,
       status,
       attention,
       branch: branchMatch ? branchMatch[0] : undefined,
@@ -97,7 +119,7 @@ export async function handleUppidiIssues(
   const openIssues = issues.filter((i) => i.state === "open");
   return {
     ok: true,
-    repo,
+    repo: resolvedRepo.key,
     issues,
     openCount: openIssues.length,
     inFlightCount: openIssues.filter((i) => i.status === "In progress").length,
@@ -153,7 +175,16 @@ export async function handleUppidiTransitionIssue(
   input: UppidiTransitionIssueInput,
   _context?: PluginHandlerContext,
 ): Promise<UppidiTransitionIssueOutput> {
-  const repo = input.repo || DEFAULT_REPO;
+  const resolvedRepo = resolveIssueRepo(input.repo);
+  if (!resolvedRepo) {
+    return {
+      ok: false,
+      number: input.number,
+      targetState: input.targetState,
+      error: `Unknown repository: ${input.repo?.trim() || DEFAULT_REPO}`,
+    };
+  }
+  const repo = resolvedRepo.compact;
   const host = resolveForgejoHost();
   const targetLabel = input.targetLabel || STATE_LABELS_FOR_COLUMN[input.targetState];
   const removeLabels = ALL_STATE_LABELS.filter((l) => l !== targetLabel);

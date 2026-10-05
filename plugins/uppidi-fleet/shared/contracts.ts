@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { defineContract, defineSettingsContract } from "paseo-plugin-helper/shared";
+import { DEFAULT_FORGEJO_HOST } from "./repo-identity.js";
 
 export const AttentionLabelSchema = z.enum([
   "attention/0-orchestrator",
@@ -1476,8 +1477,6 @@ export type WorkspaceProjectMap = Record<string, string>;
 
 /** Sentinel bucket for agents with no authoritative project metadata. */
 export const DEFAULT_PROJECT = "Default Project";
-
-const DEFAULT_FORGEJO_HOST = "forge.mrs.uppidi.com";
 
 /**
  * Normalizes a project name to the long format (e.g. "forge.mrs.uppidi.com/xpufx-org/paseo").

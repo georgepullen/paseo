@@ -113,7 +113,8 @@ import {
 import { UppidiFleetToolingView } from "./tooling.js";
 import { UppidiFleetKanbanBoard } from "./kanban-board.js";
 import { ForgeIssuesView } from "./forges-tab.js";
-import { toCanonicalForgeUrl } from "./forges-tab.js";
+import { canonicalForgeUrl, resolveForgeSelection } from "./forges-tab.js";
+import { canonicalRepoName, resolveCanonicalRepo } from "../shared/repo-identity.js";
 
 export type SurfaceTab = "tree" | "dashboard" | "tooling" | "settings" | "board" | "forges";
 
@@ -900,14 +901,14 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
     targetState: KanbanColumnId,
   ) => {
     try {
-      const targetRepo =
-        selectedRepo === "all"
-          ? issue.repo
-            ? `xpufx-org/${issue.repo}`
-            : "xpufx-org/paseo"
-          : selectedRepo;
+      const targetRepo = selectedRepo !== "all" ? selectedRepo : issue.repo;
+      const resolvedRepo = resolveCanonicalRepo(targetRepo);
+      if (!resolvedRepo) {
+        toast.error(`Unknown repository: ${targetRepo ?? "(none)"}`);
+        return;
+      }
       const res = await transitionIssueMutation.mutateAsync({
-        repo: targetRepo,
+        repo: resolvedRepo.compact,
         number: issue.number,
         targetState,
       });
@@ -1114,14 +1115,23 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
   };
 
   const availableRepos = useMemo(() => {
-    const set = new Set<string>();
-    const defaultRepo = issuesData?.repo ?? "xpufx-org/paseo";
-    set.add(defaultRepo);
-    for (const r of toRepoList(agentsData?.enrolledRepos)) set.add(r);
-    for (const q of toList(hookQueues?.queues)) if (q?.key) set.add(q.key);
-    for (const i of toList(issuesData?.issues)) if (i?.repo) set.add(i.repo);
-    // Stable presentation order (#796): defaultRepo first, remaining repositories sorted alphabetically
-    const list = Array.from(set);
+    const raw = new Set<string>();
+    if (issuesData?.repo) raw.add(issuesData.repo);
+    for (const r of toRepoList(agentsData?.enrolledRepos)) raw.add(r);
+    for (const q of toList(hookQueues?.queues)) if (q?.key) raw.add(q.key);
+    for (const i of toList(issuesData?.issues)) if (i?.repo) raw.add(i.repo);
+    const known = Array.from(raw);
+    const canonical = new Set<string>();
+    for (const r of known) {
+      const name = canonicalRepoName(r, { knownRepos: known });
+      if (name) canonical.add(name);
+    }
+    const defaultRepo =
+      canonicalRepoName(issuesData?.repo ?? "xpufx-org/paseo", { knownRepos: known }) ??
+      "forge.mrs.uppidi.com/xpufx-org/paseo";
+    canonical.add(defaultRepo);
+    // Stable presentation order (#796): defaultRepo first, remaining sorted.
+    const list = Array.from(canonical);
     const others = list.filter((r) => r !== defaultRepo).sort((a, b) => a.localeCompare(b));
     return [defaultRepo, ...others];
   }, [issuesData?.repo, issuesData?.issues, agentsData?.enrolledRepos, hookQueues?.queues]);
@@ -1148,6 +1158,13 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
     }
     return null;
   }, [selectedNumber, rawIssues]);
+
+  // The modal's forge target is derived from the one canonical identity, never
+  // from a hand-parsed remote (#888).
+  const selectedRepoIdentity = useMemo(
+    () => (selected ? resolveForgeSelection(selected.repo, availableRepos) : null),
+    [selected, availableRepos],
+  );
 
   const isConnected = hookStatus?.ok ?? false;
   const isServiceRunning = serviceStatus?.active ?? false;
@@ -2524,7 +2541,7 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
                         flexShrink: 1,
                       }}
                     >
-                      {selected.repo} #{selected.number}
+                      {selectedRepoIdentity?.key ?? selected.repo} #{selected.number}
                     </Text>
                     <Row wrap gap="xs">
                       <Badge label={selected.status} variant={statusVariant(selected.status)} size="sm" />
@@ -2560,10 +2577,10 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
                     issueNumber={selected.number}
                     workspaceId={activeWorkspaceId}
                     directory={activeWorkspaceDirectory}
-                    repo={selected.repo}
+                    repo={selectedRepoIdentity?.compact ?? selected.repo}
                     remoteUrl={
                       (selected as any).remoteUrl ||
-                      toCanonicalForgeUrl(selected.repo)
+                      (selectedRepoIdentity ? canonicalForgeUrl(selectedRepoIdentity) : undefined)
                     }
                     onRefresh={() => {
                       void refetchIssues?.();

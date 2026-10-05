@@ -55,9 +55,9 @@ describe("issues read resolves the requested repository (#724)", () => {
       ["/api/v1/repos/xpufx-org/2fado/issues?state=open&limit=50"],
       "the request must target the repo the caller named",
     );
-    assert.equal(res.repo, "xpufx-org/2fado");
+    assert.equal(res.repo, "forge.mrs.uppidi.com/xpufx-org/2fado");
     assert.equal(res.ok, true);
-    assert.equal(res.issues[0]?.repo, "2fado");
+    assert.equal(res.issues[0]?.repo, "forge.mrs.uppidi.com/xpufx-org/2fado");
   });
 
   it("defaults to the plugin's default repo only when no repo was passed", async () => {
@@ -70,8 +70,20 @@ describe("issues read resolves the requested repository (#724)", () => {
 
     const res = await handleUppidiIssues({ state: "open" });
     assert.equal(paths[0], "/api/v1/repos/xpufx-org/paseo/issues?state=open&limit=50");
-    assert.equal(res.repo, "xpufx-org/paseo");
+    assert.equal(res.repo, "forge.mrs.uppidi.com/xpufx-org/paseo");
     assert.deepEqual(res.issues, []);
+  });
+
+  it("rejects an unresolvable bare repo name instead of scoping it to a default (#888)", async () => {
+    setTokenResolverForTest(async () => "test-token");
+    setFetchForTest(async () => {
+      throw new Error("must not hit the forge API for an unknown repo");
+    });
+
+    const res = await handleUppidiIssues({ state: "open", repo: "agent-mux" });
+    assert.equal(res.ok, false);
+    assert.equal(res.repo, null);
+    assert.match(String(res.error ?? ""), /Unknown repository: agent-mux/);
   });
 
   it("surfaces an HTTP rejection as ok:false with the error, not as a blank list", async () => {
