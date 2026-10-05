@@ -90,11 +90,34 @@ function fakeNpm({ stageLists = [[]], published = [notFound()], publishError, no
 
 {
   const calls = [];
+  let threw = false;
+  try {
+    preflightNotifyDaemon({
+      run: (command, args) => { calls.push([command, args]); throw new Error("2fado daemon unavailable"); },
+    });
+  } catch {
+    threw = true;
+  }
+  check("missing preflight throws error by default", threw);
+  check("missing preflight only probes", JSON.stringify(calls) === JSON.stringify([["2fado", ["list"]]]));
+}
+
+{
+  const calls = [];
   const ok = quiet(() => preflightNotifyDaemon({
     run: (command, args) => { calls.push([command, args]); throw new Error("2fado daemon unavailable"); },
+    allowNoNotify: true,
   }));
-  check("missing preflight reports false", ok === false);
-  check("missing preflight only probes", JSON.stringify(calls) === JSON.stringify([["2fado", ["list"]]]));
+  check("missing preflight with allowNoNotify reports false", ok === false);
+  check("missing preflight with allowNoNotify probes", JSON.stringify(calls) === JSON.stringify([["2fado", ["list"]]]));
+}
+
+{
+  const ok = quiet(() => preflightNotifyDaemon({
+    run: () => { throw new Error("2fado daemon unavailable"); },
+    env: { TWOFADO_NOTIFY_OPTIONAL: "1" },
+  }));
+  check("missing preflight with TWOFADO_NOTIFY_OPTIONAL reports false", ok === false);
 }
 
 {
@@ -104,8 +127,8 @@ function fakeNpm({ stageLists = [[]], published = [notFound()], publishError, no
     preflightError: new Error("2fado daemon unavailable"),
   });
   let result;
-  quiet(() => { result = stagePackages({ packages: [entry] }, { run, link: "https://forge.example/runs/42" }); });
-  check("unavailable daemon does not block staging", result?.[0]?.outcome === "staged");
+  quiet(() => { result = stagePackages({ packages: [entry] }, { run, link: "https://forge.example/runs/42", allowNoNotify: true }); });
+  check("unavailable daemon does not block staging when opt-out passed", result?.[0]?.outcome === "staged");
   check("unavailable daemon skips notify", !calls.some(([command, args]) => command === "2fado" && args[0] === "notify"));
 }
 
@@ -209,7 +232,7 @@ function fakeNpm({ stageLists = [[]], published = [notFound()], publishError, no
   quiet(() => { results = stagePackages({ packages: [bad, good] }, { run, notify: false, link: "https://forge.example/runs/42" }); });
   check("batch collects a per-package failure", results[0].outcome === "failed");
   check("batch continues past a failure", results[1].outcome === "staged");
-  check("mixed batch does not fail", shouldFailBatch(results) === false);
+  check("mixed batch fails on errors", shouldFailBatch(results) === true);
 }
 
 {
@@ -304,7 +327,7 @@ check("real version is not a placeholder", isPlaceholderVersion("1.2.3") === fal
   const savedExit = process.exitCode;
   let exit;
   try {
-    quietAll(() => main([`--manifest=${manifestPath}`], {
+    quietAll(() => main([`--manifest=${manifestPath}`, "--skip-notify"], {
       NPM_STAGE_NPM_BIN: fakeNpmPath,
       TWOFADO_NOTIFY_BIN: path.join(tmp, "missing-2fado"),
       GITHUB_SERVER_URL: "https://forge.example.com",

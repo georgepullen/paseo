@@ -96,17 +96,22 @@ export function localTarballPath(tarball, baseDir) {
 }
 
 /**
- * Best-effort probe for the notify-only daemon. Returns whether notifications
- * are possible; a missing CLI or unreachable socket only warns and never stops
- * staging.
+ * Probe for the notify-only daemon. By default, an unavailable CLI or unreachable
+ * daemon causes a hard failure (throws an Error). Staging without notification
+ * requires an explicit opt-out via `allowNoNotify: true`, `notify: false`, or
+ * the `TWOFADO_NOTIFY_OPTIONAL=1` environment variable.
  */
-export function preflightNotifyDaemon({ run = commandResult, notifyBin = "2fado" } = {}) {
+export function preflightNotifyDaemon({ run = commandResult, notifyBin = "2fado", allowNoNotify = false, env = process.env } = {}) {
+  const isOptional = allowNoNotify || env?.TWOFADO_NOTIFY_OPTIONAL === "1";
   try {
     run(notifyBin, ["list"]);
     return true;
   } catch (err) {
-    console.warn(`[npm-stage] 2fado notify CLI/daemon unavailable (${err.message}); staging without notification.`);
-    return false;
+    if (isOptional) {
+      console.warn(`[npm-stage] 2fado notify CLI/daemon unavailable (${err.message}); staging without notification (opt-out enabled).`);
+      return false;
+    }
+    throw new Error(`[npm-stage] 2fado notify CLI/daemon unavailable (${err.message}). Set TWOFADO_NOTIFY_OPTIONAL=1 or pass --skip-notify to stage without notification.`);
   }
 }
 
@@ -240,14 +245,14 @@ export function outcomeCounts(results) {
 }
 
 /**
- * A batch only fails when it made no progress: every package either failed or
- * landed on a placeholder. A batch where anything staged or was already
- * staged/published is a success even if some entries failed, because the
- * outcome table reports each failure.
+ * A batch fails if any package encountered a real staging error (outcome === "failed")
+ * or landed on a placeholder (outcome === "placeholder"), or if no package was staged/skipped.
  */
 export function shouldFailBatch(results) {
   const rows = Array.isArray(results) ? results : [];
-  return rows.length > 0 && !rows.some((row) => row.outcome === "staged" || row.outcome === "skipped");
+  if (rows.length === 0) return false;
+  const counts = outcomeCounts(rows);
+  return counts.failed > 0 || counts.placeholder > 0 || (counts.staged === 0 && counts.skipped === 0);
 }
 
 function reportOutcomes(results, env = process.env) {
@@ -276,8 +281,9 @@ function reportOutcomes(results, env = process.env) {
 
 function parseArgs(argv) {
   const manifestArg = argv.find((arg) => arg.startsWith("--manifest="));
-  if (!manifestArg) throw new Error("usage: node scripts/npm-stage-native.mjs --manifest=publish-stage/manifest.json");
-  return { manifestPath: manifestArg.slice("--manifest=".length) };
+  if (!manifestArg) throw new Error("usage: node scripts/npm-stage-native.mjs --manifest=publish-stage/manifest.json [--skip-notify]");
+  const skipNotify = argv.includes("--skip-notify") || argv.includes("--allow-no-notify");
+  return { manifestPath: manifestArg.slice("--manifest=".length), skipNotify };
 }
 
 function workflowRunLink(env) {
@@ -287,7 +293,7 @@ function workflowRunLink(env) {
 }
 
 export function main(argv = process.argv.slice(2), env = process.env) {
-  const { manifestPath } = parseArgs(argv);
+  const { manifestPath, skipNotify } = parseArgs(argv);
   const resolved = path.resolve(manifestPath);
   const manifest = JSON.parse(fs.readFileSync(resolved, "utf8"));
   const results = stagePackages(manifest, {
@@ -295,10 +301,13 @@ export function main(argv = process.argv.slice(2), env = process.env) {
     notifyBin: env.TWOFADO_NOTIFY_BIN || "2fado",
     link: workflowRunLink(env),
     baseDir: path.dirname(resolved),
+    allowNoNotify: skipNotify,
+    env,
   });
   reportOutcomes(results, env);
   if (shouldFailBatch(results)) {
-    console.error(`[npm-stage] no package staged or skipped (${results.length} attempted); failing the run.`);
+    const counts = outcomeCounts(results);
+    console.error(`[npm-stage] batch failed: ${counts.failed} failed, ${counts.placeholder} placeholder, ${counts.staged} staged, ${counts.skipped} skipped (${results.length} total).`);
     process.exitCode = 1;
   }
   return results;

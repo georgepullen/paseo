@@ -49,6 +49,7 @@
  *   --quiet        suppress the per-package readiness/preview detail
  */
 import { execFileSync } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -85,6 +86,7 @@ export function parseArgs(argv) {
     fromDirs: argv.includes("--from-dirs"),
     dryRun: argv.includes("--dry-run"),
     allowDirty: argv.includes("--allow-dirty"),
+    allowOrphans: argv.includes("--allow-orphans"),
     quiet: argv.includes("--quiet"),
   };
 }
@@ -112,13 +114,113 @@ export function pluginIds() {
     .sort();
 }
 
+export const PLACEHOLDER_VERSION = "0.0.0-stage";
+
+export function isPlaceholderVersion(version) {
+  return version === PLACEHOLDER_VERSION || Boolean(version?.startsWith("0.0.0-stage"));
+}
+
+/**
+ * Detect untracked (orphan) files in a directory via git ls-files.
+ */
+export function detectOrphanFiles(dir) {
+  try {
+    const out = execFileSync("git", ["ls-files", "--others", "--exclude-standard", path.resolve(dir)], {
+      encoding: "utf8",
+    }).trim();
+    return out ? out.split("\n").filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Guard against untracked orphan files when staging or publishing.
+ * When --allow-dirty is passed, untracked files in the target plugin directories
+ * pose an orphan risk (accidentally packaging uncommitted or scratch files).
+ */
+export function assertNoOrphanRisk(dirs, { allowOrphans = false } = {}) {
+  const dirList = Array.isArray(dirs) ? dirs : [dirs];
+  const allOrphans = [];
+  for (const d of dirList) {
+    const found = detectOrphanFiles(d);
+    for (const f of found) allOrphans.push(f);
+  }
+  if (allOrphans.length > 0) {
+    const msg = `[publish-npm] untracked orphan file(s) detected in publish path:\n  - ${allOrphans.join("\n  - ")}`;
+    if (allowOrphans) {
+      console.warn(`WARNING: ${msg}\nProceeding because --allow-orphans was specified.`);
+    } else {
+      console.error(msg);
+      throw new Error(`refusing to stage/publish: untracked orphan files detected (pass --allow-orphans to override)`);
+    }
+  }
+}
+
+/**
+ * Detect symlink hazards in a plugin directory before direct publishing (--from-dirs).
+ * Publishing directly from a directory containing symlinks can create broken/dangling
+ * symlinks in installed packages, packing loops, or ship unintended symlink aliases.
+ */
+export function assertNoSymlinkHazards(dir, manifest) {
+  const resolvedDir = path.resolve(dir);
+  if (fs.lstatSync(resolvedDir).isSymbolicLink()) {
+    throw new Error(`[publish-npm] symlink hazard: ${resolvedDir} is a symbolic link; direct publish from a symlink alias is forbidden`);
+  }
+  const publishedDirs = ["client", "server", "shared", "mcp", "docs", "examples", "scripts"];
+  const hazards = [];
+
+  for (const sub of publishedDirs) {
+    const subPath = path.join(resolvedDir, sub);
+    if (!fs.existsSync(subPath)) continue;
+    if (fs.lstatSync(subPath).isSymbolicLink()) {
+      hazards.push(`${sub} (publish directory is a symlink)`);
+      continue;
+    }
+    const entries = fs.readdirSync(subPath, { recursive: true, withFileTypes: true });
+    for (const entry of entries) {
+      if (entry.isSymbolicLink()) {
+        const parent = entry.parentPath ?? entry.path ?? subPath;
+        const fullPath = path.join(parent, entry.name);
+        const relPath = path.relative(resolvedDir, fullPath);
+        hazards.push(`${relPath} (symlink inside published directory ${sub}/)`);
+      }
+    }
+  }
+
+  const topFiles = manifest?.files ?? REQUIRED_FILES;
+  for (const file of topFiles) {
+    if (file.startsWith("!") || publishedDirs.includes(file)) continue;
+    const filePath = path.join(resolvedDir, file);
+    try {
+      if (fs.existsSync(filePath) && fs.lstatSync(filePath).isSymbolicLink()) {
+        hazards.push(`${file} (published entry point/file is a symlink)`);
+      }
+    } catch {
+      /* missing file handled elsewhere */
+    }
+  }
+
+  if (hazards.length > 0) {
+    throw new Error(`[publish-npm] symlink hazard(s) in ${dir}:\n  - ${hazards.join("\n  - ")}`);
+  }
+}
+
 /** Refuse to stage/publish from a dirty tree: the artifact would match no commit. */
-function assertCleanTree() {
+function assertCleanTree({ allowDirty = false, allowOrphans = false, dirs = [] } = {}) {
   const status = execFileSync("git", ["status", "--porcelain"], { encoding: "utf8" }).trim();
-  if (status) {
+  if (status && !allowDirty) {
     console.error("[publish-npm] refusing to stage/publish: working tree is dirty (pass --allow-dirty to override)");
     console.error(status);
     process.exit(1);
+  }
+  if (allowDirty && dirs.length > 0) {
+    try {
+      assertNoOrphanRisk(dirs, { allowOrphans });
+    } catch (err) {
+      console.error(err.message);
+      process.exit(1);
+    }
   }
 }
 
@@ -411,14 +513,80 @@ export function resolvePublishPlan(manifests, opts) {
     if (staged.version !== m.version) {
       throw new Error(`staged ${m.id}@${staged.version} does not match current ${m.version}; re-run --stage`);
     }
+    if (isPlaceholderVersion(staged.version)) {
+      throw new Error(`staged ${m.id}@${staged.version} is a placeholder version; re-run --stage`);
+    }
     const target = path.join(outDir, staged.tarball);
     if (!fs.existsSync(target)) throw new Error(`staged tarball missing: ${staged.tarball}; re-run --stage`);
     return { id: m.id, publishAs: m.publishAs, version: m.version, target, shasum: staged.shasum };
   });
 }
 
-function publishPlan(plan, opts) {
+/**
+ * Built-in verification of a staged artifact before publishing.
+ * Verifies that:
+ * 1. Staged version is not a placeholder (0.0.0-stage).
+ * 2. If target tarball exists: the tarball's internal package.json version and name
+ *    match entry.version and entry.publishAs, and shasum matches if provided.
+ * 3. If target is directory: directory package.json version and name match.
+ */
+export function verifyStagedBeforePublish(entry, { runTar = execFileSync } = {}) {
+  if (isPlaceholderVersion(entry.version)) {
+    throw new Error(`[publish-npm] verification failed: refusing to publish placeholder version ${entry.version} for ${entry.id ?? entry.publishAs}`);
+  }
+
+  if (entry.target) {
+    if (!fs.existsSync(entry.target)) {
+      throw new Error(`[publish-npm] verification failed: staged tarball missing: ${entry.target}`);
+    }
+    if (entry.shasum) {
+      const buf = fs.readFileSync(entry.target);
+      const actualSha = crypto.createHash("sha1").update(buf).digest("hex");
+      if (actualSha !== entry.shasum) {
+        throw new Error(`[publish-npm] verification failed: shasum mismatch for ${entry.target} (expected ${entry.shasum}, got ${actualSha})`);
+      }
+    }
+    let raw;
+    try {
+      raw = runTar("tar", ["-xOf", path.resolve(entry.target), "package/package.json"], { encoding: "utf8" });
+    } catch (err) {
+      throw new Error(`[publish-npm] verification failed: could not read package/package.json from tarball ${entry.target}: ${err.message}`);
+    }
+    let innerPkg;
+    try {
+      innerPkg = JSON.parse(raw);
+    } catch (err) {
+      throw new Error(`[publish-npm] verification failed: tarball ${entry.target} contains invalid package.json: ${err.message}`);
+    }
+    if (innerPkg.version !== entry.version) {
+      throw new Error(`[publish-npm] verification failed: tarball version ${innerPkg.version} does not match expected ${entry.version} for ${entry.id ?? entry.publishAs}`);
+    }
+    if (entry.publishAs && innerPkg.name !== entry.publishAs) {
+      throw new Error(`[publish-npm] verification failed: tarball package name ${innerPkg.name} does not match expected ${entry.publishAs}`);
+    }
+    if (isPlaceholderVersion(innerPkg.version)) {
+      throw new Error(`[publish-npm] verification failed: tarball contains placeholder version ${innerPkg.version}`);
+    }
+  } else if (entry.dir) {
+    assertNoSymlinkHazards(entry.dir);
+    const pkgPath = path.join(entry.dir, "package.json");
+    if (!fs.existsSync(pkgPath)) {
+      throw new Error(`[publish-npm] verification failed: package.json missing in ${entry.dir}`);
+    }
+    const innerPkg = JSON.parse(fs.readFileSync(pkgPath, "utf8"));
+    if (innerPkg.version !== entry.version) {
+      throw new Error(`[publish-npm] verification failed: directory version ${innerPkg.version} does not match expected ${entry.version} for ${entry.id ?? entry.publishAs}`);
+    }
+    if (isPlaceholderVersion(innerPkg.version)) {
+      throw new Error(`[publish-npm] verification failed: directory contains placeholder version ${innerPkg.version}`);
+    }
+  }
+  return true;
+}
+
+export function publishPlan(plan, opts = {}) {
   for (const entry of plan) {
+    verifyStagedBeforePublish(entry, opts);
     const publishArgs = ["publish", entry.target ?? entry.dir, "--access", "public"];
     if (opts.otp) publishArgs.push(`--otp=${opts.otp}`);
     if (opts.dryRun) {
@@ -478,9 +646,11 @@ export function main(argv = process.argv.slice(2)) {
     process.exit(1);
   }
 
+  const pluginDirs = manifests.map((m) => m.dir);
+
   if (opts.mode === "stage") {
     dryRunTarballs(manifests, opts.quiet);
-    if (!opts.allowDirty) assertCleanTree();
+    assertCleanTree({ allowDirty: opts.allowDirty, allowOrphans: opts.allowOrphans, dirs: pluginDirs });
     stagePackages(manifests, opts);
     console.log("\n[publish-npm] staged artifacts are inert — upload them, then a human runs:");
     console.log(`  node scripts/publish-npm.mjs --publish${opts.outDir !== DEFAULT_STAGE_DIR ? ` --out=${opts.outDir}` : ""}`);
@@ -491,7 +661,12 @@ export function main(argv = process.argv.slice(2)) {
   // a clean tree (the live directory is the artifact).
   const plan = resolvePublishPlan(manifests, opts);
   const fromDirs = plan.every((entry) => entry.dir !== undefined);
-  if (fromDirs && !opts.allowDirty) assertCleanTree();
+  if (fromDirs) {
+    for (const entry of plan) {
+      assertNoSymlinkHazards(entry.dir, manifests.find((m) => m.id === entry.id));
+    }
+    assertCleanTree({ allowDirty: opts.allowDirty, allowOrphans: opts.allowOrphans, dirs: pluginDirs });
+  }
   publishPlan(plan, opts);
 }
 

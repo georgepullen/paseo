@@ -12,18 +12,31 @@ import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import process from "node:process";
-import { parseArgs, pluginIds, manifestFor, readiness, resolvePublishPlan, stagePackages, syncNestedManifestVersions } from "./publish-npm.mjs";
+import {
+  parseArgs,
+  pluginIds,
+  manifestFor,
+  readiness,
+  resolvePublishPlan,
+  stagePackages,
+  syncNestedManifestVersions,
+  assertNoSymlinkHazards,
+  detectOrphanFiles,
+  assertNoOrphanRisk,
+  verifyStagedBeforePublish,
+  isPlaceholderVersion,
+} from "./publish-npm.mjs";
 import { hasBareHelperSpecifier } from "./lib/plugin-helper-layout.mjs";
 
 let pass = 0;
 let fail = 0;
-const check = (name, cond) => {
+const check = (name, cond, detail) => {
   if (cond) {
     pass += 1;
     console.log("  ok  ", name);
   } else {
     fail += 1;
-    console.log("  FAIL", name);
+    console.log("  FAIL", name, detail ? `(${detail})` : "");
   }
 };
 const throws = (fn) => {
@@ -48,6 +61,7 @@ check("--otp parsed", parseArgs(["--publish", "--otp=123456"]).otp === "123456")
 check("--from-dirs parsed", parseArgs(["--publish", "--from-dirs"]).fromDirs === true);
 check("--dry-run parsed", parseArgs(["--publish", "--dry-run"]).dryRun === true);
 check("--allow-dirty parsed", parseArgs(["--stage", "--allow-dirty"]).allowDirty === true);
+check("--allow-orphans parsed", parseArgs(["--stage", "--allow-orphans"]).allowOrphans === true);
 check("--quiet parsed", parseArgs(["--stage", "--quiet"]).quiet === true);
 check("helper guard detects import specifiers", hasBareHelperSpecifier('import { Card } from "paseo-plugin-helper/client";'));
 check(
@@ -64,6 +78,7 @@ const ids = pluginIds();
 // already happened twice (b3897f08 bumped 9->10 for the same reason).
 // The named plugins below are the ones discovery must never silently drop.
 const EXPECTED_PLUGINS = [
+  "antigravity-claude",
   "demo",
   "forges",
   "mcp-tools",
@@ -291,5 +306,123 @@ withPackingTree((dir) => {
   check("stage leaves the source tree untouched", readNestedVersion(dir).version === "0.3.0");
 });
 
+// --- placeholder detection ---
+check("isPlaceholderVersion matches 0.0.0-stage", isPlaceholderVersion("0.0.0-stage") === true);
+check("isPlaceholderVersion matches 0.0.0-stage suffix", isPlaceholderVersion("0.0.0-stage.1") === true);
+check("isPlaceholderVersion rejects real version", isPlaceholderVersion("1.0.0") === false);
+
+// --- assertNoSymlinkHazards ---
+withTempStage((dir) => {
+  const pluginDir = path.join(dir, "safe-plugin");
+  fs.mkdirSync(path.join(pluginDir, "client"), { recursive: true });
+  fs.writeFileSync(path.join(pluginDir, "package.json"), "{}");
+  check("clean directory has no symlink hazards", throws(() => assertNoSymlinkHazards(pluginDir)) === false);
+
+  const symlinkRoot = path.join(dir, "symlinked-plugin");
+  fs.symlinkSync(pluginDir, symlinkRoot);
+  check("symlinked root directory is rejected as a hazard", throws(() => assertNoSymlinkHazards(symlinkRoot)) === true);
+
+  const clientVendorDir = path.join(dir, "vendor-plugin");
+  fs.mkdirSync(path.join(clientVendorDir, "client", "vendor"), { recursive: true });
+  fs.symlinkSync(path.join(dir, "nowhere"), path.join(clientVendorDir, "client", "vendor", "linked-helper"));
+  check("symlink within client/ is rejected as a hazard", throws(() => assertNoSymlinkHazards(clientVendorDir)) === true);
+
+  const linkedEntryDir = path.join(dir, "entry-plugin");
+  fs.mkdirSync(linkedEntryDir, { recursive: true });
+  const externalFile = path.join(dir, "external.ts");
+  fs.writeFileSync(externalFile, "export {};");
+  fs.symlinkSync(externalFile, path.join(linkedEntryDir, "index.client.tsx"));
+  check(
+    "symlinked entrypoint file is rejected as a hazard",
+    throws(() => assertNoSymlinkHazards(linkedEntryDir, { files: ["index.client.tsx"] })) === true,
+  );
+});
+
+// --- detectOrphanFiles & assertNoOrphanRisk ---
+withTempStage((dir) => {
+  check("clean repo directory has no orphan files", detectOrphanFiles("plugins/top").length === 0);
+  check("assertNoOrphanRisk passes on clean directory", throws(() => assertNoOrphanRisk("plugins/top")) === false);
+});
+
+// --- verifyStagedBeforePublish ---
+withTempStage((dir) => {
+  check(
+    "placeholder version is rejected before publish",
+    throws(() => verifyStagedBeforePublish({ version: "0.0.0-stage", dir })) === true,
+  );
+  check(
+    "missing staged tarball is rejected before publish",
+    throws(() => verifyStagedBeforePublish({ version: "1.0.0", target: path.join(dir, "missing.tgz") })) === true,
+  );
+
+  const dummyTarball = path.join(dir, "dummy.tgz");
+  fs.writeFileSync(dummyTarball, "tarball-data");
+
+  const validRunTar = () => JSON.stringify({ name: "@xpufx/paseo-test", version: "1.0.0" });
+  check(
+    "matching tarball version and name pass verification",
+    verifyStagedBeforePublish(
+      { id: "test", publishAs: "@xpufx/paseo-test", version: "1.0.0", target: dummyTarball },
+      { runTar: validRunTar },
+    ) === true,
+  );
+
+  const mismatchedVersionTar = () => JSON.stringify({ name: "@xpufx/paseo-test", version: "2.0.0" });
+  check(
+    "mismatched tarball version is rejected",
+    throws(() =>
+      verifyStagedBeforePublish(
+        { id: "test", publishAs: "@xpufx/paseo-test", version: "1.0.0", target: dummyTarball },
+        { runTar: mismatchedVersionTar },
+      ),
+    ) === true,
+  );
+
+  const mismatchedNameTar = () => JSON.stringify({ name: "@xpufx/wrong", version: "1.0.0" });
+  check(
+    "mismatched tarball name is rejected",
+    throws(() =>
+      verifyStagedBeforePublish(
+        { id: "test", publishAs: "@xpufx/paseo-test", version: "1.0.0", target: dummyTarball },
+        { runTar: mismatchedNameTar },
+      ),
+    ) === true,
+  );
+
+  const placeholderTar = () => JSON.stringify({ name: "@xpufx/paseo-test", version: "0.0.0-stage" });
+  check(
+    "placeholder version inside tarball is rejected",
+    throws(() =>
+      verifyStagedBeforePublish(
+        { id: "test", publishAs: "@xpufx/paseo-test", version: "1.0.0", target: dummyTarball },
+        { runTar: placeholderTar },
+      ),
+    ) === true,
+  );
+
+  // Directory verification
+  const validDir = path.join(dir, "valid-plugin");
+  fs.mkdirSync(validDir);
+  fs.writeFileSync(path.join(validDir, "package.json"), JSON.stringify({ name: "@xpufx/paseo-test", version: "1.0.0" }));
+  check(
+    "matching directory package.json passes verification",
+    verifyStagedBeforePublish({ id: "test", publishAs: "@xpufx/paseo-test", version: "1.0.0", dir: validDir }) === true,
+  );
+
+  const placeholderDir = path.join(dir, "placeholder-plugin");
+  fs.mkdirSync(placeholderDir);
+  fs.writeFileSync(
+    path.join(placeholderDir, "package.json"),
+    JSON.stringify({ name: "@xpufx/paseo-test", version: "0.0.0-stage" }),
+  );
+  check(
+    "placeholder package.json in directory is rejected",
+    throws(() =>
+      verifyStagedBeforePublish({ id: "test", publishAs: "@xpufx/paseo-test", version: "0.0.0-stage", dir: placeholderDir }),
+    ) === true,
+  );
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);
+
