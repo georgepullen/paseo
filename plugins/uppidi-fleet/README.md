@@ -772,12 +772,11 @@ logic. The token comes from Forgejo's auto-injected `secrets.GITHUB_TOKEN`.
 
 ### 9.2 Stale-WIP sweep
 
-[`.forgejo/workflows/stale-wip-sweep.yml`](../../.forgejo/workflows/stale-wip-sweep.yml)
-runs hourly and, for `state/1-wip` tickets idle past a timeout, posts one
-reminder then flips to `attention/0-orchestrator` + `state/0-triage` (whose
-exclusivity evicts `state/1-wip`). It invokes a **reusable workflow in an
-external repo** (`xpufx-org/platform`). If you want this, host your own
-reusable base and point the caller at it, or inline the logic.
+The stale-WIP sweep runs within the hook router's periodic board sweep (`runBoardSweep`).
+For `state/1-wip` tickets idle past a configured timeout (`staleWipHours`, default 24h),
+it posts one marked reminder comment and returns the ticket to orchestrator triage by
+adding `attention/0-orchestrator` and removing `state/1-wip`. The previous external scheduled
+workflow (`stale-wip-sweep.yml`) has been retired into this in-router sweep (#920).
 
 ---
 
@@ -809,14 +808,13 @@ these gaps yourself.
   [`examples/skills/`](./examples/skills/) and adapt them into your loaded
   skills directory.
 
-### 10.3 Action workflow YAML is monorepo-level, host-specific
+### 10.3 Board hygiene workflows migrated to hook router
 
-- `issue-label-triage.yml` and `stale-wip-sweep.yml` live in the monorepo's
-  `.forgejo/workflows/`, not under the plugin. The runner label
-  (`runner-local-shell`) and the reusable sweep base (`xpufx-org/platform`) are
-  one team's environment. The hardcoded agent account (`xpufx`) must change.
-- **Action:** copy both into your repo and rewrite the runner label, agent
-  account, and reusable-workflow reference.
+- Board hygiene routines previously driven by external scheduled Forgejo workflows
+  (`issue-label-triage.yml` and `stale-wip-sweep.yml`) now run directly inside the
+  hook router (`runLabelTriage` and `runBoardSweep` with stale-WIP recovery, #920).
+- External Action runners and platform reusable workflow references are no longer
+  required for these board maintenance actions.
 
 ### 10.4 The issues surface is hardcoded to one host/repo
 

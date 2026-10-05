@@ -25,7 +25,13 @@ import {
 import { getUppidiFleetSettingsStorage } from "./settings.js";
 import { forgejoApiGet, forgejoApiRequest, forgejoToken, resolveForgejoHost } from "./forgejo-api.js";
 import { appendRollupReceipt } from "./metrics.js";
-import { createDefaultIssuesCheckIo, runIssuesCheck, type IssuesCheckIo } from "./issues-check.js";
+import {
+  createDefaultIssuesCheckIo,
+  runIssuesCheck,
+  ISSUES_CHECK_DEFAULT_STALE_WIP_HOURS,
+  type IssuesCheckIo,
+  type StaleWipResult,
+} from "./issues-check.js";
 import { resolveWorkspaceForRepo, type ResolvedWorkspace } from "./workspace-lookup.js";
 import { isRepoMatching } from "../shared/sort-filter.js";
 import { DEFAULT_ROLE_MODELS, loadSavedRoleModels } from "./role-models.js";
@@ -135,6 +141,10 @@ export interface HookRouterOptions {
   ciFailureEnabled?: boolean;
   /** Enable the repository.created onboarding handler (#847). Defaults off in test mode. */
   repoOnboardingEnabled?: boolean;
+  /** Enable the in-router stale-WIP sweep (#920). Defaults off in test mode. */
+  staleWipSweepEnabled?: boolean;
+  /** Hours with no update before a `state/1-wip` ticket returns to triage (#920). */
+  staleWipHours?: number;
   /** Actor(s) whose issue closures are intercepted. Defaults to `xpufx`. */
   closeGuardTargetActors?: string[];
   /** Terminal labels that permit closure without reopening. */
@@ -2034,6 +2044,7 @@ export interface BoardCheckResult {
   repo: string;
   ok: boolean;
   candidates: BoardCandidate[];
+  staleWipRecovery?: StaleWipResult[];
   error?: string;
 }
 
@@ -2045,6 +2056,7 @@ export interface BoardSweepResult {
     count: number;
     dispatchable: number;
   }>;
+  staleWipRecovered?: StaleWipResult[];
   prunedCount: number;
   notified: number;
   /** Repos whose board check failed; surfaced to the caller and Front Desk. */
@@ -2284,6 +2296,8 @@ export class HookRouter {
   /** CI failure issue creator (#865). */
   public readonly ciFailureEnabled: boolean;
   public readonly repoOnboardingEnabled: boolean;
+  public readonly staleWipSweepEnabled: boolean;
+  public readonly staleWipHours: number;
   private readonly closeGuardTargetActors: string[];
   private readonly closeGuardAcceptedLabels: string[];
   private readonly sharedAgentActor: string;
@@ -2313,6 +2327,10 @@ export class HookRouter {
     this.closeGuardEnabled = options?.closeGuardEnabled ?? !this.isTestMode;
     this.ciFailureEnabled = options?.ciFailureEnabled ?? !this.isTestMode;
     this.repoOnboardingEnabled = options?.repoOnboardingEnabled ?? !this.isTestMode;
+    this.staleWipSweepEnabled = options?.staleWipSweepEnabled ?? !this.isTestMode;
+    this.staleWipHours =
+      options?.staleWipHours ??
+      Number(process.env.STALE_WIP_HOURS ?? ISSUES_CHECK_DEFAULT_STALE_WIP_HOURS);
     this.closeGuardTargetActors = parseTargetActors(options?.closeGuardTargetActors);
     this.closeGuardAcceptedLabels =
       options?.closeGuardAcceptedLabels && options.closeGuardAcceptedLabels.length > 0
@@ -5182,9 +5200,16 @@ export class HookRouter {
       hostname,
       repo: ownerRepo,
       all: true,
+      sweepStaleWip: this.staleWipSweepEnabled,
+      staleWipHours: this.staleWipHours,
       io: io ?? createDefaultIssuesCheckIo(),
     });
-    return { repo, ok: true, candidates: outcome.rankedCandidates };
+    return {
+      repo,
+      ok: true,
+      candidates: outcome.rankedCandidates,
+      staleWipRecovery: outcome.staleWipRecovery,
+    };
   }
 
   public async runBoardSweep(repos?: string[], io?: IssuesCheckIo): Promise<BoardSweepResult> {
@@ -5195,6 +5220,7 @@ export class HookRouter {
     });
     const targets = Array.from(new Set(rawTargets.map((k) => canonicalRepoKey(k) ?? k)));
     const actionable: BoardSweepResult["actionable"] = [];
+    const staleWipRecovered: StaleWipResult[] = [];
     const errors: Array<{ repo: string; error: string }> = [];
     const pruneResult = await this.pruneOrchestrators();
     const prunedCount = pruneResult.prunedCount;
@@ -5212,6 +5238,9 @@ export class HookRouter {
         errors.push({ repo, error });
         this.log(`[error] board check failed for ${repo}: ${error}`);
         continue;
+      }
+      if (res.staleWipRecovery && res.staleWipRecovery.length > 0) {
+        staleWipRecovered.push(...res.staleWipRecovery);
       }
       if (!res.ok || res.candidates.length === 0) continue;
       const dispatchable = res.candidates.filter((c) => c.is_dispatchable).length;
@@ -5269,6 +5298,7 @@ export class HookRouter {
       ok: true,
       swept: targets.length,
       actionable,
+      ...(staleWipRecovered.length > 0 ? { staleWipRecovered } : {}),
       notified,
       prunedCount,
       ...(errors.length > 0 ? { errors } : {}),

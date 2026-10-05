@@ -93,7 +93,7 @@ import {
 } from "./hook-router.js";
 import { setFetchForTest, setTokenResolverForTest } from "./forgejo-api.js";
 import { setMetricsFilePathForTest } from "./metrics.js";
-import type { IssuesCheckIo } from "./issues-check.js";
+import { STALE_WIP_REMINDER_MARKER, type IssuesCheckIo } from "./issues-check.js";
 import { getUppidiFleetSettingsStorage, resetUppidiFleetSettingsStorageInstance } from "./settings.js";
 
 /** Drop the persisted plugin settings so each test starts from schema defaults. */
@@ -2630,6 +2630,184 @@ describe("hook-router HTTP handoff, prune, and board sweep routes (#458)", () =>
         rmSync(binDir, { recursive: true, force: true });
       } catch {}
     }
+  });
+});
+
+describe("in-router stale-WIP sweep (#920)", () => {
+  let tempDir: string;
+  let router: HookRouter;
+
+  beforeEach(() => {
+    clearSettingsStorage();
+    tempDir = mkdtempSync(join(tmpdir(), "stale-wip-sweep-test-"));
+    router = new HookRouter(null, { queueDir: tempDir });
+  });
+
+  afterEach(() => {
+    router.stopBackgroundLoops();
+    rmSync(tempDir, { recursive: true, force: true });
+  });
+
+  it("staleWipSweepEnabled defaults to false in test mode and reflects options", () => {
+    assert.equal(router.staleWipSweepEnabled, false);
+    const enabledRouter = new HookRouter(null, {
+      queueDir: tempDir,
+      staleWipSweepEnabled: true,
+      staleWipHours: 3,
+    });
+    assert.equal(enabledRouter.staleWipSweepEnabled, true);
+    assert.equal(enabledRouter.staleWipHours, 3);
+  });
+
+  it("skips stale WIP sweep when staleWipSweepEnabled is false", async () => {
+    const staleDate = new Date(Date.now() - 5 * 3600 * 1000).toISOString();
+    const staleCommands: string[][] = [];
+    const io: IssuesCheckIo = {
+      getOpenIssues: async () => ({
+        ok: true,
+        issues: [
+          {
+            number: 42,
+            title: "Stuck task",
+            state: "open",
+            updated_at: staleDate,
+            created_at: staleDate,
+            comments: 0,
+            labels: [{ name: "state/1-wip" }],
+          },
+        ],
+      }),
+      getLatestComments: async () => [],
+      getIssueComments: async () => [],
+      runStaleWipCommand: async (cmd) => {
+        staleCommands.push(cmd);
+        return true;
+      },
+      loadCache: async () => ({}),
+      saveCache: async () => {},
+    };
+
+    const res = await router.runBoardCheck("xpufx-org/paseo", "forge.test", io);
+    assert.equal(res.ok, true);
+    assert.deepEqual(res.staleWipRecovery, []);
+    assert.equal(staleCommands.length, 0);
+  });
+
+  it("runs stale WIP sweep, posts reminder and updates labels when staleWipSweepEnabled is true", async () => {
+    const activeRouter = new HookRouter(null, {
+      queueDir: tempDir,
+      staleWipSweepEnabled: true,
+      staleWipHours: 2,
+    });
+    const staleDate = new Date(Date.now() - 4 * 3600 * 1000).toISOString();
+    const commandCalls: Array<{ command: string[]; inputText?: string }> = [];
+    const io: IssuesCheckIo = {
+      getOpenIssues: async () => ({
+        ok: true,
+        issues: [
+          {
+            number: 42,
+            title: "Stuck task",
+            state: "open",
+            updated_at: staleDate,
+            created_at: staleDate,
+            comments: 0,
+            labels: [{ name: "state/1-wip" }],
+          },
+        ],
+      }),
+      getLatestComments: async () => [],
+      getIssueComments: async () => [],
+      runStaleWipCommand: async (command, inputText) => {
+        commandCalls.push({ command, inputText });
+        return true;
+      },
+      loadCache: async () => ({}),
+      saveCache: async () => {},
+    };
+
+    const sweepResult = await activeRouter.runBoardSweep(["xpufx-org/paseo"], io);
+    assert.equal(sweepResult.ok, true);
+    assert.ok(sweepResult.staleWipRecovered);
+    assert.equal(sweepResult.staleWipRecovered.length, 1);
+    assert.deepEqual(sweepResult.staleWipRecovered[0], {
+      number: 42,
+      reminded: true,
+      recovered: true,
+      dry_run: false,
+    });
+
+    // 2 commands: comment creation (teax api -X POST) and label edit (teax issue edit)
+    assert.equal(commandCalls.length, 2);
+    const commentCall = commandCalls[0];
+    assert.ok(commentCall.command.join(" ").includes("repos/xpufx-org/paseo/issues/42/comments"));
+    assert.ok(commentCall.inputText?.includes(STALE_WIP_REMINDER_MARKER));
+    assert.ok(commentCall.inputText?.includes("WIP has had no update past the configured timeout"));
+
+    const labelCall = commandCalls[1];
+    const labelCmd = labelCall.command.join(" ");
+    assert.ok(labelCmd.includes("issue edit 42"));
+    assert.ok(labelCmd.includes("--add-label attention/0-orchestrator"));
+    assert.ok(labelCmd.includes("--remove-label state/1-wip"));
+  });
+
+  it("is idempotent and avoids duplicate comment when reminder marker already exists", async () => {
+    const activeRouter = new HookRouter(null, {
+      queueDir: tempDir,
+      staleWipSweepEnabled: true,
+      staleWipHours: 2,
+    });
+    const staleDate = new Date(Date.now() - 4 * 3600 * 1000).toISOString();
+    const commandCalls: Array<{ command: string[]; inputText?: string }> = [];
+    const io: IssuesCheckIo = {
+      getOpenIssues: async () => ({
+        ok: true,
+        issues: [
+          {
+            number: 42,
+            title: "Stuck task",
+            state: "open",
+            updated_at: staleDate,
+            created_at: staleDate,
+            comments: 1,
+            labels: [{ name: "state/1-wip" }],
+          },
+        ],
+      }),
+      getLatestComments: async () => [],
+      getIssueComments: async () => [
+        {
+          id: 101,
+          body: `Notice\n\n${STALE_WIP_REMINDER_MARKER}`,
+          created_at: staleDate,
+          updated_at: staleDate,
+        },
+      ],
+      runStaleWipCommand: async (command, inputText) => {
+        commandCalls.push({ command, inputText });
+        return true;
+      },
+      loadCache: async () => ({}),
+      saveCache: async () => {},
+    };
+
+    const sweepResult = await activeRouter.runBoardSweep(["xpufx-org/paseo"], io);
+    assert.equal(sweepResult.ok, true);
+    assert.ok(sweepResult.staleWipRecovered);
+    assert.equal(sweepResult.staleWipRecovered.length, 1);
+    assert.deepEqual(sweepResult.staleWipRecovered[0], {
+      number: 42,
+      reminded: false,
+      recovered: true,
+      dry_run: false,
+    });
+
+    // Only 1 command: the label edit; comment is skipped because reminder already exists
+    assert.equal(commandCalls.length, 1);
+    const labelCmd = commandCalls[0].command.join(" ");
+    assert.ok(labelCmd.includes("issue edit 42"));
+    assert.ok(labelCmd.includes("--add-label attention/0-orchestrator"));
+    assert.ok(labelCmd.includes("--remove-label state/1-wip"));
   });
 });
 

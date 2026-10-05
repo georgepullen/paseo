@@ -28,6 +28,21 @@ import { spawn } from "node:child_process";
 
 export const STALE_WIP_LABEL = "state/1-wip";
 export const STALE_WIP_REMINDER_MARKER = "<!-- forgejo-issues-check:stale-wip-reminder -->";
+/** Human-readable body of the stale-WIP triage notice, before the marker/footer. */
+export const STALE_WIP_NOTICE_TEXT =
+  "WIP has had no update past the configured timeout; returning it to orchestrator triage " +
+  "to check status, ownership, and next action.";
+
+/**
+ * Build the stale-WIP triage notice. The marker stays byte-identical to the
+ * external checker's so host runs, Action runs, and the router interoperate; an
+ * optional envelope footer is appended for the in-router path. The marker is
+ * itself the idempotency key `hasStaleWipReminder` looks for.
+ */
+export function staleWipNoticeBody({ envelope }: { envelope?: string | null } = {}): string {
+  const footer = envelope ? `\n\n---\n${envelope}` : "";
+  return `${STALE_WIP_NOTICE_TEXT}\n\n${STALE_WIP_REMINDER_MARKER}${footer}`;
+}
 // A stop-work or ignore directive always wins over automated recovery. Closed
 // issues are not returned by getOpenIssues(), and state/4-done is defensive.
 export const STALE_WIP_SKIP_LABELS: ReadonlySet<string> = new Set([
@@ -316,10 +331,7 @@ export async function recoverStaleWipIssue(
     return { number, reminded: !alreadyReminded, recovered: false, dry_run: true };
   }
   if (!alreadyReminded) {
-    const reminder =
-      "WIP has had no update past the configured timeout; returning it to orchestrator triage " +
-      "to check status, ownership, and next action.\n\n" +
-      STALE_WIP_REMINDER_MARKER;
+    const reminder = staleWipNoticeBody();
     const posted = await io.runStaleWipCommand(
       [
         "teax",
@@ -731,6 +743,13 @@ export interface IssuesCheckOptions {
   role?: IssuesCheckRole;
   /** Return open state/1-wip issues with no update for this many hours to orchestrator triage. */
   staleWipHours?: number;
+  /**
+   * Whether to run the stale-WIP recovery sweep for open `state/1-wip` tickets.
+   * `HookRouter.runBoardCheck` delegates to this sweep directly when
+   * `staleWipSweepEnabled` is true (defaulting to enabled outside test mode).
+   * Defaults to true.
+   */
+  sweepStaleWip?: boolean;
   dryRun?: boolean;
   /** Injectable clock; defaults to the real current time. */
   now?: number;
@@ -787,6 +806,7 @@ export async function runIssuesCheck(options: IssuesCheckOptions = {}): Promise<
   const all = options.all ?? false;
   const role = options.role ?? "orchestrator";
   const staleWipHours = options.staleWipHours ?? ISSUES_CHECK_DEFAULT_STALE_WIP_HOURS;
+  const sweepStaleWip = options.sweepStaleWip ?? true;
   const dryRun = options.dryRun ?? false;
   const io = options.io ?? createDefaultIssuesCheckIo();
 
@@ -803,10 +823,12 @@ export async function runIssuesCheck(options: IssuesCheckOptions = {}): Promise<
     return { exitCode: 0, rankedCandidates: [], staleWipRecovery: [], savedState: {} };
   }
 
-  const staleWipResults = await sweepStaleWipIssues(io, hostname, repo, issues, staleWipHours, {
-    now: options.now,
-    dryRun,
-  });
+  const staleWipResults = sweepStaleWip
+    ? await sweepStaleWipIssues(io, hostname, repo, issues, staleWipHours, {
+        now: options.now,
+        dryRun,
+      })
+    : [];
 
   const cache = await io.loadCache(repo);
   const newState: Record<string, IssueSignature> = {};
