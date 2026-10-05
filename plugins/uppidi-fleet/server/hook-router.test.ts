@@ -4324,6 +4324,10 @@ describe("hook-router ensure-orchestrator deterministic resolution and idempoten
       stateDir,
       port: 0,
       workspacesData: workspacesWithRealDir,
+      // Pin model resolution so the suite never reads the operator's live
+      // role-model config or circuit breaker (#955).
+      orchestratorModelFallback: ["antigravity-acp/gemini-3.8-flash-low"],
+      circuitBreakerPath: join(tempDir, "model-health.json"),
       providerModeResolver: async (provider) => providerModes[provider] ?? null,
       spawnAgent: async (opts) => {
         spawnedCalls.push(opts);
@@ -4582,6 +4586,10 @@ describe("orchestrator provider mode resolution (#894)", () => {
       queueDir,
       stateDir,
       workspacesData: workspacesWithRealDir(tempRepoDir),
+      // Pin model resolution so the suite never reads the operator's live
+      // role-model config or circuit breaker (#955).
+      orchestratorModelFallback: ["antigravity-acp/gemini-3.8-flash-low"],
+      circuitBreakerPath: join(tempDir, "model-health.json"),
       ...options,
     });
 
