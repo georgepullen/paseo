@@ -587,6 +587,26 @@ const PARTS = [
     ],
     note: "Resolves daemon workspace directory for repository checkouts deterministically by ranking unarchived primary workspaces.",
   },
+  {
+    file: `${PLUGIN}/server/workspace-guard.ts`,
+    part: "Worktree-only dispatch guard: primary-checkout detection and worker workspace policy",
+    layer: "server",
+    label: DETERMINISTIC,
+    anchors: {
+      exports: [
+        "inspectPrimaryCheckout",
+        "evaluateWorkerWorkspaceGuard",
+        "evaluateWorkerSpawnWorkspace",
+        "WORKER_PRIMARY_CHECKOUT_ERROR",
+      ],
+    },
+    evidence: [
+      [`workspace-guard.ts:62-105`, "`inspectPrimaryCheckout` shells `git rev-parse --path-format=absolute --git-dir`/`--git-common-dir` and treats equality as the primary checkout"],
+      [`workspace-guard.ts:149-215`, "`evaluateWorkerWorkspaceGuard` is ordered policy over the inspection, project rootPath and daemon registry record; non-worker categories pass untouched"],
+      [`workspace-guard.ts:269-323`, "resolves the workspace record/project rootPath from the daemon registry and applies the guard to worker spawns"],
+    ],
+    note: "Enforces #918: a worker is refused the primary checkout before any SDK/CLI spawn. Detection is a fixed git probe, never a model judgement.",
+  },
 
   // ---------------------------------------------------------------- client ---
   {

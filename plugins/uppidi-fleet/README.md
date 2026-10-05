@@ -1079,6 +1079,41 @@ and rejections name both remediation paths verbatim. Callers that spawn through
 the RPC surface should pass their own agent id as `callerAgentId` to be
 attributed.
 
+### 13.1.1 Worktree-only dispatch (never hand a primary checkout to a worker, #918)
+
+A worker must run in an isolated linked worktree, never the repository's primary
+checkout. `spawnPaseoAgent` enforces this for `category: "worker"` through
+[`server/workspace-guard.ts`](./server/workspace-guard.ts): it probes the
+resolved workspace with `git rev-parse --path-format=absolute --git-dir` and
+`--git-common-dir`, and refuses when the two are equal (the primary checkout),
+when `workspace_path == project.rootPath`, or when the daemon registry record is
+a local workspace (`kind: local_checkout` / `isolation: local`). The refusal
+names the provisioning action (`paseo workspace create --isolation worktree …`
+then dispatch with `--workspace <workspace_id>`); the spawn never reaches the SDK
+or CLI. Orchestrators are intentionally exempt — they run from the primary
+checkout on `main` — so only worker dispatch is refused.
+
+The Orchestrator launch contract calls the same policy through the
+`fleet_validate_workspace` MCP tool (`{ path, workspaceId }`); a non-OK result is
+a hard refusal the orchestrator must not work around with `--cwd`. The
+coding-agent and orchestrator skills carry the matching pre-flight.
+
+**Audit result.** `resolveRepoWorkspace` (used by `handleUppidiAddOrchestrator`)
+prefers the `isolation: local` / primary workspace — correct for an orchestrator,
+and now unreachable for a worker because worker spawns go through the guard.
+`hook-router.provisionOrchestrator` and the CLI `paseo run` fallback only ever
+spawn orchestrators. The remaining exposure is a worker launched directly by the
+orchestrator via `paseo agent run --cwd <primary>`; that is the skill-layer
+guard, backed by the worker's own launch-contract pre-flight.
+
+**Upstream ask.** Paseo 0.11.0-beta.4 exposes `--isolation local|worktree`, but no
+native "this path is not a workspace" flag and no way to forbid `isolation:
+local` for a project. It does surface `before("workspace.create")` /
+`before("agent.create")` transform hooks (no documented veto) and workspace
+records with `isPaseoOwnedWorktree` / `mainRepoRoot`. A daemon-level veto on
+`workspace.create`/`agent.create` for a primary-checkout target would make this
+unbypassable; until then the guard lives in uppidi-fleet + the skills.
+
 ## 13.2 Test state isolation
 
 Tests that touch hook-router state, Front Desk/orchestrator registrations, or

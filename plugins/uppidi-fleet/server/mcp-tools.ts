@@ -20,6 +20,10 @@ import {
   type WatchdogAuditOptions,
   type WatchdogAuditResult,
 } from "./hook-router.js";
+import {
+  evaluateWorkerSpawnWorkspace,
+  WORKER_PRIMARY_CHECKOUT_ERROR,
+} from "./workspace-guard.js";
 
 /**
  * Declared MCP tools for Uppidi Fleet.
@@ -253,6 +257,29 @@ export const FLEET_MCP_TOOLS: UppidiToolDefinition[] = [
         },
       },
       required: ["repo"],
+    },
+  },
+  {
+    name: "fleet_validate_workspace",
+    description:
+      "Worktree-only dispatch validator (#918). Refuses a worker workspace that resolves to the repository primary checkout (git-dir == git-common-dir) or a local/isolation:local workspace. Call before dispatching a worker; a refusal is hard and names the provisioning action.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        path: {
+          type: "string",
+          description: "Absolute workspace_path to validate (the worker cwd)",
+        },
+        workspaceId: {
+          type: "string",
+          description: "Paseo workspace id to resolve from the daemon registry when path is omitted",
+        },
+        json: {
+          type: "boolean",
+          description: "Output machine-readable JSON instead of markdown",
+          default: false,
+        },
+      },
     },
   },
 ];
@@ -726,6 +753,50 @@ export async function executeFleetEnsureOrchestrator(
 }
 
 /**
+ * Execute fleet_validate_workspace with validated parameters.
+ *
+ * The Orchestrator launch contract calls this before dispatching a worker. A
+ * refusal is hard: `isError` is true and the text names the provisioning
+ * action, so an unmodified caller cannot treat a refusal as a green light.
+ */
+export async function executeFleetValidateWorkspace(
+  args: Record<string, unknown> = {},
+): Promise<FleetToolCallResult> {
+  const pathArg = typeof args.path === "string" ? args.path.trim() : "";
+  const workspaceId = typeof args.workspaceId === "string" ? args.workspaceId.trim() : "";
+  const json = Boolean(args.json);
+
+  if (!pathArg && !workspaceId) {
+    return {
+      content: [{ type: "text", text: "path or workspaceId is required" }],
+      isError: true,
+    };
+  }
+
+  const decision = await evaluateWorkerSpawnWorkspace({
+    category: "worker",
+    cwd: pathArg || undefined,
+    workspaceId: workspaceId || undefined,
+  });
+  const payload = {
+    ok: decision.allowed,
+    path: pathArg || undefined,
+    workspaceId: workspaceId || undefined,
+    reason: decision.reason,
+    error: decision.error,
+  };
+  const text = json
+    ? JSON.stringify(payload, null, 2)
+    : decision.allowed
+      ? `worktree-only dispatch: OK — ${decision.reason}`
+      : `${decision.error ?? WORKER_PRIMARY_CHECKOUT_ERROR}\n\nreason: ${decision.reason}`;
+  return {
+    content: [{ type: "text", text }],
+    isError: !decision.allowed,
+  };
+}
+
+/**
  * Dispatch an MCP tool call by name.
  */
 export async function executeFleetTool(
@@ -749,6 +820,8 @@ export async function executeFleetTool(
       return executeFleetHandoffGenerate(args);
     case "fleet_ensure_orchestrator":
       return executeFleetEnsureOrchestrator(args);
+    case "fleet_validate_workspace":
+      return executeFleetValidateWorkspace(args);
     default:
       return {
         content: [

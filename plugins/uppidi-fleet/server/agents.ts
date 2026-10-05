@@ -63,6 +63,10 @@ import {
 } from "./hook-router.js";
 import { resolveHookAuthPosture, resolveHookEndpoint } from "./hook.js";
 import { resolveWorkspaceForRepo } from "./workspace-lookup.js";
+import {
+  evaluateWorkerSpawnWorkspace,
+  WORKER_PRIMARY_CHECKOUT_ERROR,
+} from "./workspace-guard.js";
 import { loadSavedRoleModels, DEFAULT_ROLE_MODELS } from "./role-models.js";
 import { getEffectiveSkillPath } from "./skills.js";
 
@@ -2078,6 +2082,20 @@ export async function spawnPaseoAgent(
     return { ok: false, error: authority.error || SPAWN_AUTHORITY_WORKER_ERROR };
   }
   appendHookLog(`[info] spawn-authority: allowed: ${authority.reason}`);
+
+  // Worktree-only dispatch (#918): a worker must never be handed the primary
+  // checkout. Refuse before any SDK/CLI call so the invalid spawn cannot start.
+  const workspaceGuard = await evaluateWorkerSpawnWorkspace({
+    category: options.category,
+    cwd: options.cwd,
+    workspaceId: options.workspaceId,
+  });
+  if (!workspaceGuard.allowed) {
+    appendHookLog(`[warn] worktree-only-dispatch: rejected: ${workspaceGuard.reason}`);
+    console.warn(`[uppidi-fleet:agents] worktree-only-dispatch rejected: ${workspaceGuard.reason}`);
+    return { ok: false, error: workspaceGuard.error || WORKER_PRIMARY_CHECKOUT_ERROR };
+  }
+  appendHookLog(`[info] worktree-only-dispatch: allowed: ${workspaceGuard.reason}`);
 
   const categoryKey = options.category === "front-desk" ? "front-desk" : "orchestrator";
   let resolvedModel = options.model?.trim();

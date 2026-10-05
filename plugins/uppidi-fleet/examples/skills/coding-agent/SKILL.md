@@ -72,7 +72,12 @@ When referencing issues in comments, commit messages, or chat harness:
 > Fleet repositories enforce branch protection on `main`. Direct pushes to `main` are strictly forbidden and will be rejected. All code changes must originate from the isolated Paseo workspace assigned by the Orchestrator and be delivered via a Pull Request.
 
 1. **Workspace Safety Preflight**:
-   Before reading or editing project files, require the Orchestrator's launch contract to identify the assigned `workspace_id`, absolute `workspace_path`, and workspace branch. Verify that the current directory matches that path and is an isolated linked Git worktree, not the primary checkout. Use read-only checks such as `git rev-parse` and `git worktree list`.
+   Before reading or editing project files, require the Orchestrator's launch contract to identify the assigned `workspace_id`, absolute `workspace_path`, and workspace branch. Verify that the current directory matches that path and is an isolated linked Git worktree, not the primary checkout. Use read-only checks such as `git rev-parse` and `git worktree list`. The primary checkout is the only checkout where the two git-directory probes agree; a linked worktree has a `--git-dir` under `<repo>/.git/worktrees/...` that differs from `--git-common-dir`:
+   ```bash
+   git rev-parse --path-format=absolute --git-dir
+   git rev-parse --path-format=absolute --git-common-dir
+   ```
+   Equal output (or `workspace_path == project.rootPath`) means you are in the primary checkout — refuse to work and ask the Orchestrator to provision a worktree workspace.
 
    If the contract is missing, the path or worktree does not match, or the workspace cannot be verified, stop immediately. Report that no valid Paseo workspace is assigned and ask the Orchestrator to provision or repair it. Do not edit files, create or switch workspaces, create or delete worktrees, or create, rename, switch, or delete branches as a workaround.
 

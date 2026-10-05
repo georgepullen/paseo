@@ -40,6 +40,22 @@ Everything else (`spec/*`, `attention/*`, `state/*`, missing labels, one-word ti
     # create_workspace(isolation="worktree", mode="branch-off", branchName="<type>/<issue#>-<slug>", title="<repo>#<issue#> <slug>", projectId="<current_project_id>")
     ```
     Standard branch conventions: `feat/<issue#>-<slug>`, `fix/<issue#>-<slug>`, `docs/<issue#>-<slug>`, `chore/<issue#>-<slug>`.
+  - **Worktree-only pre-flight (MANDATORY — hard refusal)**:
+    A worker must **never** be dispatched into the repository primary checkout. Before
+    every worker launch, validate the resolved workspace and **refuse dispatch** on a
+    failure — do not fall back to `--cwd`:
+    ```bash
+    # Fleet validator (hard refusal; non-zero/`isError` means do not dispatch):
+    #   MCP: fleet_validate_workspace(path="<workspace_path>", workspaceId="<workspace_id>")
+    # Or the equivalent read-only git probe (primary checkout when the two match):
+    git -C "<workspace_path>" rev-parse --path-format=absolute --git-dir
+    git -C "<workspace_path>" rev-parse --path-format=absolute --git-common-dir
+    ```
+    A path is the primary checkout when `--git-dir == --git-common-dir`, or when
+    `workspace_path == project.rootPath`. On a refusal, **stop**: provision a
+    worktree workspace (`--isolation worktree`) and dispatch the worker with
+    `--workspace <workspace_id>`. A local workspace (`isolation: local`, kind
+    `local_checkout`) is the primary checkout for this purpose and is refused.
   - **Launch Worker**:
     Launch the worker bound to the created workspace using the active runtime policy:
     ```bash
@@ -49,6 +65,9 @@ Everything else (`spec/*`, `attention/*`, `state/*`, missing labels, one-word ti
     # Or via MCP create_agent:
     # create_agent(workspaceId="<workspace_id>", provider="<provider>/<model>", initialPrompt="...", title="...", settings={"modeId": "<resolved-mode>"})
     ```
+    Pass only the validated `--workspace <workspace_id>`/`workspaceId`; never pass
+    the primary checkout as `--cwd`. `spawnPaseoAgent` enforces the same refusal
+    server-side for `category: "worker"` (#918).
 - **Worker Instructions**:
   - Instruct worker: envelope claim comment, `state/1-wip` on start, commit explicit paths, push feature branch to origin, open Pull Request with `Refs #<issue#>`, and attach `state/2-review` + `review/0-needed`.
   - Never stage dirty files with `git add -A` (stage explicit paths only).

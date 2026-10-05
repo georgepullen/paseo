@@ -1,6 +1,7 @@
 import { test, describe, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
@@ -13,6 +14,7 @@ import {
   executeFleetQueuePurge,
   executeFleetHandoffGenerate,
   executeFleetEnsureOrchestrator,
+  executeFleetValidateWorkspace,
   executeFleetTool,
   handleFleetToolList,
   handleFleetToolExecute,
@@ -45,7 +47,7 @@ describe("fleet MCP tools and handlers", () => {
   });
 
   test("FLEET_MCP_TOOLS declares typed tools with valid schemas", () => {
-    assert.equal(FLEET_MCP_TOOLS.length, 8);
+    assert.equal(FLEET_MCP_TOOLS.length, 9);
 
     const toolNames = FLEET_MCP_TOOLS.map((t) => t.name);
     assert.deepEqual(toolNames, [
@@ -57,6 +59,7 @@ describe("fleet MCP tools and handlers", () => {
       "fleet_queue_purge",
       "fleet_handoff_generate",
       "fleet_ensure_orchestrator",
+      "fleet_validate_workspace",
     ]);
 
     const boardTool = FLEET_MCP_TOOLS.find((t) => t.name === "fleet_check_board");
@@ -272,10 +275,10 @@ describe("fleet MCP tools and handlers", () => {
     assert.match(res.content[0]!.text, /Unknown tool/);
   });
 
-  test("handleFleetToolList returns all 8 available tools", async () => {
+  test("handleFleetToolList returns all 9 available tools", async () => {
     const res = await handleFleetToolList({});
     assert.equal(res.ok, true);
-    assert.equal(res.tools.length, 8);
+    assert.equal(res.tools.length, 9);
     assert.deepEqual(
       res.tools.map((t) => t.name),
       [
@@ -287,6 +290,7 @@ describe("fleet MCP tools and handlers", () => {
         "fleet_queue_purge",
         "fleet_handoff_generate",
         "fleet_ensure_orchestrator",
+        "fleet_validate_workspace",
       ],
     );
   });
@@ -299,6 +303,56 @@ describe("fleet MCP tools and handlers", () => {
     assert.equal(res.ok, true);
     assert.equal(res.isError, false);
     assert.ok(res.output);
+  });
+
+  test("executeFleetValidateWorkspace refuses the primary checkout and passes a worktree (#918)", async () => {
+    const git = (cwd: string, args: string[]): string =>
+      execFileSync("git", args, {
+        cwd,
+        encoding: "utf-8",
+        env: {
+          ...process.env,
+          GIT_AUTHOR_NAME: "Test",
+          GIT_AUTHOR_EMAIL: "test@example.com",
+          GIT_COMMITTER_NAME: "Test",
+          GIT_COMMITTER_EMAIL: "test@example.com",
+          GIT_CONFIG_GLOBAL: "/dev/null",
+          GIT_CONFIG_SYSTEM: "/dev/null",
+        },
+      }).trim();
+
+    const root = mkdtempSync(join(tmpdir(), "fleet-918-root-"));
+    const wtParent = mkdtempSync(join(tmpdir(), "fleet-918-wt-"));
+    const worktree = join(wtParent, "checkout");
+    git(root, ["init", "-b", "main"]);
+    writeFileSync(join(root, "README.md"), "hello\n");
+    git(root, ["add", "README.md"]);
+    git(root, ["commit", "-m", "init"]);
+    git(root, ["worktree", "add", "-b", "feat/918-mcp", worktree]);
+
+    try {
+      const missing = await executeFleetValidateWorkspace({});
+      assert.equal(missing.isError, true);
+      assert.match(missing.content[0]!.text, /path or workspaceId is required/);
+
+      const refused = await executeFleetValidateWorkspace({ path: root, json: true });
+      assert.equal(refused.isError, true);
+      const refusedPayload = JSON.parse(refused.content[0]!.text);
+      assert.equal(refusedPayload.ok, false);
+      assert.match(refusedPayload.error, /primary checkout/);
+
+      const allowed = await executeFleetValidateWorkspace({ path: worktree });
+      assert.equal(allowed.isError, false);
+      assert.match(allowed.content[0]!.text, /worktree-only dispatch: OK/);
+    } finally {
+      try {
+        git(root, ["worktree", "remove", "--force", worktree]);
+      } catch {
+        // best-effort cleanup
+      }
+      rmSync(root, { recursive: true, force: true });
+      rmSync(wtParent, { recursive: true, force: true });
+    }
   });
 
   test("executeFleetEnsureOrchestrator requires repo argument", async () => {
