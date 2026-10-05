@@ -646,16 +646,16 @@ const PARTS = [
   },
   {
     file: `${PLUGIN}/client/panel.tsx`,
-    part: "Workspace panel wrapper, flair, panel registration",
+    part: "Workspace panel and sidebar wrappers, panel registration",
     layer: "client",
     label: DETERMINISTIC,
-    anchors: { exports: ["UPPIDI_FLEET_FLAIR", "UppidiFleetPanel", "registerWorkspacePanel"] },
+    anchors: { exports: ["UppidiFleetPanel", "UppidiFleetSidebar", "registerWorkspacePanel"] },
     evidence: [
-      [`panel.tsx:10-18`, "flair is a static `VisualFlair` literal"],
-      [`panel.tsx:20-30`, "the panel delegates to the tree view"],
-      [`panel.tsx:36-45`, "registration wraps `client.addWorkspacePanel`"],
+      [`panel.tsx:11-19`, "the panel mounts the host theme and the required scroll owner"],
+      [`panel.tsx:27-33`, "the sidebar wrapper mounts the host theme for the sidebar registration"],
+      [`panel.tsx:40-49`, "registration wraps `client.addWorkspacePanel`"],
     ],
-    note: "Chrome around the tree view. No model.",
+    note: "Chrome around the surface. No model.",
   },
   {
     file: `${PLUGIN}/client/agent-switcher-data.ts`,
@@ -774,10 +774,25 @@ const PARTS = [
     label: DETERMINISTIC,
     anchors: { exports: ["FleetTheme", "useFleetTheme"] },
     evidence: [
-      [`theme.ts:22-30`, "colors, alpha, status helpers and typography all read from usePluginTheme"],
-      [`theme.ts:13-21`, "no computed-style scraping, no fallback hex chains"],
+      [`theme.ts:50-60`, "colors, alpha and status helpers come from the host theme; typography is a fixed local scale"],
+      [`theme.ts:7-13`, "no computed-style scraping, no client provider"],
     ],
-    note: "Thin hook over a single theme provider. Same host theme in, same FleetTheme out; no inference.",
+    note: "Thin hook over the host theme provider. Same host theme in, same FleetTheme out; no inference.",
+  },
+  {
+    file: `${PLUGIN}/client/host-ui.tsx`,
+    part: "Plugin-local presentation kit: layout, cards, badges, buttons, inputs, table, ticket lifecycle",
+    layer: "client",
+    label: DETERMINISTIC,
+    anchors: {
+      exports: ["Card", "Button", "Badge", "DataTable", "ModalBody", "ForgeIcon", "TicketLifecycleView", "NewIssueComposer"],
+    },
+    evidence: [
+      [`host-ui.tsx:1-20`, "component library over the host theme, host Icon and plain react-native; no model call"],
+      [`host-ui.tsx:100-200`, "Row/Stack/Grid and Card/Tabs compose host theme colors only"],
+      [`host-ui.tsx:2000-2112`, "ticket lifecycle view renders RPC payloads; it does not produce model output"],
+    ],
+    note: "Replaces the removed frozen helper client kit for uppidi-fleet. Deterministic presentation; model work stays behind the RPCs it renders.",
   },
   {
     file: `${PLUGIN}/client/testing/fleet-fixtures.ts`,

@@ -20,7 +20,6 @@ import {
   KeyValue,
   KeyValueGroup,
   ModalBody,
-  ModalBodyScrollOwnerContext,
   ModalContent,
   Row,
   SearchInput,
@@ -32,7 +31,8 @@ import {
   TextInput,
   TicketLifecycleView,
   NewIssueComposer,
-} from "paseo-plugin-helper/client";
+} from "./host-ui.js";
+import { ModalBodyScrollOwnerContext } from "paseo-plugin-helper/lifecycle";
 import { useRpcQuery, useRpcMutation, usePluginSettings } from "paseo-plugin-helper/core";
 import { useFleetTheme } from "./theme.js";
 import { MetricsBar } from "./metrics-bar.js";

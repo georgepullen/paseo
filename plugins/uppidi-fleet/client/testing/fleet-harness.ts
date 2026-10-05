@@ -114,6 +114,22 @@ export const SettingsButton = stub("SettingsButton");
 
 const PASEO_UI_STUB_URL = `data:text/javascript,${encodeURIComponent(PASEO_UI_STUB_SOURCE)}`;
 
+const DEFAULT_DARK_THEME = {
+  colors: {
+    surface0: "#18181b",
+    surface1: "#27272a",
+    surface2: "#3f3f46",
+    border: "#3f3f46",
+    foreground: "#fafafa",
+    foregroundMuted: "#a1a1aa",
+    accent: "#3b82f6",
+    accentForeground: "#ffffff",
+    statusSuccess: "#22c55e",
+    statusWarning: "#eab308",
+    statusDanger: "#ef4444",
+  },
+};
+
 export interface FleetRenderHarness {
   React: any;
   UppidiFleetSurface: any;
@@ -126,11 +142,10 @@ export interface FleetRenderHarness {
   /** Like `render` but also exposes the test renderer root for interaction. */
   renderWithRoot(element: unknown): Promise<{ tree: unknown; root: any; renderer: any }>;
   /**
-   * Renders through the real `UppidiFleetPanel` (so the plugin's `VisualFlair`
-   * and the helper's measuring container are both in play) and fires the
-   * container `onLayout` with `width`, which is how the theme provider learns
-   * the real viewport. Without this the provider keeps its non-compact default
-   * and the measurement would describe a layout no phone ever renders.
+   * Renders through the real `UppidiFleetPanel` and, when a container exposes
+   * `onLayout`, fires it with `width` the way a real device would. The fleet
+   * theme is host-theme driven with a fixed dense scale, so the width is what
+   * the overflow assertions measure against rather than provider state.
    */
   renderPanelAtWidth(
     width: number,
@@ -163,7 +178,6 @@ export async function getFleetHarness(): Promise<FleetRenderHarness> {
       const TestRenderer = (await import("react-test-renderer")).default;
       const { QueryClient, QueryClientProvider } = await import("@tanstack/react-query");
       const { initClientHelpers } = await import("paseo-plugin-helper/core");
-      const { defaultDarkTheme } = await import("paseo-plugin-helper/client");
       const { UppidiFleetSurface } = await import("../surface.js");
       const { UppidiFleetTreeView, DenseAgentRow } = await import("../tree-view.js");
       const { UppidiFleetPanel } = await import("../panel.js");
@@ -215,7 +229,7 @@ export async function getFleetHarness(): Promise<FleetRenderHarness> {
         // would, then let the re-render settle before measuring.
         const { root, renderer } = await renderWithRoot(
           React.createElement(UppidiFleetPanel, {
-            theme: defaultDarkTheme,
+            theme: DEFAULT_DARK_THEME,
             host: { id: "test", label: "test" },
             layout: { compact: false, platform: "web" },
             context: "workspace",

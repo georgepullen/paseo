@@ -1360,4 +1360,32 @@ describe("uppidi-fleet client entry contract", () => {
       );
     });
   });
+
+  describe("helper client kit removal (#937)", () => {
+    it("has no non-vendored paseo-plugin-helper/client import", () => {
+      const files = [
+        "surface.tsx",
+        "tree-view.tsx",
+        "panel.tsx",
+        "tooling.tsx",
+        "kanban-board.tsx",
+        "agent-switcher.tsx",
+        "metrics-bar.tsx",
+        "theme.ts",
+        "host-ui.tsx",
+      ];
+      for (const file of files) {
+        const source = fs.readFileSync(path.resolve(__dirname, file), "utf8");
+        assert.ok(
+          !/from\s+["']paseo-plugin-helper\/client["']/.test(source),
+          `${file} must not import paseo-plugin-helper/client`,
+        );
+      }
+      const entry = fs.readFileSync(path.resolve(__dirname, "..", "index.client.tsx"), "utf8");
+      assert.ok(
+        !/from\s+["']paseo-plugin-helper\/client["']/.test(entry),
+        "index.client.tsx must not import paseo-plugin-helper/client",
+      );
+    });
+  });
 });

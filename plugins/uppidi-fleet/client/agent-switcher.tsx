@@ -11,7 +11,7 @@ import {
   StatusDot,
   InteractiveRow,
   Responsive,
-} from "paseo-plugin-helper/client";
+} from "./host-ui.js";
 import { useRpcQuery } from "paseo-plugin-helper/core";
 import { useFleetTheme } from "./theme.js";
 import {

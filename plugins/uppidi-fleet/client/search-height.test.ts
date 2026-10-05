@@ -10,10 +10,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const surface = readFileSync(join(HERE, "surface.tsx"), "utf8");
 const tree = readFileSync(join(HERE, "tree-view.tsx"), "utf8");
 const bar = readFileSync(join(HERE, "metrics-bar.tsx"), "utf8");
-const searchInputSource = readFileSync(
-  join(HERE, "../../../packages/paseo-plugin-helper/src/client/components/SearchInput.tsx"),
-  "utf8",
-);
+const searchInputSource = readFileSync(join(HERE, "host-ui.tsx"), "utf8");
 
 /**
  * The filter row's search box was taller than the chips and preset buttons it
@@ -29,12 +26,11 @@ const searchInputSource = readFileSync(
 
 describe("search input height matches the filter-row pills (#645)", () => {
   it("opts the fleet filter rows in — without redefining the shared default", () => {
-    // The change is opt-in by design: the helper keeps its original
-    // `isCompact ? 36 : 40` default so demo/forges/mcp-tools/top/twofado/
-    // wellbeing/plugin-updates (whose search bars sit alone, not beside
-    // pills) render exactly as they did before this fix. The compact 26 —
-    // the painted box of a compact ghost size="sm" button — must come from
-    // the fleet call sites, not from the helper.
+    // The change is opt-in by design: the local kit keeps its original
+    // `isCompact ? 36 : 40` default so call sites that do not pass a height
+    // render exactly as they did before this fix. The compact 26 — the painted
+    // box of a compact ghost size="sm" button — must come from the fleet call
+    // sites, not from the shared kit.
     assert.ok(
       /height \?\? \(isCompact \? 36 : 40\)/.test(searchInputSource),
       "SearchInput without height must keep the original isCompact ? 36 : 40 box",

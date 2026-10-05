@@ -13,7 +13,7 @@ import {
   type SelectOption,
   Stack,
   TextInput,
-} from "paseo-plugin-helper/client";
+} from "./host-ui.js";
 import { useRpcQuery, useRpcMutation } from "paseo-plugin-helper/core";
 import { useFleetTheme } from "./theme.js";
 import {

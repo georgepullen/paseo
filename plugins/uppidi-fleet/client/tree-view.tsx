@@ -16,7 +16,7 @@ import {
   Stack,
   StatusDot,
   TextInput,
-} from "paseo-plugin-helper/client";
+} from "./host-ui.js";
 import { copyToClipboard } from "paseo-plugin-helper/lifecycle";
 import { useRpcMutation, useRpcQuery } from "paseo-plugin-helper/core";
 import { useFleetTheme } from "./theme.js";

@@ -8,7 +8,7 @@ import {
   StatusDot,
   SearchInput,
   InteractiveRow,
-} from "paseo-plugin-helper/client";
+} from "./host-ui.js";
 import { useFleetTheme } from "./theme.js";
 import type { UppidiIssue, AttentionLabel, KanbanColumnId } from "../shared/contracts.js";
 import { isRepoMatching } from "../shared/sort-filter.js";

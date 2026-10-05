@@ -1,32 +1,36 @@
 import React from "react";
-import type { PluginClientContext, PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
-import {
-  ModalBodyScrollOwnerContext,
-} from "paseo-plugin-helper/lifecycle";
-import { PluginThemeProvider, type VisualFlair } from "paseo-plugin-helper/client";
-import { UppidiFleetSurface, UppidiForgeSurface } from "./surface.js";
-
-export const UPPIDI_FLEET_FLAIR: VisualFlair = {
-  radius: "rounded",
-  density: "comfortable",
-  surfaceStyle: "elevated",
-  borderWidth: 1,
-  headingTransform: "none",
-};
-
-export const UPPIDI_FORGE_FLAIR = UPPIDI_FLEET_FLAIR;
+import type {
+  PluginClientContext,
+  PluginSurfaceProps,
+  PluginWorkspacePanelProps,
+} from "@getpaseo/plugin/client";
+import { ModalBodyScrollOwnerContext } from "paseo-plugin-helper/lifecycle";
+import { HostThemeProvider } from "./theme.js";
+import { UppidiFleetSurface } from "./surface.js";
 
 export function UppidiFleetPanel(props: PluginWorkspacePanelProps) {
   return (
-    <PluginThemeProvider theme={props.theme} layout={props.layout} flair={UPPIDI_FLEET_FLAIR}>
+    <HostThemeProvider theme={props.theme}>
       <ModalBodyScrollOwnerContext.Provider value="required">
         <UppidiFleetSurface {...props} />
       </ModalBodyScrollOwnerContext.Provider>
-    </PluginThemeProvider>
+    </HostThemeProvider>
   );
 }
 
 export const UppidiForgePanel = UppidiFleetPanel;
+
+/**
+ * Sidebar surface entry. `registerSidebarSurface` no longer installs the
+ * frozen client theme provider, so the surface carries the host theme itself.
+ */
+export function UppidiFleetSidebar(props: PluginSurfaceProps) {
+  return (
+    <HostThemeProvider theme={props.theme}>
+      <UppidiFleetSurface {...props} />
+    </HostThemeProvider>
+  );
+}
 
 export {
   UppidiFleetPanel as UppidiFleetWorkspacePanel,

@@ -10,15 +10,14 @@ import {
 } from "@getpaseo/plugin/client/ui";
 import { initClientHelpers } from "paseo-plugin-helper/core";
 import { registerSidebarSurface } from "paseo-plugin-helper/lifecycle";
-import { registerHelperSettingsScreen } from "paseo-plugin-helper/client";
+import { registerHelperSettingsScreen } from "paseo-plugin-helper/ui";
 import { uppidiFleetSettingsContract } from "./shared/contracts.js";
 import { UppidiFleetSurface, UppidiForgeSurface } from "./client/surface.js";
 import {
   UppidiFleetPanel,
   UppidiForgePanel,
+  UppidiFleetSidebar,
   registerWorkspacePanel,
-  UPPIDI_FLEET_FLAIR,
-  UPPIDI_FORGE_FLAIR,
   AgentSwitcherHeaderIcon,
   AgentSwitcherPopover,
 } from "./client/index.js";
@@ -76,8 +75,7 @@ export default function contribute(client: PluginClientContext) {
     id: "uppidi-fleet",
     title: "Uppidi Fleet",
     icon: "GitPullRequest",
-    Component: UppidiFleetSurface,
-    flair: UPPIDI_FLEET_FLAIR,
+    Component: UppidiFleetSidebar,
   });
 
   const removePanel = client.addWorkspacePanel({
@@ -132,9 +130,8 @@ export {
   UppidiForgeSurface,
   UppidiFleetPanel,
   UppidiForgePanel,
+  UppidiFleetSidebar,
   registerWorkspacePanel,
-  UPPIDI_FLEET_FLAIR,
-  UPPIDI_FORGE_FLAIR,
   AgentSwitcherHeaderIcon,
   AgentSwitcherPopover,
 };

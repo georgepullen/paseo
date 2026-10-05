@@ -20,7 +20,7 @@ import {
   AgentEnvelopeCard,
   ScopedLabelGroup,
   InteractiveRow,
-} from "paseo-plugin-helper/client";
+} from "./host-ui.js";
 import { useRpcQuery, getClientHost } from "paseo-plugin-helper/core";
 import { useFleetTheme } from "./theme.js";
 import { defineContract } from "paseo-plugin-helper/shared";
