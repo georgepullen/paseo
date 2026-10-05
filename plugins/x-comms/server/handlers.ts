@@ -183,6 +183,22 @@ export async function handleIntroduceAgents(input: {
   second: { daemon: string; agentId: string; shortId: string; name: string };
   message: string;
 }) {
+  // The introduce picker is a send surface: resolve both targets via the
+  // registry before offering a dispatch. An unresolvable entry (missing,
+  // invalid, or switched off) is refused here with the #851 diagnostic instead
+  // of being listed as healthy and only erroring after send (#842).
+  const unresolvable = [input.first, input.second].filter(
+    (target) => !targetRegistryEntry(target.daemon),
+  );
+  if (unresolvable.length > 0) {
+    return {
+      sends: [input.first, input.second].map((target) =>
+        targetRegistryEntry(target.daemon)
+          ? { daemon: target.daemon, agentId: target.agentId, ok: false as const, error: "not attempted: the other introduction target is unconfigured" }
+          : { daemon: target.daemon, agentId: target.agentId, ok: false as const, error: unknownDaemonMessage(target.daemon) },
+      ),
+    };
+  }
   let path: string;
   try {
     path = serverPath();
@@ -696,7 +712,9 @@ function targetRegistryEntry(ref: string): RegistryDaemon | null {
     const byName = findDaemonByRef(daemons, aliased);
     if (byName) return chatEnabledDaemon(byName);
   }
-  return findDaemonByRef(daemons, ref) ?? null;
+  const direct = findDaemonByRef(daemons, ref);
+  if (!direct) return null;
+  return chatEnabledDaemon(direct);
 }
 
 /**
@@ -714,6 +732,13 @@ function targetRegistryEntry(ref: string): RegistryDaemon | null {
  * work when addressed by name and silently do nothing when addressed by id.
  */
 function chatEnabledDaemon(daemon: RegistryDaemon): RegistryDaemon | null {
+  // An invalid registry entry names no resolvable peer either: its host value
+  // cannot be dialled, so offering it as a healthy send target only errors
+  // after send. Treat it like a missing or switched-off entry (#842).
+  if (!daemon.valid) {
+    log.info(`chat: target '${daemon.name}' has an invalid registry entry (${daemon.error ?? "invalid host"}); not treating it as reachable`);
+    return null;
+  }
   if (resolveDaemonEnabled(readUiPrefs(), daemon.name)) return daemon;
   log.info(`chat: target '${daemon.name}' is disabled in settings; not treating it as reachable`);
   return null;

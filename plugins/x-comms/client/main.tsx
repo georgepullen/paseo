@@ -24,6 +24,7 @@ import { formatPeerDisplay } from "./peer-label";
 import { PeerStatusSurface } from "./peer-status";
 import { SettingsPrototype } from "./settings-prototype";
 import { ViaXComms } from "./via-x-comms";
+import { isSurfaceTargetResolvable, surfaceUnconfiguredMessage } from "./surface-target";
 import {
   registryReadRpc,
   daemonAddRpc,
@@ -421,13 +422,23 @@ function CurrentSurface({ theme }: PluginSurfaceProps) {
         <ModalContent>
           {introspect.isPending ? <Notice tone="muted">Loading agents…</Notice> : null}
           {introspect.error ? <Notice>{introspect.error.message}</Notice> : null}
-          {(introspect.data?.daemons ?? []).map((daemon) => (
+          {(introspect.data?.daemons ?? []).map((daemon) => {
+            // Gate the introduce picker like the send path (#842): an
+            // unresolvable entry is shown as unconfigured with guidance, never
+            // as a healthy send target.
+            const resolvable = isSurfaceTargetResolvable({
+              daemon: daemon.name,
+              daemons: read.data?.daemons ?? [],
+              daemonEnabled: prefs.data?.daemonEnabled,
+            });
+            return (
             <View key={daemon.name}>
               <SectionHeader
-                title={daemon.reachable ? peerLabelForName(daemon.name) : `${peerLabelForName(daemon.name)} (unreachable)`}
-                badgeVariant={daemon.reachable ? "success" : "danger"}
+                title={resolvable ? (daemon.reachable ? peerLabelForName(daemon.name) : `${peerLabelForName(daemon.name)} (unreachable)`) : `${peerLabelForName(daemon.name)} (unconfigured)`}
+                badgeVariant={resolvable ? (daemon.reachable ? "success" : "danger") : "neutral"}
               />
-              {daemon.projects.map((project) => (
+              {!resolvable ? <Notice tone="muted">{surfaceUnconfiguredMessage(daemon.name)}</Notice> : null}
+              {resolvable ? daemon.projects.map((project) => (
                 <View key={`${daemon.name}-${project.project}`}>
                   <Notice tone="muted">{project.project}</Notice>
                   {project.workspaces.map((workspace) => (
@@ -454,9 +465,10 @@ function CurrentSurface({ theme }: PluginSurfaceProps) {
                     </View>
                   ))}
                 </View>
-              ))}
+              )) : null}
             </View>
-          ))}
+            );
+          })}
           <ViaXComms theme={theme} />
         </ModalContent>
       </Modal>

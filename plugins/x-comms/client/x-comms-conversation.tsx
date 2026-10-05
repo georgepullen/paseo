@@ -6,10 +6,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Clipboard, Text, View } from "react-native";
 import type { NativeScrollEvent, NativeSyntheticEvent, ScrollView as NativeScrollView, StyleProp, ViewStyle } from "react-native";
 import { Button, InlineButton, ModalContent, TextInput } from "./vendor/paseo-plugin-helper/index";
-import { conversationSendRpc, introspectAgentsRpc, registryReadRpc } from "../shared/registry";
+import { conversationSendRpc, introspectAgentsRpc, registryReadRpc, uiPrefsGetRpc } from "../shared/registry";
 import { deriveConversationThreads, deriveConversations, isCounterpartyMatch, mergeMessages, threadKeyForCounterparty, type ConversationMessage, type ConversationPartner, type ConversationThread } from "./conversations";
 import { listConfiguredHostAgents } from "./configured-hosts";
 import { describeDelivery, sendConfiguredHostViaGate } from "./conversation-send";
+import { assertSurfaceTargetResolvable, isSurfaceTargetResolvable, surfaceUnconfiguredMessage } from "./surface-target";
 import { formatCounterparty, formatPeerDisplay, splitCounterparty, useCounterpartyLabel, usePeerDisplay, type CounterpartyRef } from "./peer-label";
 import { ViaXComms } from "./via-x-comms";
 
@@ -106,9 +107,16 @@ export function CrossDaemonConversation({
   const callSend = useRpc(conversationSendRpc);
   const callIntrospect = useRpc(introspectAgentsRpc);
   const callRegistryRead = useRpc(registryReadRpc);
+  const callPrefsGet = useRpc(uiPrefsGetRpc);
   const registry = useQuery({
     queryKey: ["registry-read"],
     queryFn: () => callRegistryRead({}),
+    staleTime: 300_000,
+    refetchOnWindowFocus: false,
+  });
+  const prefs = useQuery({
+    queryKey: ["x-comms-ui-prefs"],
+    queryFn: () => callPrefsGet({}),
     staleTime: 300_000,
     refetchOnWindowFocus: false,
   });
@@ -178,6 +186,17 @@ export function CrossDaemonConversation({
     mutationFn: async () => {
       if (!target) throw new Error("Choose a target before sending.");
       const messageId = newMessageId();
+      // Resolve via the registry before offering a dispatch (#842). An
+      // unresolvable entry is a configuration error, not a sendable target —
+      // refuse here with the #851 diagnostic instead of dispatching and only
+      // erroring after send.
+      if (!target.configuredHostServerId) {
+        assertSurfaceTargetResolvable({
+          daemon: target.counterparty.daemonServerId ?? target.counterparty.daemon ?? "",
+          daemons: registry.data?.daemons ?? [],
+          daemonEnabled: prefs.data?.daemonEnabled,
+        });
+      }
       if (target.configuredHostServerId) {
         // Same gated entry point as the registry/relay route, so a configured host
         // that is mid-turn gets this message queued rather than preempted (#611).
@@ -537,12 +556,28 @@ export function CrossDaemonConversation({
           {introspect.isPending ? <Text style={{ color: theme.colors.foregroundMuted, fontSize: 13 }}>Loading agents…</Text> : null}
           {introspect.error ? <Text style={{ color: theme.colors.statusDanger, fontSize: 12 }}>{String(introspect.error)}</Text> : null}
           <View>
-            {(introspect.data?.daemons ?? []).map((daemon) => (
+            {(introspect.data?.daemons ?? []).map((daemon) => {
+              // Gate the picker the same way the send is gated (#842): an
+              // unresolvable registry entry is shown as unconfigured with
+              // guidance, never as a healthy send target.
+              const resolvable = isSurfaceTargetResolvable({
+                daemon: daemon.name,
+                daemons: registry.data?.daemons ?? [],
+                daemonEnabled: prefs.data?.daemonEnabled,
+              });
+              return (
               <View key={daemon.name}>
-                <Text style={{ color: daemon.reachable ? theme.colors.accent : theme.colors.foregroundMuted, fontSize: 12, fontWeight: "700" as const, marginTop: 10, textTransform: "uppercase" as const }}>
-                  {daemon.reachable ? peerLabelForName(daemon.name) : `${peerLabelForName(daemon.name)} (unreachable)`}
+                <Text style={{ color: daemon.reachable && resolvable ? theme.colors.accent : theme.colors.foregroundMuted, fontSize: 12, fontWeight: "700" as const, marginTop: 10, textTransform: "uppercase" as const }}>
+                  {resolvable
+                    ? (daemon.reachable ? peerLabelForName(daemon.name) : `${peerLabelForName(daemon.name)} (unreachable)`)
+                    : `${peerLabelForName(daemon.name)} (unconfigured)`}
                 </Text>
-                {daemon.projects.map((project) => (
+                {!resolvable ? (
+                  <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12, paddingLeft: 10 }}>
+                    {surfaceUnconfiguredMessage(daemon.name)}
+                  </Text>
+                ) : null}
+                {resolvable ? daemon.projects.map((project) => (
                   <View key={`${daemon.name}-${project.project}`}>
                     <Text style={{ color: theme.colors.foregroundMuted, fontSize: 11, marginTop: 6, paddingLeft: 10 }}>{project.project}</Text>
                     {project.workspaces.map((ws) => (
@@ -562,9 +597,10 @@ export function CrossDaemonConversation({
                       </View>
                     ))}
                   </View>
-                ))}
+                )) : null}
               </View>
-            ))}
+              );
+            })}
           </View>
           <ViaXComms theme={theme} />
         </ModalContent>
