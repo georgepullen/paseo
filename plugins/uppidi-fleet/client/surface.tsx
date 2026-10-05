@@ -1,7 +1,7 @@
 import React, { useMemo, useState } from "react";
 import { Linking, Text, View } from "react-native";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
-import { Modal, useToast } from "@getpaseo/plugin/client/react-native";
+import { Modal, useToast, Icon } from "@getpaseo/plugin/client/react-native";
 import {
   ActionBar,
   AttentionBeacon,
@@ -15,7 +15,6 @@ import {
   DataTable,
   EmptyState,
   Grid,
-  Icon,
   ForgeIcon,
   InteractiveRow,
   KeyValue,
@@ -36,9 +35,7 @@ import {
   useRpcQuery,
   useRpcMutation,
   usePluginSettings,
-  defaultDarkTheme,
 } from "paseo-plugin-helper/client";
-import { HostThemeProvider } from "paseo-plugin-helper/ui";
 import { useFleetTheme } from "./theme.js";
 import { MetricsBar } from "./metrics-bar.js";
 import {
@@ -1433,7 +1430,6 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
   }, [rawCandidates, metricPreset, metricQuery, metricSortField, metricSortDir]);
 
   return (
-    <HostThemeProvider theme={props.theme ?? defaultDarkTheme}>
     <ModalBody
       headerMode="pinned"
       header={
@@ -2847,7 +2843,6 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
         isProcessing={isResettingState}
       />
     </ModalBody>
-    </HostThemeProvider>
   );
 }
 

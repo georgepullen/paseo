@@ -769,15 +769,15 @@ const PARTS = [
   },
   {
     file: `${PLUGIN}/client/theme.ts`,
-    part: "Fleet theme accessor: host colors plus plugin typography scale",
+    part: "Fleet theme accessor: host theme colors and helpers plus plugin typography scale",
     layer: "client",
     label: DETERMINISTIC,
     anchors: { exports: ["FleetTheme", "useFleetTheme"] },
     evidence: [
-      [`theme.ts:27-36`, "colors and status helpers from useHostTheme, typography from usePluginTheme"],
-      [`theme.ts:14-25`, "no computed-style scraping, no fallback hex chains"],
+      [`theme.ts:22-30`, "colors, alpha, status helpers and typography all read from usePluginTheme"],
+      [`theme.ts:13-21`, "no computed-style scraping, no fallback hex chains"],
     ],
-    note: "Thin hook composing two theme providers. Same host/plugin theme in, same FleetTheme out; no inference.",
+    note: "Thin hook over a single theme provider. Same host theme in, same FleetTheme out; no inference.",
   },
   {
     file: `${PLUGIN}/client/testing/fleet-fixtures.ts`,

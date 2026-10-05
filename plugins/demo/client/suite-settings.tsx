@@ -10,8 +10,8 @@ import {
   Toggle,
   triggerHaptic,
   usePluginTheme,
-  useSuiteSettings,
 } from "paseo-plugin-helper/client";
+import { useSuiteSettings } from "paseo-plugin-helper/core";
 
 export function SharedSuiteCard() {
   const { colors, typography } = usePluginTheme();

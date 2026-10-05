@@ -2,7 +2,6 @@
   "compilerOptions": {
     "paths": {
       "paseo-plugin-helper/client": ["../paseo-plugin-helper/src/client/index.ts"],
-      "paseo-plugin-helper/ui": ["../paseo-plugin-helper/src/ui/index.ts"],
       "paseo-plugin-helper/shared": ["../paseo-plugin-helper/src/shared/index.ts"]
     },
     "target": "ES2020",

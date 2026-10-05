@@ -1,6 +1,7 @@
 import React from "react";
 import { Text, View } from "react-native";
-import { Icon, InteractiveRow, Row } from "paseo-plugin-helper/client";
+import { Icon } from "@getpaseo/plugin/client/react-native";
+import { InteractiveRow, Row } from "paseo-plugin-helper/client";
 
 export interface MetricsBarChip {
   id: string;

@@ -4,8 +4,11 @@ import TestRenderer, { act } from "react-test-renderer";
 import { ScrollView, Text, View } from "react-native";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { initClientHelpers } from "paseo-plugin-helper/client";
-import { HostThemeProvider, useHostTheme } from "paseo-plugin-helper/ui";
-import { PermissionAuditView } from "./client.js";
+import {
+  PermissionAuditThemeProvider,
+  PermissionAuditView,
+  usePermissionAuditColors,
+} from "./client.js";
 import type { PermissionAuditEntry } from "./shared.js";
 import type { PluginTheme } from "paseo-plugin-helper/shared";
 
@@ -15,10 +18,10 @@ import type { PluginTheme } from "paseo-plugin-helper/shared";
  * Render tests for the migrated `PermissionAuditView` (paseo#847 Phase 3).
  *
  * The view no longer renders `ModalBody`: the page variant owns exactly one
- * scroller via `HostScroll` (the sidebar host supplies none), and the compact
+ * scroller (the host `ScrollView` it renders directly), and the compact
  * variant renders no scroller at all. These tests pin that contract — scroll
  * must keep working with no `ModalBody` scroll owner anywhere in the tree —
- * and pin the host-theme flow through `HostThemeProvider`.
+ * and pin the host-theme flow through the view's theme provider.
  */
 
 const HOST_THEME: PluginTheme = {
@@ -99,7 +102,7 @@ function textOf(node: unknown): string {
 }
 
 describe("PermissionAuditView scroll ownership after ModalBody removal", () => {
-  it("page variant owns exactly one scroller (HostScroll) and renders audit rows", async () => {
+  it("page variant owns exactly one scroller and renders audit rows", async () => {
     const renderer = renderView({ variant: "page" });
     await settle();
     expect(renderer.root.findAllByType(ScrollView)).toHaveLength(1);
@@ -120,7 +123,7 @@ describe("PermissionAuditView scroll ownership after ModalBody removal", () => {
   it("page variant renders no ModalBody scroll-owner context consumer", async () => {
     const renderer = renderView({ variant: "page" });
     await settle();
-    // The single scroller is the view's own HostScroll; nothing else in the
+    // The single scroller is the view's own ScrollView; nothing else in the
     // tree provides one, so content reaches the bottom of a long list.
     const scrollViews = renderer.root.findAllByType(ScrollView);
     expect(scrollViews).toHaveLength(1);
@@ -129,10 +132,10 @@ describe("PermissionAuditView scroll ownership after ModalBody removal", () => {
 });
 
 describe("PermissionAuditView host theme flow", () => {
-  it("paints with the host theme provided via HostThemeProvider", async () => {
+  it("paints with the host theme provided via the view's theme provider", async () => {
     let captured: string | null = null;
     function Probe() {
-      const { colors } = useHostTheme();
+      const colors = usePermissionAuditColors();
       captured = colors.foreground;
       return <Text>probe</Text>;
     }
@@ -141,9 +144,9 @@ describe("PermissionAuditView host theme flow", () => {
     act(() => {
       TestRenderer.create(
         <QueryClientProvider client={client}>
-          <HostThemeProvider theme={HOST_THEME}>
+          <PermissionAuditThemeProvider theme={HOST_THEME}>
             <Probe />
-          </HostThemeProvider>
+          </PermissionAuditThemeProvider>
         </QueryClientProvider>,
       );
     });
@@ -153,8 +156,7 @@ describe("PermissionAuditView host theme flow", () => {
   it("wraps provided theme around the whole view (page variant)", async () => {
     const renderer = renderView({ variant: "page", theme: HOST_THEME });
     await settle();
-    // The view renders its content inside a HostThemeProvider when the host
-    // theme is provided; rows still render.
+    // The view provides its host theme when supplied; rows still render.
     const text = textOf(renderer.toJSON());
     expect(text).toContain("bash");
   });

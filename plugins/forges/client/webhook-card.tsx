@@ -6,7 +6,8 @@ import type {
   PluginTimelineTransformerContribution,
 } from "@getpaseo/plugin/client";
 import type { PluginTheme } from "@getpaseo/plugin";
-import { Badge, ForgeIcon, Icon, InlineButton } from "paseo-plugin-helper/client";
+import { Icon } from "@getpaseo/plugin/client/react-native";
+import { Badge, ForgeIcon, InlineButton } from "paseo-plugin-helper/client";
 import {
   forgejoWebhookCardSchema,
   forgejoWebhookItem,

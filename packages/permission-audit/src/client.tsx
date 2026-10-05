@@ -1,18 +1,28 @@
-import React, { useMemo, useState } from "react";
-import { ActivityIndicator, Text, View } from "react-native";
-import { useRpcQuery } from "paseo-plugin-helper/client";
+import React, {
+  createContext,
+  useContext,
+  useMemo,
+  useState,
+  type ReactNode,
+} from "react";
 import {
-  HostBadge,
-  HostButton,
-  HostDataTable,
-  HostEmptyState,
-  HostLayoutProvider,
-  HostScroll,
-  HostSearchInput,
-  HostThemeProvider,
-  useHostTheme,
-} from "paseo-plugin-helper/ui";
-import type { PluginTheme, ResponsiveLayout } from "paseo-plugin-helper/shared";
+  ActivityIndicator,
+  Pressable,
+  ScrollView,
+  Text,
+  TextInput,
+  View,
+  type StyleProp,
+  type TextStyle,
+  type ViewStyle,
+} from "react-native";
+import { useRpcQuery } from "paseo-plugin-helper/client";
+import type {
+  PluginTheme,
+  ResponsiveLayout,
+  StatusVariant,
+  ThemeColors,
+} from "paseo-plugin-helper/shared";
 import {
   permissionAuditQuery,
   type PermissionAuditEntry,
@@ -57,10 +67,9 @@ export interface PermissionAuditViewProps {
   refreshIntervalMs?: number;
   /**
    * Host theme for this surface. The host passes it through the surface
-   * registration props; when present the view wraps its content in
-   * `HostThemeProvider` so every `ui/` adapter paints with host colors.
-   * When absent (tests, standalone rendering) adapters fall back to the
-   * neutral host palette.
+   * registration props; when present the view provides it to the local
+   * composition below. When absent (tests, standalone rendering) the local
+   * components fall back to a neutral palette.
    */
   theme?: PluginTheme;
   /** Host layout descriptor for this surface. */
@@ -68,6 +77,254 @@ export interface PermissionAuditViewProps {
 }
 
 const DECISION_FILTERS: DecisionFilter[] = ["all", "pending", "allow", "deny"];
+
+/**
+ * Neutral fallback palette so the view still renders outside a host surface
+ * (tests, previews). Static literal — never scraped from the DOM.
+ */
+const FALLBACK_COLORS: ThemeColors = {
+  surface0: "#18181b",
+  surface1: "#27272a",
+  surface2: "#3f3f46",
+  border: "#3f3f46",
+  foreground: "#fafafa",
+  foregroundMuted: "#a1a1aa",
+  accent: "#3b82f6",
+  accentForeground: "#ffffff",
+  statusSuccess: "#22c55e",
+  statusWarning: "#eab308",
+  statusDanger: "#ef4444",
+};
+
+const ColorsContext = createContext<ThemeColors>(FALLBACK_COLORS);
+
+/** Provides the host theme colors to the local composition below. */
+export function PermissionAuditThemeProvider({
+  theme,
+  children,
+}: {
+  theme: PluginTheme;
+  children: ReactNode;
+}) {
+  return <ColorsContext.Provider value={theme.colors}>{children}</ColorsContext.Provider>;
+}
+
+/** Reads the host theme colors for this surface. */
+export function usePermissionAuditColors(): ThemeColors {
+  return useContext(ColorsContext);
+}
+
+function statusColor(colors: ThemeColors, variant: StatusVariant): string {
+  switch (variant) {
+    case "success":
+      return colors.statusSuccess;
+    case "warning":
+      return colors.statusWarning;
+    case "danger":
+      return colors.statusDanger;
+    case "accent":
+    case "info":
+      return colors.accent;
+    default:
+      return colors.foregroundMuted;
+  }
+}
+
+function AuditBadge({ label, variant }: { label: string; variant: StatusVariant }) {
+  const colors = usePermissionAuditColors();
+  const color = statusColor(colors, variant);
+  return (
+    <View style={[styles.badge, { borderColor: color }]}>
+      <View style={[styles.badgeDot, { backgroundColor: color }]} />
+      <Text style={[styles.badgeText, { color }]}>{label}</Text>
+    </View>
+  );
+}
+
+function AuditButton({
+  label,
+  variant = "secondary",
+  onPress,
+}: {
+  label: string;
+  variant?: "primary" | "secondary";
+  onPress: () => void;
+}) {
+  const colors = usePermissionAuditColors();
+  const primary = variant === "primary";
+  return (
+    <Pressable
+      accessibilityRole="button"
+      onPress={onPress}
+      style={[
+        styles.button,
+        {
+          backgroundColor: primary ? colors.accent : colors.surface1,
+          borderColor: primary ? colors.accent : colors.border,
+        },
+      ]}
+    >
+      <Text
+        style={[
+          styles.buttonText,
+          { color: primary ? colors.accentForeground : colors.foreground },
+        ]}
+      >
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
+
+function AuditSearchInput({
+  value,
+  onChangeText,
+  placeholder,
+  testID,
+}: {
+  value: string;
+  onChangeText: (text: string) => void;
+  placeholder?: string;
+  testID?: string;
+}) {
+  const colors = usePermissionAuditColors();
+  return (
+    <TextInput
+      testID={testID}
+      value={value}
+      onChangeText={onChangeText}
+      placeholder={placeholder}
+      placeholderTextColor={colors.foregroundMuted}
+      style={[
+        styles.searchInput,
+        {
+          color: colors.foreground,
+          borderColor: colors.border,
+          backgroundColor: colors.surface1,
+        },
+      ]}
+    />
+  );
+}
+
+function AuditEmptyState({ title, description }: { title: string; description?: string }) {
+  const colors = usePermissionAuditColors();
+  return (
+    <View style={styles.empty}>
+      <Text style={[styles.emptyTitle, { color: colors.foreground }]}>{title}</Text>
+      {description ? (
+        <Text style={[styles.emptyDescription, { color: colors.foregroundMuted }]}>
+          {description}
+        </Text>
+      ) : null}
+    </View>
+  );
+}
+
+interface AuditColumn<T> {
+  key: string;
+  header: string;
+  flex?: number;
+  width?: number;
+  align?: "left" | "center" | "right";
+  render: (item: T) => ReactNode;
+}
+
+function AuditTable<T>({
+  data,
+  columns,
+  keyExtractor,
+  emptyState,
+  layout,
+}: {
+  data: T[];
+  columns: AuditColumn<T>[];
+  keyExtractor: (item: T, index: number) => string;
+  emptyState?: ReactNode;
+  layout: ResponsiveLayout;
+}) {
+  const colors = usePermissionAuditColors();
+  const isCompact =
+    layout.compact || layout.platform === "ios" || layout.platform === "android";
+
+  if (data.length === 0) {
+    return emptyState ? <View>{emptyState}</View> : null;
+  }
+
+  if (isCompact) {
+    return (
+      <View style={{ gap: 8 }}>
+        {data.map((item, idx) => (
+          <View
+            key={keyExtractor(item, idx)}
+            style={[styles.compactCard, { backgroundColor: colors.surface1, borderColor: colors.border }]}
+          >
+            {columns.map((col) => (
+              <View key={col.key} style={styles.compactRow}>
+                <Text style={[styles.compactHeader, { color: colors.foregroundMuted }]}>
+                  {col.header}
+                </Text>
+                <View style={styles.compactValue}>{col.render(item)}</View>
+              </View>
+            ))}
+          </View>
+        ))}
+      </View>
+    );
+  }
+
+  return (
+    <View
+      style={[styles.table, { borderColor: colors.border, backgroundColor: colors.surface0 }]}
+    >
+      <View
+        style={[
+          styles.headerRow,
+          { backgroundColor: colors.surface1, borderBottomColor: colors.border },
+        ]}
+      >
+        {columns.map((col) => (
+          <View key={col.key} style={[styles.cell, cellStyle(col)]}>
+            <Text
+              numberOfLines={1}
+              ellipsizeMode="tail"
+              style={[styles.headerText, { color: colors.foregroundMuted }]}
+            >
+              {col.header}
+            </Text>
+          </View>
+        ))}
+      </View>
+      {data.map((item, idx) => (
+        <View
+          key={keyExtractor(item, idx)}
+          style={[
+            styles.row,
+            idx < data.length - 1 && { borderBottomColor: colors.border, borderBottomWidth: 1 },
+          ]}
+        >
+          {columns.map((col) => (
+            <View key={col.key} style={[styles.cell, cellStyle(col)]}>
+              {col.render(item)}
+            </View>
+          ))}
+        </View>
+      ))}
+    </View>
+  );
+}
+
+function cellStyle<T>(col: AuditColumn<T>): StyleProp<ViewStyle> {
+  return [
+    col.flex !== undefined ? { flex: col.flex } : { flex: 1 },
+    col.width !== undefined ? { width: col.width } : undefined,
+    col.align === "right"
+      ? styles.alignRight
+      : col.align === "center"
+        ? styles.alignCenter
+        : styles.alignLeft,
+  ];
+}
 
 function decisionLabel(value: DecisionFilter): string {
   switch (value) {
@@ -83,13 +340,12 @@ function decisionLabel(value: DecisionFilter): string {
 }
 
 /**
- * Permission audit view migrated off the deprecated `client/` UI kit
- * (paseo#847 Phase 3): `ModalBody` → `HostScroll` (the sidebar host supplies
- * no scroller, so the view owns exactly one), `DataTable` → `HostDataTable`,
- * and every other primitive to its `ui/` adapter. Scroll ownership stays
- * explicit: the page variant renders a single `HostScroll`; the compact
- * variant renders no scroller and leaves scrolling to the surrounding host
- * surface.
+ * Permission audit view migrated off the deprecated `client/` + `ui/` layers
+ * (paseo#847): the audit table, badges, buttons, search field, and empty state
+ * are local composition over `react-native`, so the view owns no helper UI
+ * dependency. Scroll ownership stays explicit: the page variant renders a
+ * single host `ScrollView`; the compact variant renders no scroller and leaves
+ * scrolling to the surrounding host surface.
  */
 export function PermissionAuditView({
   agentId,
@@ -100,6 +356,7 @@ export function PermissionAuditView({
   theme,
   layout,
 }: PermissionAuditViewProps) {
+  const resolvedLayout = layout ?? { compact: false, platform: "web" as const };
   const content = (
     <PermissionAuditViewContent
       agentId={agentId}
@@ -107,18 +364,13 @@ export function PermissionAuditView({
       showFilters={showFilters}
       limit={limit}
       refreshIntervalMs={refreshIntervalMs}
+      layout={resolvedLayout}
     />
   );
   if (!theme) {
     return content;
   }
-  return (
-    <HostThemeProvider theme={theme}>
-      <HostLayoutProvider layout={layout ?? { compact: false, platform: "web" }}>
-        {content}
-      </HostLayoutProvider>
-    </HostThemeProvider>
-  );
+  return <PermissionAuditThemeProvider theme={theme}>{content}</PermissionAuditThemeProvider>;
 }
 
 function PermissionAuditViewContent({
@@ -127,8 +379,9 @@ function PermissionAuditViewContent({
   showFilters = true,
   limit = 100,
   refreshIntervalMs = 5000,
-}: Omit<PermissionAuditViewProps, "theme" | "layout">) {
-  const { colors } = useHostTheme();
+  layout,
+}: Omit<PermissionAuditViewProps, "theme"> & { layout: ResponsiveLayout }) {
+  const colors = usePermissionAuditColors();
   const [search, setSearch] = useState("");
   const [decision, setDecision] = useState<DecisionFilter>("all");
 
@@ -158,31 +411,26 @@ function PermissionAuditViewContent({
 
   if (isError) {
     return (
-      <HostEmptyState
-        icon="AlertTriangle"
+      <AuditEmptyState
         title="Audit log unavailable"
         description="Could not load recent permission decisions."
-        actionLabel="Retry"
-        onAction={() => void refetch()}
       />
     );
   }
 
   const filters = showFilters ? (
     <View style={{ gap: 12 }}>
-      <HostSearchInput
+      <AuditSearchInput
         value={search}
         onChangeText={setSearch}
         placeholder="Search tool, agent, or arguments…"
-        onClear={() => setSearch("")}
         testID="permission-audit-search"
       />
       <View style={{ flexDirection: "row", gap: 8 }}>
         {DECISION_FILTERS.map((value) => (
-          <HostButton
+          <AuditButton
             key={value}
             label={decisionLabel(value)}
-            size="sm"
             variant={decision === value ? "primary" : "secondary"}
             onPress={() => setDecision(value)}
           />
@@ -192,8 +440,9 @@ function PermissionAuditViewContent({
   ) : null;
 
   const table = (
-    <HostDataTable<PermissionAuditEntry>
+    <AuditTable<PermissionAuditEntry>
       data={entries}
+      layout={layout}
       keyExtractor={(item) => item.id}
       columns={[
         {
@@ -227,7 +476,7 @@ function PermissionAuditViewContent({
           width: 110,
           align: "right",
           render: (item) => (
-            <HostBadge
+            <AuditBadge
               label={
                 item.decision === "pending"
                   ? "Pending"
@@ -242,14 +491,12 @@ function PermissionAuditViewContent({
                     ? "success"
                     : "danger"
               }
-              dot
             />
           ),
         },
       ]}
       emptyState={
-        <HostEmptyState
-          icon="ShieldCheck"
+        <AuditEmptyState
           title="No permission decisions yet"
           description="Allowed and denied permission requests will appear here as agents run."
         />
@@ -267,9 +514,121 @@ function PermissionAuditViewContent({
   }
 
   return (
-    <HostScroll contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 14, gap: 12 }}>
+    <ScrollView contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 14, gap: 12 }}>
       {filters}
       {table}
-    </HostScroll>
+    </ScrollView>
   );
+}
+
+const styles = createStyleSheet();
+
+function createStyleSheet() {
+  return {
+    badge: {
+      flexDirection: "row" as const,
+      alignItems: "center" as const,
+      alignSelf: "flex-start" as const,
+      borderWidth: 1,
+      borderRadius: 9999,
+      paddingHorizontal: 8,
+      paddingVertical: 2,
+      gap: 4,
+    },
+    badgeDot: {
+      width: 6,
+      height: 6,
+      borderRadius: 3,
+    },
+    badgeText: {
+      fontSize: 11,
+      fontWeight: "600" as const,
+    },
+    button: {
+      borderWidth: 1,
+      borderRadius: 8,
+      paddingHorizontal: 12,
+      paddingVertical: 6,
+      minHeight: 32,
+      alignItems: "center" as const,
+      justifyContent: "center" as const,
+    },
+    buttonText: {
+      fontSize: 12,
+      fontWeight: "600" as const,
+    },
+    searchInput: {
+      borderWidth: 1,
+      borderRadius: 8,
+      paddingHorizontal: 10,
+      paddingVertical: 8,
+      fontSize: 13,
+      width: "100%" as const,
+    },
+    empty: {
+      alignItems: "center" as const,
+      justifyContent: "center" as const,
+      gap: 8,
+      padding: 24,
+    },
+    emptyTitle: {
+      fontSize: 14,
+      fontWeight: "600" as const,
+      textAlign: "center" as const,
+    },
+    emptyDescription: {
+      fontSize: 12,
+      textAlign: "center" as const,
+    },
+    compactCard: {
+      borderWidth: 1,
+      borderRadius: 10,
+      padding: 10,
+      gap: 6,
+    },
+    compactRow: {
+      flexDirection: "row" as const,
+      justifyContent: "space-between" as const,
+      gap: 8,
+    },
+    compactHeader: {
+      fontSize: 11,
+      flexShrink: 1,
+    },
+    compactValue: {
+      flexShrink: 1,
+      minWidth: 0,
+    },
+    table: {
+      borderWidth: 1,
+      borderRadius: 10,
+      overflow: "hidden" as const,
+    },
+    headerRow: {
+      flexDirection: "row" as const,
+      borderBottomWidth: 1,
+    },
+    row: {
+      flexDirection: "row" as const,
+    },
+    cell: {
+      paddingHorizontal: 10,
+      paddingVertical: 8,
+    },
+    alignLeft: {
+      alignItems: "flex-start" as const,
+    },
+    alignCenter: {
+      alignItems: "center" as const,
+    },
+    alignRight: {
+      alignItems: "flex-end" as const,
+    },
+    headerText: {
+      fontSize: 11,
+      fontWeight: "600" as const,
+      letterSpacing: 0.3,
+      textTransform: "uppercase" as const,
+    },
+  } satisfies Record<string, ViewStyle | TextStyle>;
 }

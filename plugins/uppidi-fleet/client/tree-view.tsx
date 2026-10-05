@@ -1,6 +1,6 @@
 import React, { useMemo, useRef, useState, useEffect } from "react";
 import { Animated, Linking, Platform, Text, View, type NativeSyntheticEvent, type NativeScrollEvent, type ScrollView } from "react-native";
-import { ScrollView as HostScrollView } from "@getpaseo/plugin/client/react-native";
+import { ScrollView as HostScrollView, Icon } from "@getpaseo/plugin/client/react-native";
 import {
   AttentionBeacon,
   Badge,
@@ -8,7 +8,6 @@ import {
   Card,
   CommandBox,
   EmptyState,
-  Icon,
   InteractiveRow,
   KeyValue,
   KeyValueGroup,

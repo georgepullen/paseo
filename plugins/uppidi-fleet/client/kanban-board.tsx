@@ -9,7 +9,6 @@ import {
   SearchInput,
   InteractiveRow,
 } from "paseo-plugin-helper/client";
-import { HostScroll } from "paseo-plugin-helper/ui";
 import { useFleetTheme } from "./theme.js";
 import type { UppidiIssue, AttentionLabel, KanbanColumnId } from "../shared/contracts.js";
 import { isRepoMatching } from "../shared/sort-filter.js";
@@ -678,7 +677,7 @@ export function UppidiFleetKanbanBoard({
           // native elements on web or drops never fire. See #807.
           //
           // The column body is a native div that owns the drop handlers; the
-          // vertical scroll is delegated to HostScroll (host scroll ownership)
+          // vertical scroll is delegated to the host ScrollView (host scroll ownership)
           // instead of a hand-rolled `overflow: auto` div, which fought the
           // HTML5 drag gesture and broke drops (#807).
           if (isWeb) {
@@ -705,12 +704,12 @@ export function UppidiFleetKanbanBoard({
                     maxHeight: 600,
                   }}
                 >
-                  <HostScroll
+                  <ScrollView
                     style={{ flex: 1, minHeight: 0 }}
                     contentContainerStyle={{ gap: 8, paddingBottom: 8 }}
                   >
                     {columnCards}
-                  </HostScroll>
+                  </ScrollView>
                 </div>
               </div>
             );
@@ -724,15 +723,15 @@ export function UppidiFleetKanbanBoard({
             >
               {columnHeader}
 
-              {/* Column Body: vertical scroll delegated to HostScroll */}
-              <HostScroll
+              {/* Column Body: vertical scroll delegated to the host ScrollView */}
+              <ScrollView
                 showsVerticalScrollIndicator={true}
                 style={{ flex: 1, maxHeight: 600 }}
                 contentContainerStyle={{ gap: 8, paddingBottom: 8 }}
                 testID={`kanban-column-body-${col.id}`}
               >
                 {columnCards}
-              </HostScroll>
+              </ScrollView>
             </View>
           );
         })}

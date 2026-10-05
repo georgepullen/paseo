@@ -2,10 +2,8 @@ import React, { useEffect, useState } from "react";
 import { Text, View } from "react-native";
 import { useRpc } from "@getpaseo/plugin/client";
 import { Icon, Modal, useToast, ScrollView, FlatList, TextInput as HostTextInput, copyText } from "@getpaseo/plugin/client/react-native";
-import {
-  initClientHelpers,
-  type ComposerPillRegistrar,
-} from "paseo-plugin-helper/client";
+import { type ComposerPillRegistrar } from "paseo-plugin-helper/client";
+
 
 initClientHelpers({ Icon, Modal, useRpc, useToast, copyText, ScrollView, FlatList, TextInput: HostTextInput });
 import {
@@ -46,12 +44,7 @@ import {
   type AttentionBeaconMode,
   type AttentionBeaconTone,
 } from "paseo-plugin-helper/client";
-import {
-  useAutoRefreshQuery,
-  useRpcMutation,
-  usePluginSettings,
-} from "paseo-plugin-helper/core";
-import { HostModalSection } from "paseo-plugin-helper/ui";
+import { useAutoRefreshQuery, useRpcMutation, usePluginSettings, initClientHelpers } from "paseo-plugin-helper/core";
 import { formatBytes, formatUptime } from "paseo-plugin-helper/shared";
 import {
   getDemoDataRpc,
@@ -223,7 +216,7 @@ function DemoModal({ close, workspaceId }: RenderModalProps) {
           violates the host contract and crashes the plugin. hostScroll: true
           below leaves the scroller to the host; manual refresh lives in the
           banner card. */}
-      <HostModalSection>
+      <View style={{ width: "100%" }}>
         <View
           style={{
             width: "100%",
@@ -1310,7 +1303,7 @@ function DemoModal({ close, workspaceId }: RenderModalProps) {
           helper-demo v{data?.version ?? PLUGIN_VERSION} (tick #{data?.backgroundTicks ?? 0})
         </Text>
       </View>
-      </HostModalSection>
+      </View>
     </PluginThemeProvider>
   );
 }
