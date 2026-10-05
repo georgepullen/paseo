@@ -9,19 +9,21 @@ import {
   StatusDot,
   Tabs,
   Toggle,
-  registerComposerPill,
   usePluginTheme,
-  type ComposerPillRegistrar,
+} from "./host-ui";
+import {
+  registerComposerPill,
   type RenderModalProps,
-} from "./vendor/paseo-plugin-helper/index";
+} from "paseo-plugin-helper/lifecycle";
+import type { ComposerPillRegistrar } from "paseo-plugin-helper/core";
 import { useEffect, useState } from "react";
 import { Text } from "react-native";
 import { CrossDaemonConversation } from "./x-comms-conversation";
 import { uiPrefsGetRpc, uiPrefsSetRpc } from "../shared/registry";
 
 // Raw Text is retained only for the muted reload-needed caption. Every tab,
-// layout, settings row, toggle, status and empty state goes through a
-// paseo-plugin-helper primitive.
+// layout, settings row, toggle, status and empty state goes through the
+// plugin-local host-ui primitive.
 function XCommsSettings() {
   const callGet = useRpc(uiPrefsGetRpc);
   const callSet = useRpc(uiPrefsSetRpc);

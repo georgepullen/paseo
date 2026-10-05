@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { build } from "esbuild";
 import type { AgentCreateInjectionRequest, McpInjectionHookHandler } from "paseo-plugin-helper/server";
-import { PluginStorage } from "./server/vendor/paseo-plugin-helper/index";
+import { PluginStorage } from "paseo-plugin-helper/server";
 import { INJECTION_KEY_PREFIX } from "./server/injection.ts";
 import { RECIPIENT_INSTRUCTION_MARKER } from "./server/recipient-instructions.ts";
 

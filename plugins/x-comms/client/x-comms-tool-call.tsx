@@ -1,6 +1,6 @@
 import { type PluginTimelineItemProps, type PluginTimelineTransformerContribution, type PluginTimelineRendererContribution } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/react-native";
-import { Badge, Card, CodeBlock, StatusDot } from "./vendor/paseo-plugin-helper/index";
+import { Badge, Card, CodeBlock, StatusDot, HostThemeProvider } from "./host-ui";
 import { Text, View } from "react-native";
 import { ViaXComms } from "./via-x-comms";
 import { usePeerDisplay } from "./peer-label";
@@ -18,25 +18,27 @@ function ToolCallCard({ theme, item }: PluginTimelineItemProps<ToolCallCardData>
   const peer = usePeerDisplay(data.targetServerId, data.targetAlias);
   const title = data.agentId ? `${data.tool} · ${data.agentId.slice(0, 8)}` : data.tool;
   return (
-    <Card>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 4 }}>
-        <Icon name="PhoneOutgoing" size={13} color={theme.colors.accent} />
-        <Text style={{ color: theme.colors.foreground, fontSize: 12, fontWeight: "600" as const, flexShrink: 1 }}>
-          {title}
-        </Text>
-        <StatusDot variant={statusVariant(data.status)} size="sm" />
-        <Badge label={data.status} variant={statusVariant(data.status)} />
-      </View>
-      {(data.targetAlias || data.targetServerId) ? (
-        <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12, marginBottom: 4 }} selectable>
-          {peer}
-        </Text>
-      ) : null}
-      {data.output ? (
-        <CodeBlock code={data.output} language="json" copyable maxHeight={220} />
-      ) : null}
-      <ViaXComms theme={theme} />
-    </Card>
+    <HostThemeProvider theme={theme}>
+      <Card>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 4 }}>
+          <Icon name="PhoneOutgoing" size={13} color={theme.colors.accent} />
+          <Text style={{ color: theme.colors.foreground, fontSize: 12, fontWeight: "600" as const, flexShrink: 1 }}>
+            {title}
+          </Text>
+          <StatusDot variant={statusVariant(data.status)} size="sm" />
+          <Badge label={data.status} variant={statusVariant(data.status)} />
+        </View>
+        {(data.targetAlias || data.targetServerId) ? (
+          <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12, marginBottom: 4 }} selectable>
+            {peer}
+          </Text>
+        ) : null}
+        {data.output ? (
+          <CodeBlock code={data.output} language="json" copyable maxHeight={220} />
+        ) : null}
+        <ViaXComms theme={theme} />
+      </Card>
+    </HostThemeProvider>
   );
 }
 

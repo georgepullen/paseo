@@ -1,7 +1,8 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { useRpc } from "@getpaseo/plugin/client";
 import { Icon, Modal, useToast, ScrollView, FlatList, TextInput as HostTextInput, copyText } from "@getpaseo/plugin/client/react-native";
-import { initClientHelpers, registerSidebarSurface } from "./client/vendor/paseo-plugin-helper/index";
+import { initClientHelpers } from "paseo-plugin-helper/core";
+import { registerSidebarSurface } from "paseo-plugin-helper/lifecycle";
 import { MainSurface } from "./client/main";
 import { crossDaemonTransformer, crossDaemonRenderer, outboxNoticeRenderer } from "./client/x-comms-timeline";
 import { crossDaemonToolCallTransformer, crossDaemonToolCallRenderer } from "./client/x-comms-tool-call";

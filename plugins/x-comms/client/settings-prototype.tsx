@@ -17,7 +17,7 @@ import {
   StatusDot,
   TextInput,
   Toggle,
-} from "./vendor/paseo-plugin-helper/index";
+} from "./host-ui";
 import { formatPeerDisplay } from "./peer-label";
 import { ViaXComms } from "./via-x-comms";
 import {
@@ -36,7 +36,7 @@ import {
 const HOST_FORM_HINT =
   "Full pairing link (https://app.paseo.sh/#offer=…) or a direct daemon host (host:port, tcp://…, unix://…).";
 
-// Prototype settings surface for #97. Built only from paseo-plugin-helper/client
+// Prototype settings surface for #97. Built only from the plugin-local host-ui
 // primitives; the current page in main.tsx is untouched and stays the default tab.
 // Wired to the live registry/health/server/prefs RPCs — no local mock state.
 
@@ -185,7 +185,7 @@ export function SettingsPrototype({ theme }: PluginSurfaceProps) {
         <Card variant="elevated">
           <Card.Header
             title="X-comms settings"
-            subtitle="Prototype surface built from paseo-plugin-helper primitives."
+            subtitle="Prototype surface built from the plugin-local host-ui primitives."
             badge={<Badge label="prototype" variant="warning" />}
             action={
               <Button

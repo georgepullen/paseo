@@ -11,9 +11,10 @@
  * It names both registration routes, in the order the plain reading suggests:
  * a direct host needs no pairing at all.
  *
- * Kept dependency-free on purpose — `handlers.ts` pulls in the vendored helper,
- * whose TypeScript parameter properties Node's strip-only loader cannot parse, so
- * a test could not import the diagnostic from there.
+ * Kept dependency-free on purpose — `handlers.ts` pulls in the helper runtime
+ * (`paseo-plugin-helper/server`), whose TypeScript parameter properties Node's
+ * strip-only loader cannot parse, so a test could not import the diagnostic from
+ * there.
  */
 export const UNKNOWN_DAEMON_HINT =
   "no registry entry for that name: register a direct host (host:port, tcp://…, unix://…, bare port) " +

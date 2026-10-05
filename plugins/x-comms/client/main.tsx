@@ -19,7 +19,7 @@ import {
   Tabs,
   TextInput,
   usePluginTheme,
-} from "./vendor/paseo-plugin-helper/index";
+} from "./host-ui";
 import { formatPeerDisplay } from "./peer-label";
 import { PeerStatusSurface } from "./peer-status";
 import { SettingsPrototype } from "./settings-prototype";
@@ -49,7 +49,7 @@ const HOST_FORM_HINT =
 // Raw View/Text are kept only for plain content and layout composition
 // (headings, error notices, debug dump lines, modal footers). Every
 // interactive control, card, form row, status indicator, key/value display
-// and empty/loading state uses a paseo-plugin-helper primitive.
+// and empty/loading state uses the plugin-local host-ui composition.
 function Notice({
   children,
   tone = "danger",

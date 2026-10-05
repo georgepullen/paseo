@@ -251,6 +251,7 @@ test("a committed vendored tree is the publish artifact, not the runtime resolut
     "top",
     "twofado",
     "wellbeing",
+    "x-comms",
   ]) {
     const observed = resolveServedFrom(path.join(REPO_ROOT, "plugins", name));
     assert.equal(observed.servedFrom, "checkout", `plugins/${name} is expected to be checkout-served`);
@@ -259,11 +260,6 @@ test("a committed vendored tree is the publish artifact, not the runtime resolut
       `plugins/${name} is expected to also carry a publish-only vendored tree`,
     );
   }
-
-  // x-comms is the one plugin that really does serve its own copy.
-  const xComms = resolveServedFrom(path.join(REPO_ROOT, "plugins", "x-comms"));
-  assert.equal(xComms.servedFrom, "vendored");
-  assert.equal(xComms.route, null);
 
   // slash used to import the helper's vendored `host` from one file, which made
   // it the one mixed-resolution plugin. The vendored client tree it reached into

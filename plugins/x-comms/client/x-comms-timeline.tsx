@@ -4,7 +4,7 @@ import type { PluginTheme } from "@getpaseo/plugin";
 import { Icon, copyText, useToast } from "@getpaseo/plugin/client/react-native";
 import { useCallback, useMemo, useState } from "react";
 import { Text, View } from "react-native";
-import { cardRecipe, InlineButton } from "./vendor/paseo-plugin-helper/index";
+import { cardRecipe, InlineButton, HostThemeProvider } from "./host-ui";
 import { EnvelopeSchema, cardSignal, isOverflowing, parseEnvelope, type CrossDaemonEnvelope } from "../shared/envelope";
 import {
   OUTBOX_NOTICE_KIND,
@@ -105,22 +105,24 @@ function CrossDaemonMessage({ theme, agentId, item }: PluginTimelineItemProps<z.
     ? theme.colors.statusDanger
     : theme.colors.foregroundMuted;
   return (
-    <View style={{ paddingVertical: 4 }}>
-      <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 2 }}>
-        <Icon
-          name={incoming ? "PhoneIncoming" : "PhoneOutgoing"}
-          size={14}
-          color={signalColor}
-        />
-        <Text style={{ color: signalColor, fontSize: 12, fontWeight: "600" as const }}>
-          x-comms · {incoming ? "Incoming" : "Outgoing"} · {label}
-        </Text>
+    <HostThemeProvider theme={theme}>
+      <View style={{ paddingVertical: 4 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginBottom: 2 }}>
+          <Icon
+            name={incoming ? "PhoneIncoming" : "PhoneOutgoing"}
+            size={14}
+            color={signalColor}
+          />
+          <Text style={{ color: signalColor, fontSize: 12, fontWeight: "600" as const }}>
+            x-comms · {incoming ? "Incoming" : "Outgoing"} · {label}
+          </Text>
+        </View>
+        {item.data.body.length > 0 ? (
+          <MessageBody theme={theme} body={item.data.body} />
+        ) : null}
+        <ViaXComms theme={theme} />
       </View>
-      {item.data.body.length > 0 ? (
-        <MessageBody theme={theme} body={item.data.body} />
-      ) : null}
-      <ViaXComms theme={theme} />
-    </View>
+    </HostThemeProvider>
   );
 }
 

@@ -5,7 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Clipboard, Text, View } from "react-native";
 import type { NativeScrollEvent, NativeSyntheticEvent, ScrollView as NativeScrollView, StyleProp, ViewStyle } from "react-native";
-import { Button, InlineButton, ModalContent, TextInput } from "./vendor/paseo-plugin-helper/index";
+import { Button, InlineButton, ModalContent, TextInput } from "./host-ui";
 import { conversationSendRpc, introspectAgentsRpc, registryReadRpc, uiPrefsGetRpc } from "../shared/registry";
 import { deriveConversationThreads, deriveConversations, isCounterpartyMatch, mergeMessages, threadKeyForCounterparty, type ConversationMessage, type ConversationPartner, type ConversationThread } from "./conversations";
 import { listConfiguredHostAgents } from "./configured-hosts";

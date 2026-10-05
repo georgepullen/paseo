@@ -231,16 +231,8 @@ function prune(pluginRoot, tree) {
 // The removed (paseo#938) "client" helper tree shared its vendored root with
 // the core/ui/lifecycle trees, so nothing walks the orphaned root files. Prune
 // anything at that root that is not one of the colocated client-side trees.
-//
-// x-comms is the one plugin that deliberately serves its own committed copy
-// (see scripts/lib/helper-identity.mjs) and reaches the frozen `client` barrel
-// through relative vendored paths. Its tree is a frozen fork, not a mirror of
-// the deleted helper src, so it must survive the sweep until x-comms itself is
-// migrated.
 const CLIENT_VENDOR_ROOT_TREES = new Set(["core", "ui", "lifecycle"]);
-const FROZEN_CLIENT_VENDOR_PLUGINS = new Set(["x-comms"]);
 function pruneOrphanedClientRoot(pluginRoot) {
-  if (FROZEN_CLIENT_VENDOR_PLUGINS.has(path.basename(pluginRoot))) return 0;
   const root = destDir(pluginRoot, "client");
   if (!fs.existsSync(root) || isLink(root)) return 0;
   let removed = 0;

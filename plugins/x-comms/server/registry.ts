@@ -2,7 +2,7 @@ import { readFileSync, writeFileSync, existsSync, renameSync, mkdirSync, rmSync,
 export { directHostMismatch } from "../shared/registry.ts";
 import { homedir } from "node:os";
 import { join, dirname, basename } from "node:path";
-import { PluginStorage } from "./vendor/paseo-plugin-helper/index";
+import { PluginStorage } from "paseo-plugin-helper/server";
 
 // All plugin state lives under the plugin-scoped storage root
 // (~/.paseo/plugin-data/xpufx/paseo-x-comms/) via PluginStorage.

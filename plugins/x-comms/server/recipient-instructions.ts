@@ -1,7 +1,7 @@
 import {
   type AgentCreateInjectionRequest,
   type McpInjectionServer,
-} from "./vendor/paseo-plugin-helper/index";
+} from "paseo-plugin-helper/server";
 
 /**
  * Recipient-side standing instructions for cross-daemon deliveries.

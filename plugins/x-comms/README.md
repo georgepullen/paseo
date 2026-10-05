@@ -179,6 +179,7 @@ and what to use if you need a real guarantee are in
 │   ├── x-comms-timeline.tsx  # Timeline / envelope rendering
 │   ├── x-comms-conversation.tsx
 │   ├── x-comms-tool-call.tsx # Tool-call timeline rendering
+│   ├── host-ui.tsx           # Plugin-local composition over the host SDK + plain react-native
 │   ├── via-x-comms.tsx
 │   ├── conversations.ts      # Conversation derive (shared with tests)
 │   ├── attribution.ts / peer-label.ts / tool-call.ts

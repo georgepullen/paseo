@@ -12,8 +12,8 @@ import {
   SectionHeader,
   StatusDot,
   usePluginTheme,
-  useRpcQuery,
-} from "./vendor/paseo-plugin-helper/index";
+} from "./host-ui";
+import { useRpcQuery } from "paseo-plugin-helper/core";
 import { formatPeerDisplay } from "./peer-label";
 import { ViaXComms } from "./via-x-comms";
 import { peerStatusRpc } from "../shared/registry";
