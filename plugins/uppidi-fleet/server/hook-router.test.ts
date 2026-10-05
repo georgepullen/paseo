@@ -4307,9 +4307,9 @@ describe("hook-router ensure-orchestrator deterministic resolution and idempoten
     assert.equal(router.getQueue("forge.mrs.uppidi.com/xpufx-org/paseo").length, 0);
   });
 
-  it("handles HTTP POST /orchestrator/ensure and /orchestrators/ensure", async () => {
+  it("handles HTTP POST /orchestrators/spawn", async () => {
     // 1. Missing repo -> 400
-    const badRes = await fetch(`http://127.0.0.1:${router.port}/orchestrator/ensure`, {
+    const badRes = await fetch(`http://127.0.0.1:${router.port}/orchestrators/spawn`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({}),
@@ -4319,7 +4319,7 @@ describe("hook-router ensure-orchestrator deterministic resolution and idempoten
     assert.equal(badBody.ok, false);
 
     // 2. Unknown repo -> 404
-    const notFoundRes = await fetch(`http://127.0.0.1:${router.port}/orchestrator/ensure`, {
+    const notFoundRes = await fetch(`http://127.0.0.1:${router.port}/orchestrators/spawn`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ repo: "unknown/repo" }),
@@ -4327,9 +4327,14 @@ describe("hook-router ensure-orchestrator deterministic resolution and idempoten
     assert.equal(notFoundRes.status, 404);
     const notFoundBody = await notFoundRes.json();
     assert.equal(notFoundBody.ok, false);
+    assert.equal(
+      router.readOrchestrator("unknown/repo"),
+      null,
+      "failed provision must not register an orchestrator row",
+    );
 
     // 3. Provisioning path -> 200 provisioned
-    const provRes = await fetch(`http://127.0.0.1:${router.port}/orchestrator/ensure`, {
+    const provRes = await fetch(`http://127.0.0.1:${router.port}/orchestrators/spawn`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ repo: "xpufx-org/paseo", mode: "yolo" }),
@@ -4346,8 +4351,8 @@ describe("hook-router ensure-orchestrator deterministic resolution and idempoten
     ]);
     (router as any).fetchAgentMap = async () => agentMap;
 
-    // 4. Idempotency path on /orchestrators/ensure -> 200 existing
-    const existRes = await fetch(`http://127.0.0.1:${router.port}/orchestrators/ensure`, {
+    // 4. Idempotency path on /orchestrators/spawn -> 200 existing
+    const existRes = await fetch(`http://127.0.0.1:${router.port}/orchestrators/spawn`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ repo: "xpufx-org/paseo" }),
@@ -4357,6 +4362,22 @@ describe("hook-router ensure-orchestrator deterministic resolution and idempoten
     assert.equal(existBody.ok, true);
     assert.equal(existBody.status, "existing");
     assert.equal(existBody.agentId, "agent-1");
+  });
+
+  it("does not register a failed spawn in the authoritative registry", async () => {
+    (router as any).options.spawnAgent = async () => {
+      throw new Error("spawn exploded");
+    };
+
+    const res = await fetch(`http://127.0.0.1:${router.port}/orchestrators/spawn`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repo: "xpufx-org/paseo" }),
+    });
+    assert.equal(res.status, 500);
+    const body = await res.json();
+    assert.equal(body.ok, false);
+    assert.equal(router.readOrchestrator("xpufx-org/paseo"), null);
   });
 });
 

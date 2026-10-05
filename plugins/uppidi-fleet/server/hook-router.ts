@@ -4040,7 +4040,7 @@ export class HookRouter {
     await this.updateAgentMetadata(agentId, title, metadata).catch(() => {});
 
     // Register in authoritative registry & enrolled repos
-    this.writeOrchestrator(repo, agentId, "ensure");
+    this.writeOrchestrator(repo, agentId, "spawn");
     this.enrollRepo(repo);
 
     // Drain pending queues for repository
@@ -6693,10 +6693,7 @@ export class HookRouter {
         return;
       }
 
-      if (
-        req.method === "POST" &&
-        (pathname === "/orchestrator/ensure" || pathname === "/orchestrators/ensure")
-      ) {
+      if (req.method === "POST" && pathname === "/orchestrators/spawn") {
         const body = await this.readJsonBody(req).catch(() => ({}));
         const repo = typeof body?.repo === "string" ? body.repo.trim() : "";
         if (!repo) {

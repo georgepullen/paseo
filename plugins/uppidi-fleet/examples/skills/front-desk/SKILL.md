@@ -385,7 +385,7 @@ Each rule is verified against this repo's code or the orchestrator skill.
 ### 10.3 Hook daemon endpoints
 `POST /hook` (Forgejo delivery) · `POST /frontdesk` · `GET /frontdesk` ·
 `POST /frontdesk-handoff` · `POST|GET|DELETE /orchestrator(s)` ·
-`POST /orchestrators/prune` · `GET /status` · `GET /queues` ·
+`POST /orchestrators/prune` · `POST /orchestrators/spawn` · `GET /status` · `GET /queues` ·
 `POST /queue/pause|resume|drain`.
 
 ### 10.4 Label namespaces (`forgejo/agent-workflow.yaml`)

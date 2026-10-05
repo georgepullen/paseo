@@ -482,6 +482,7 @@ Beyond ingress, the router exposes:
 | `GET /handoff` · `POST /handoff` (alias `/frontdesk-handoff`) | Front Desk rotation: seed `latest-handoff.md`, project role labels, retire the previous agent, persist `frontdesk.json`, notify orchestrators. |
 | `GET /orchestrators[/:repo]` | Read one or all orchestrator registrations. |
 | `POST /orchestrator` (alias `/orchestrate`) | Register `{repo, agentId}`. |
+| `POST /orchestrators/spawn` | Provision `{repo, provider?, model?, mode?, force?}` server-side and atomically register it as a peer orchestrator (idempotent; no Front Desk parent). |
 | `POST /orchestrators/prune` | Delete registrations whose agent no longer exists on the daemon. |
 | `POST /board-sweep` | Run the in-process deterministic board check (`{repos?: string[]}`); notify Front Desk of actionable tickets and failed repo checks. |
 | `POST /queues/:key/pause` · `/resume` · `/drain` | Per-queue control (also `POST /queue/{pause,resume,drain}` with `{repo}`). |
