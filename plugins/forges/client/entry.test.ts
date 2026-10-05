@@ -99,3 +99,40 @@ describe("forges client entry contract (#783)", () => {
     );
   });
 });
+
+describe("forges is off the deprecated helper UI kits (#937)", () => {
+  function sourceFiles(dir: string): string[] {
+    return fs
+      .readdirSync(dir, { recursive: true })
+      .filter(
+        (entry): entry is string =>
+          typeof entry === "string" &&
+          /\.(ts|tsx)$/.test(entry) &&
+          !entry.split(path.sep).includes("vendor") &&
+          !entry.split(path.sep).includes("node_modules") &&
+          !/\.test\.(ts|tsx)$/.test(entry),
+      );
+  }
+
+  it("imports no paseo-plugin-helper/client UI kit", () => {
+    const offenders = sourceFiles(pluginDir).filter((entry) =>
+      /from\s+["']paseo-plugin-helper\/client["']/.test(readSource(entry)),
+    );
+    assert.deepEqual(
+      offenders,
+      [],
+      `paseo-plugin-helper/client imports remain: ${offenders.join(", ")} — migrate to core/lifecycle and local host-ui composition`,
+    );
+  });
+
+  it("imports no paseo-plugin-helper/ui adapters", () => {
+    const offenders = sourceFiles(path.join(pluginDir, "client")).filter((entry) =>
+      /from\s+["']paseo-plugin-helper\/ui["']/.test(fs.readFileSync(path.join(pluginDir, "client", entry), "utf8")),
+    );
+    assert.deepEqual(
+      offenders,
+      [],
+      `paseo-plugin-helper/ui imports remain: ${offenders.join(", ")} — compose the used pieces in client/host-ui.tsx`,
+    );
+  });
+});

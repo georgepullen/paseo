@@ -5,7 +5,7 @@ import type {
   PluginTimelineRendererContribution,
 } from "@getpaseo/plugin/client";
 import { Icon } from "@getpaseo/plugin/client/react-native";
-import { Badge } from "paseo-plugin-helper/client";
+import { Badge, HostThemeProvider } from "./host-ui.js";
 import {
   forgejoNotificationCardSchema,
   type ForgejoNotificationCardData,
@@ -32,15 +32,17 @@ export function ForgejoNotificationCard({
 }: PluginTimelineItemProps<ForgejoNotificationCardData>) {
   const color = levelColor(theme, item.data.level);
   return (
-    <View style={[styles.card, { backgroundColor: theme.colors.surface1, borderColor: theme.colors.border }]}>
-      <View style={styles.header}>
-        <Icon name="Bell" size={14} color={color} />
-        <Text style={[styles.title, { color: theme.colors.foreground }]}>Forgejo digest</Text>
-        <Badge variant={item.data.level === "error" ? "danger" : item.data.level === "warning" ? "warning" : "info"} label={item.data.level} />
+    <HostThemeProvider theme={theme}>
+      <View style={[styles.card, { backgroundColor: theme.colors.surface1, borderColor: theme.colors.border }]}>
+        <View style={styles.header}>
+          <Icon name="Bell" size={14} color={color} />
+          <Text style={[styles.title, { color: theme.colors.foreground }]}>Forgejo digest</Text>
+          <Badge variant={item.data.level === "error" ? "danger" : item.data.level === "warning" ? "warning" : "info"} label={item.data.level} />
+        </View>
+        <Text style={[styles.message, { color: theme.colors.foreground }]}>{item.data.message}</Text>
+        <Text style={[styles.footer, { color: theme.colors.foregroundMuted }]}>via forges</Text>
       </View>
-      <Text style={[styles.message, { color: theme.colors.foreground }]}>{item.data.message}</Text>
-      <Text style={[styles.footer, { color: theme.colors.foregroundMuted }]}>via forges</Text>
-    </View>
+    </HostThemeProvider>
   );
 }
 

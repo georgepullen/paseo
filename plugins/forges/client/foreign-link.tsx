@@ -1,6 +1,6 @@
 import React from "react";
 import { Text } from "react-native";
-import { Badge } from "paseo-plugin-helper/client";
+import { Badge } from "./host-ui.js";
 
 /** Shared label for the cross-repo marker, so every surface reads the same. */
 export const FOREIGN_LINK_LABEL = "foreign";

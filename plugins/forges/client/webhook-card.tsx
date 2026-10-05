@@ -7,7 +7,7 @@ import type {
 } from "@getpaseo/plugin/client";
 import type { PluginTheme } from "@getpaseo/plugin";
 import { Icon } from "@getpaseo/plugin/client/react-native";
-import { Badge, ForgeIcon, InlineButton } from "paseo-plugin-helper/client";
+import { Badge, ForgeIcon, HostThemeProvider, InlineButton } from "./host-ui.js";
 import {
   forgejoWebhookCardSchema,
   forgejoWebhookItem,
@@ -88,37 +88,39 @@ export function ForgejoWebhookCard({ item, theme }: PluginTimelineItemProps<Forg
   const data = item.data;
   const repoLink = data.repoUrl ? () => openUrl(data.repoUrl as string) : undefined;
   return (
-    <View
-      style={[
-        styles.card,
-        { backgroundColor: theme.colors.surface1, borderColor: theme.colors.border },
-      ]}
-    >
-      <View style={styles.header}>
-        <ForgeIcon host={data.repoUrl} size={14} color={theme.colors.accent} />
-        <Text style={[styles.title, { color: theme.colors.foreground }]}>Forgejo webhook</Text>
-        <Badge
-          variant="info"
-          label={data.action ? `${data.event}:${data.action}` : data.event}
-        />
+    <HostThemeProvider theme={theme}>
+      <View
+        style={[
+          styles.card,
+          { backgroundColor: theme.colors.surface1, borderColor: theme.colors.border },
+        ]}
+      >
+        <View style={styles.header}>
+          <ForgeIcon host={data.repoUrl} size={14} color={theme.colors.accent} />
+          <Text style={[styles.title, { color: theme.colors.foreground }]}>Forgejo webhook</Text>
+          <Badge
+            variant="info"
+            label={data.action ? `${data.event}:${data.action}` : data.event}
+          />
+        </View>
+        <View style={styles.metaRow}>
+          {repoLink ? (
+            <InlineButton label={data.repo} onPress={repoLink} />
+          ) : (
+            <Text style={[styles.meta, { color: theme.colors.foregroundMuted }]}>{data.repo}</Text>
+          )}
+          {data.sender ? (
+            <Text style={[styles.meta, { color: theme.colors.foregroundMuted }]}>
+              · by {data.sender}
+            </Text>
+          ) : null}
+        </View>
+        {data.subject ? <SubjectRow theme={theme} subject={data.subject} /> : null}
+        <Text style={[styles.footer, { color: theme.colors.foregroundMuted }]}>
+          via forges
+        </Text>
       </View>
-      <View style={styles.metaRow}>
-        {repoLink ? (
-          <InlineButton label={data.repo} onPress={repoLink} />
-        ) : (
-          <Text style={[styles.meta, { color: theme.colors.foregroundMuted }]}>{data.repo}</Text>
-        )}
-        {data.sender ? (
-          <Text style={[styles.meta, { color: theme.colors.foregroundMuted }]}>
-            · by {data.sender}
-          </Text>
-        ) : null}
-      </View>
-      {data.subject ? <SubjectRow theme={theme} subject={data.subject} /> : null}
-      <Text style={[styles.footer, { color: theme.colors.foregroundMuted }]}>
-        via forges
-      </Text>
-    </View>
+    </HostThemeProvider>
   );
 }
 

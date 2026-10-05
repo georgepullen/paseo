@@ -1,7 +1,10 @@
 import React from "react";
 import { View, type StyleProp, type ViewStyle } from "react-native";
-import { Badge, usePluginTheme } from "paseo-plugin-helper/client";
+import { Badge, useHostTheme } from "./host-ui.js";
 import { planLabelChip, type ForgeLabel, type LabelChipHalf } from "../shared/issues.js";
+
+/** Matches the helper's pill radius; the host owns density, so it is fixed here. */
+const PILL_RADIUS = 9999;
 
 /** Inner corners join the halves; the scope's right border becomes the divider. */
 function halfEdgeStyle(side: "scope" | "value"): ViewStyle {
@@ -62,7 +65,7 @@ export function LabelChip({
   selected?: boolean;
   query?: string;
 }) {
-  const { colors, resolveRadius } = usePluginTheme();
+  const { colors } = useHostTheme();
   const ring: StyleProp<ViewStyle> = selected
     ? { borderColor: colors.accent, borderWidth: 2 }
     : undefined;
@@ -76,7 +79,7 @@ export function LabelChip({
         {
           flexDirection: "row",
           alignSelf: "flex-start",
-          borderRadius: resolveRadius("pill"),
+          borderRadius: PILL_RADIUS,
         },
         CHIP_WIDTH_STYLE,
         ring,

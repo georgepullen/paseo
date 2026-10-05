@@ -5,27 +5,27 @@ import { useToast } from "@getpaseo/plugin/client/react-native";
 import { SettingsSelect } from "@getpaseo/plugin/client/ui";
 import type { PluginWorkspaceSnapshot } from "@getpaseo/plugin";
 import {
-  ModalBody,
-  Card,
-  Button,
-  CopyButton,
+  ActionBar,
   Badge,
-  EmptyState,
-  FormRow,
-  SearchInput,
-  Tabs,
-  Toggle,
+  Button,
+  Card,
   CodeBlock,
+  Collapsible,
   CommandBox,
+  CopyButton,
+  EmptyState,
+  ForgeIcon,
+  FormRow,
+  HighlightedText,
+  HostModalBody,
   KeyValue,
   KeyValueGroup,
+  SearchInput,
+  Tabs,
   TextInput,
-  Collapsible,
-  ActionBar,
-  ForgeIcon,
-  HighlightedText,
-  usePluginTheme,
-} from "paseo-plugin-helper/client";
+  Toggle,
+  useHostTheme,
+} from "./host-ui.js";
 import { copyToClipboard, type RenderModalProps } from "paseo-plugin-helper/lifecycle";
 import { useRpcQuery, useRpcMutation, usePluginSettings, getClientHost } from "paseo-plugin-helper/core";
 import { hasFuzzyHighlight, normalizeSearchQuery } from "paseo-plugin-helper/shared";
@@ -133,7 +133,7 @@ function useDebouncedValue<T>(value: T, delayMs: number): T {
 const REMOTE_SEARCH_DEBOUNCE_MS = 300;
 
 /**
- * Scrolls the helper-owned `ModalBody` scroller to a measured match target the
+ * Scrolls the helper-owned `HostModalBody` scroller to a measured match target the
  * moment a search trigger changes. `resolveY` is polled briefly so a target
  * that lays out after the keystroke is still reached. Best-effort: when the
  * host owns the scroll (`scrollRef` null — desktop dialogs and popovers) there
@@ -203,7 +203,7 @@ function formatTimestamp(value: string | undefined | null): string {
  * plugin carries no host table of its own.
  */
 function ForgeMark({ host, size = 14 }: { host?: string | null; size?: number }) {
-  const { colors } = usePluginTheme();
+  const { colors } = useHostTheme();
   return <ForgeIcon host={host} size={size} color={colors.foregroundMuted} />;
 }
 
@@ -344,7 +344,7 @@ function MarkdownLite({
   /** Active search query; matches inside inline spans are highlighted. */
   query?: string;
 }) {
-  const { colors } = usePluginTheme();
+  const { colors } = useHostTheme();
   const blocks = useMemo(() => parseMarkdownLite(body), [body]);
   return (
     <View style={styles.markdown}>
@@ -419,7 +419,7 @@ function IssueRow({
   query?: string;
   onLayoutY?: (y: number) => void;
 }) {
-  const { colors } = usePluginTheme();
+  const { colors } = useHostTheme();
   const [copied, setCopied] = useState(false);
   const copy = () => {
     copyToClipboard(issueMarkdownRef({ number, title }, repo, host))
@@ -528,7 +528,7 @@ function CommentCard({
   activeForge: ForgeRepoIdentity | null;
   query?: string;
 }) {
-  const { colors } = usePluginTheme();
+  const { colors } = useHostTheme();
   const { Icon } = getClientHost();
   const body = stripAgentEnvelopeFooter(comment.body) || comment.body;
   const target = comment.url || issueUrl;
@@ -575,7 +575,7 @@ function ReadOnlyNotice({
   capability: string;
   onAction: () => void;
 }) {
-  const { colors } = usePluginTheme();
+  const { colors } = useHostTheme();
   return (
     <View style={styles.readOnlyNotice}>
       <Text style={[styles.hint, { color: colors.foregroundMuted }]}>
@@ -605,7 +605,7 @@ function ScopedLabelGroup({
   pending: boolean;
   onSelect: (label: string) => void;
 }) {
-  const { colors } = usePluginTheme();
+  const { colors } = useHostTheme();
   return (
     <View style={styles.labelGroup}>
       <Text style={[styles.sectionTitle, { color: colors.foregroundMuted }]}>{title}</Text>
@@ -766,13 +766,13 @@ function IssueDetailView({
   boardLabels: Map<string, ForgeLabel>;
   /** Active search query; matched title/label/body/comment text is highlighted. */
   query: string;
-  /** Helper-owned ModalBody scroller, used for best-effort go-to-match. */
+  /** Helper-owned HostModalBody scroller, used for best-effort go-to-match. */
   scrollRef: React.RefObject<ScrollViewInstance | null>;
   onBack: () => void;
   onBoardRefresh: () => void;
   onOpenSettings: () => void;
 }) {
-  const { colors } = usePluginTheme();
+  const { colors } = useHostTheme();
   const toast = useToast();
   const directory = useDirectory(workspaceId);
   const baseInput = {
@@ -1063,7 +1063,7 @@ export function ForgeIssuesView({
   workspaceId: string;
   onClose?: () => void;
 }) {
-  const { colors } = usePluginTheme();
+  const { colors } = useHostTheme();
   const toast = useToast();
   const { data, isLoading, isError, refetch, isRefetching } = useOpenIssues(workspaceId);
   const access = useRepoAccess({
@@ -1355,7 +1355,7 @@ export function ForgeIssuesView({
   const hasMore = extraHasMore || (data && !data.error ? data.hasMore : false);
   const failed = Boolean(data?.error) || isError;
   return (
-    <ModalBody
+    <HostModalBody
       header={
         <Tabs
           tabs={[
@@ -1366,7 +1366,6 @@ export function ForgeIssuesView({
           onTabChange={setActiveTab}
         />
       }
-      headerMode="pinned"
       headerStyle={{
         backgroundColor: colors.surface0,
         paddingHorizontal: 12,
@@ -1749,7 +1748,7 @@ export function ForgeIssuesView({
           )}
         </>
       )}
-    </ModalBody>
+    </HostModalBody>
   );
 }
 

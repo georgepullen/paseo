@@ -8,8 +8,9 @@ import type {
 import {
   Badge,
   ForgeIcon,
+  HostThemeProvider,
   InlineButton,
-} from "paseo-plugin-helper/client";
+} from "./host-ui.js";
 import {
   boardAlertTimelineSchema,
   classifyForgeUrl,
@@ -113,49 +114,51 @@ export function ForgeBoardAlertCard({
   const activeForge = useActiveForgeIdentityForAgent(agentId);
   const count = item.data.issues.length;
   return (
-    <View
-      style={[
-        styles.card,
-        {
-          backgroundColor: theme.colors.surface1,
-          borderColor: theme.colors.border,
-        },
-      ]}
-    >
-      <Text style={[styles.bodyText, { color: theme.colors.foreground }]}>
-        {item.data.text}
-      </Text>
-      <View style={styles.header}>
-        <ForgeIcon
-          host={activeForge?.host ?? item.data.issues[0]?.url}
-          size={14}
-          color={theme.colors.accent}
-        />
-        <Text style={[styles.title, { color: theme.colors.foreground }]}>
-          Forge Board Alert
+    <HostThemeProvider theme={theme}>
+      <View
+        style={[
+          styles.card,
+          {
+            backgroundColor: theme.colors.surface1,
+            borderColor: theme.colors.border,
+          },
+        ]}
+      >
+        <Text style={[styles.bodyText, { color: theme.colors.foreground }]}>
+          {item.data.text}
         </Text>
-        <Badge
-          variant="warning"
-          label={count === 1 ? "1 actionable" : `${count} actionable`}
-        />
-      </View>
-      <Text style={[styles.headline, { color: theme.colors.foregroundMuted }]}>
-        {item.data.headline}
-      </Text>
-      <View style={styles.issues}>
-        {item.data.issues.map((issue) => (
-          <BoardAlertIssueRow
-            key={issue.number}
-            theme={theme}
-            issue={issue}
-            foreign={classifyForgeUrl(issue.url, activeForge) === "foreign"}
+        <View style={styles.header}>
+          <ForgeIcon
+            host={activeForge?.host ?? item.data.issues[0]?.url}
+            size={14}
+            color={theme.colors.accent}
           />
-        ))}
+          <Text style={[styles.title, { color: theme.colors.foreground }]}>
+            Forge Board Alert
+          </Text>
+          <Badge
+            variant="warning"
+            label={count === 1 ? "1 actionable" : `${count} actionable`}
+          />
+        </View>
+        <Text style={[styles.headline, { color: theme.colors.foregroundMuted }]}>
+          {item.data.headline}
+        </Text>
+        <View style={styles.issues}>
+          {item.data.issues.map((issue) => (
+            <BoardAlertIssueRow
+              key={issue.number}
+              theme={theme}
+              issue={issue}
+              foreign={classifyForgeUrl(issue.url, activeForge) === "foreign"}
+            />
+          ))}
+        </View>
+        <Text style={[styles.footer, { color: theme.colors.foregroundMuted }]}>
+          via forge
+        </Text>
       </View>
-      <Text style={[styles.footer, { color: theme.colors.foregroundMuted }]}>
-        via forge
-      </Text>
-    </View>
+    </HostThemeProvider>
   );
 }
 
