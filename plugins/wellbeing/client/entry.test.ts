@@ -44,69 +44,60 @@ describe("wellbeing client entry contract", () => {
     );
   });
 
-  it("imports every helper export the client entry and surface reference", () => {
-    // Import-graph smoke test for the "called function is not defined at
-    // runtime" class: every named import from `paseo-plugin-helper/client`
-    // must be a real export of the helper's client barrel.
-    const clientDir = path.resolve(__dirname, "..");
-    const files = ["index.client.tsx", "client/surface.tsx"];
-    // The helper barrel re-exports via `export * from`, so collect names one
-    // level deep from the modules it re-exports.
-    const helperRoot = path.resolve(clientDir, "client/vendor/paseo-plugin-helper");
-    const exportNames = new Set<string>();
-    const collectFrom = (modulePath: string) => {
-      if (!fs.existsSync(modulePath)) return;
-      const source = fs.readFileSync(modulePath, "utf8");
-      for (const match of source.matchAll(/export\s+\{([^}]+)\}/g)) {
-        for (const name of match[1].split(",")) {
-          const cleaned = name.replace(/\s+as\s+.*/, "").trim();
-          if (cleaned && !cleaned.startsWith("type ")) exportNames.add(cleaned);
-        }
-      }
-      // `export function name` / `export const name` declarations
-      for (const match of source.matchAll(/export\s+(?:async\s+)?(?:function|const|let|var|class)\s+([A-Za-z0-9_]+)/g)) {
-        exportNames.add(match[1]);
-      }
-    };
-    const visited = new Set<string>();
-    const walk = (modulePath: string) => {
-      if (visited.has(modulePath)) return;
-      visited.add(modulePath);
-      collectFrom(modulePath);
-      const source = fs.readFileSync(modulePath, "utf8");
-      for (const match of source.matchAll(/export\s+\*\s+from\s+["']\.\/([^"']+)["']/g)) {
-        const base = path.join(path.dirname(modulePath), match[1]);
-        for (const candidate of [`${base}.ts`, `${base}.tsx`, base]) {
-          if (fs.existsSync(candidate)) {
-            walk(candidate);
-            break;
-          }
-        }
-      }
-    };
-    walk(path.join(helperRoot, "index.ts"));
-    assert.ok(exportNames.has("initClientHelpers"), "helper barrel must export initClientHelpers");
-    assert.ok(exportNames.has("registerSidebarSurface"), "helper barrel must export registerSidebarSurface");
-    assert.ok(exportNames.has("usePluginTheme"), "helper barrel must export usePluginTheme");
-    assert.ok(exportNames.has("useRpcQuery"), "helper barrel must export useRpcQuery");
-    assert.ok(exportNames.has("useRpcMutation"), "helper barrel must export useRpcMutation");
-    assert.ok(exportNames.has("ProgressBar"), "helper barrel must export ProgressBar");
-
+  it("keeps non-vendored client code off the frozen paseo-plugin-helper/client kit", () => {
+    // #937: the bespoke client/ UI kit is deprecated. Rendering code composes
+    // the handful of pieces it needs locally over the host SDK and the
+    // lifecycle theme seam, so no non-vendored file may import the frozen
+    // barrel (the committed vendor copies are the publish artifact).
+    const pluginDir = path.resolve(__dirname, "..");
+    const files = ["index.client.tsx", "client/surface.tsx", "client/host-ui.tsx"];
     for (const file of files) {
-      const source = fs.readFileSync(path.resolve(clientDir, file), "utf8");
-      for (const match of source.matchAll(
-        /import\s*\{([^}]+)\}\s*from\s*["']paseo-plugin-helper\/client["']/g,
-      )) {
-        for (const name of match[1].split(",")) {
-          const cleaned = name.replace(/\s+as\s+.*/, "").trim();
-          if (!cleaned || cleaned.startsWith("type ")) continue;
-          assert.ok(
-            exportNames.has(cleaned),
-            `${file} imports '${cleaned}' from paseo-plugin-helper/client but the helper does not export it`,
-          );
-        }
-      }
+      const source = fs.readFileSync(path.resolve(pluginDir, file), "utf8");
+      assert.doesNotMatch(
+        source,
+        /from\s*["']paseo-plugin-helper\/client["']/,
+        `${file} must not import from paseo-plugin-helper/client`,
+      );
     }
+
+    // Import-graph smoke test: the theme hook must come from the lifecycle
+    // entry and the local progress bar's status resolver from shared, so
+    // neither hides behind the frozen barrel.
+    const hostUi = fs.readFileSync(path.resolve(pluginDir, "client/host-ui.tsx"), "utf8");
+    assert.match(
+      hostUi,
+      /import\s*\{[^}]*useHostTheme[^}]*\}\s*from\s*["']paseo-plugin-helper\/lifecycle["']/,
+      "host-ui.tsx must read colors via useHostTheme from paseo-plugin-helper/lifecycle",
+    );
+    assert.match(
+      hostUi,
+      /from\s*["']paseo-plugin-helper\/shared["'][\s\S]*resolveMetricStatus|import\s*\{[^}]*resolveMetricStatus[^}]*\}\s*from\s*["']paseo-plugin-helper\/shared["']/,
+      "host-ui.tsx must resolve metric status from paseo-plugin-helper/shared",
+    );
+
+    const entry = fs.readFileSync(path.resolve(pluginDir, "index.client.tsx"), "utf8");
+    assert.match(
+      entry,
+      /import\s*\{[^}]*registerSidebarSurface[^}]*\}\s*from\s*["']paseo-plugin-helper\/lifecycle["']/,
+      "index.client.tsx must register the surface from paseo-plugin-helper/lifecycle",
+    );
+
+    // The referenced lifecycle/shared exports must be real in the vendored
+    // copies the published plugin tree ships.
+    const vendored = path.resolve(pluginDir, "client/vendor/paseo-plugin-helper");
+    assert.match(
+      fs.readFileSync(path.join(vendored, "lifecycle/host-theme.tsx"), "utf8"),
+      /export\s+function\s+useHostTheme/,
+      "vendored lifecycle must export useHostTheme",
+    );
+    assert.match(
+      fs.readFileSync(
+        path.resolve(pluginDir, "shared/vendor/paseo-plugin-helper/formatters.ts"),
+        "utf8",
+      ),
+      /export\s+function\s+resolveMetricStatus/,
+      "vendored shared must export resolveMetricStatus",
+    );
   });
 
   it("never touches DOM event APIs without a runtime function check", () => {

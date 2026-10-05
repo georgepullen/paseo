@@ -30,12 +30,5 @@ export default function contribute(client: PluginClientContext) {
     title: "Wellbeing",
     icon: "Heart",
     Component: WellbeingSurface,
-    flair: {
-      radius: "rounded",
-      density: "comfortable",
-      surfaceStyle: "elevated",
-      borderWidth: 1,
-      headingTransform: "none",
-    },
   });
 }

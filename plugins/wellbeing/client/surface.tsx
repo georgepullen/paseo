@@ -1,13 +1,8 @@
 import React, { useEffect, useRef } from "react";
 import { View, Text, ActivityIndicator } from "react-native";
-import {
-  Button,
-  usePluginTheme,
-  ProgressBar,
-  Row,
-  Stack,
-} from "paseo-plugin-helper/client";
+import { useHostTheme } from "paseo-plugin-helper/lifecycle";
 import { useRpcQuery, useRpcMutation } from "paseo-plugin-helper/core";
+import { HostButton, HostProgressBar, HostRow, HostStack } from "./host-ui.js";
 import {
   statusRpc,
   toggleBedModeRpc,
@@ -18,8 +13,19 @@ import {
   type ActivitySource,
 } from "../shared/contracts.js";
 
+/**
+ * Local text scale. The frozen helper `TypographyScale` is gone (#937); the
+ * host owns the design language, so these are plain semantic text styles.
+ */
+const typography = {
+  heading: { fontSize: 14, lineHeight: 20, fontWeight: "600" },
+  body: { fontSize: 13, lineHeight: 19, fontWeight: "400" },
+  caption: { fontSize: 11, lineHeight: 15, fontWeight: "400" },
+  label: { fontSize: 12, lineHeight: 16, fontWeight: "600" },
+} as const;
+
 export function WellbeingSurface() {
-  const { colors, typography, resolveRadius } = usePluginTheme();
+  const { colors } = useHostTheme();
   const { data: status, isLoading, refetch } = useRpcQuery(statusRpc, {}, { refetchInterval: 5000 });
   const toggleMutation = useRpcMutation(toggleBedModeRpc);
   const snoozeMutation = useRpcMutation(snoozeAlertRpc);
@@ -70,12 +76,12 @@ export function WellbeingSurface() {
     }
   }, []);
 
-  const radiusRounded = resolveRadius("md");
-  const radiusPill = resolveRadius("pill");
+  const radiusRounded = 8;
+  const radiusPill = 9999;
 
   if (isLoading) {
     return (
-      <Stack
+      <HostStack
         gap={0}
         align="center"
         justify="center"
@@ -85,7 +91,7 @@ export function WellbeingSurface() {
         <Text style={{ marginTop: 2, color: colors.foregroundMuted, ...typography.caption }}>
           Loading operator presence telemetry...
         </Text>
-      </Stack>
+      </HostStack>
     );
   }
 
@@ -161,9 +167,9 @@ export function WellbeingSurface() {
   const stretchProgress = Math.min(100, Math.round((s.activeStretchMinutes / stretchThreshold) * 100));
 
   return (
-    <Stack gap={0} style={{ flex: 1, padding: 16, backgroundColor: colors.surface0 }}>
+    <HostStack gap={0} style={{ flex: 1, padding: 16, backgroundColor: colors.surface0 }}>
       {/* Header Row */}
-      <Row gap={0} align="center" justify="space-between" style={{ marginBottom: 16 }}>
+      <HostRow gap={0} align="center" justify="between" style={{ marginBottom: 16 }}>
         <View>
           <Text style={{ color: colors.foreground, ...typography.heading }}>
             Operator Wellbeing
@@ -186,7 +192,7 @@ export function WellbeingSurface() {
             {currentPhase.label}
           </Text>
         </View>
-      </Row>
+      </HostRow>
 
       {/* Stretch Progress & Telemetry Card */}
       <View
@@ -199,7 +205,7 @@ export function WellbeingSurface() {
           borderRadius: radiusRounded,
         }}
       >
-        <Row gap={0} justify="space-between" align="center">
+        <HostRow gap={0} justify="between" align="center">
           <Text
             style={{
               textTransform: "uppercase",
@@ -214,14 +220,14 @@ export function WellbeingSurface() {
           <Text style={{ color: colors.foregroundMuted, ...typography.caption }}>
             Limit: {stretchThreshold}m
           </Text>
-        </Row>
+        </HostRow>
 
         <Text style={{ fontSize: 26, fontWeight: "800", marginVertical: 4, color: colors.foreground }}>
           {s.activeStretchMinutes} <Text style={{ fontSize: 14, fontWeight: "500" }}>min</Text>
         </Text>
 
         <View style={{ marginTop: 8 }}>
-          <ProgressBar
+          <HostProgressBar
             value={stretchProgress}
             autoStatusColor
             thresholds={{ warning: 75, danger: 100 }}
@@ -230,10 +236,10 @@ export function WellbeingSurface() {
         </View>
 
         {s.phase === "extended-stretch" && (
-          <Row
+          <HostRow
             gap={0}
             align="center"
-            justify="space-between"
+            justify="between"
             style={{
               marginTop: 12,
               padding: 10,
@@ -246,19 +252,19 @@ export function WellbeingSurface() {
             <Text style={{ flex: 1, marginRight: 8, color: colors.foreground, ...typography.caption }}>
               ⚠️ Unbroken focus exceeds healthy limits. Take a macro-break!
             </Text>
-            <Button
+            <HostButton
               label="💤 Snooze 15m"
               size="sm"
               variant="secondary"
               loading={snoozeMutation.isPending}
               onPress={() => handleSnooze(15)}
             />
-          </Row>
+          </HostRow>
         )}
       </View>
 
       {/* 2x2 Daily Metrics Grid */}
-      <Row gap={10} style={{ marginBottom: 12 }}>
+      <HostRow gap={10} style={{ marginBottom: 12 }}>
         <View
           style={{
             flex: 1,
@@ -316,7 +322,7 @@ export function WellbeingSurface() {
             Longest: {s.longestStretchMinutes}m
           </Text>
         </View>
-      </Row>
+      </HostRow>
 
       {/* Fleet Posture Directive Box */}
       <View
@@ -343,9 +349,9 @@ export function WellbeingSurface() {
         <Text style={{ marginTop: 2, marginBottom: 8, color: colors.foreground, ...typography.body }}>
           {s.fleetDirective}
         </Text>
-        <Row
+        <HostRow
           gap={0}
-          justify="space-between"
+          justify="between"
           style={{
             borderTopWidth: 1,
             paddingTop: 6,
@@ -358,12 +364,12 @@ export function WellbeingSurface() {
           <Text style={{ color: colors.foregroundMuted, ...typography.caption }}>
             ☀️ Wake: {s.settings.wakeUpTime}
           </Text>
-        </Row>
+        </HostRow>
       </View>
 
       {/* Action Controls */}
-      <Row gap={8} align="center">
-        <Button
+      <HostRow gap={8} align="center">
+        <HostButton
           label={s.isBedMode ? "🌙 Bed Mode Active (Resume)" : "🛌 Shift to Bed Mode"}
           size="lg"
           variant={s.isBedMode ? "primary" : "secondary"}
@@ -371,14 +377,14 @@ export function WellbeingSurface() {
           style={{ flex: 1 }}
           onPress={handleToggle}
         />
-        <Button
+        <HostButton
           label="⚡ Log Focus"
           size="lg"
           variant="secondary"
           loading={recordActivityMutation.isPending}
           onPress={handleManualPulse}
         />
-      </Row>
-    </Stack>
+      </HostRow>
+    </HostStack>
   );
 }

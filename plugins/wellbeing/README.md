@@ -113,7 +113,6 @@ The client half (`index.client.tsx`) registers a single sidebar surface:
 | Surface id | `wellbeing` |
 | Title | `Wellbeing` |
 | Icon | `Heart` |
-| Flair | `rounded` radius, `comfortable` density, `elevated` surface, 1px border |
 
 In Paseo Desktop, open the **Wellbeing** item in the sidebar (the heart icon).
 The surface opens instantly with a loading state — *"Loading operator presence
@@ -700,6 +699,7 @@ plugins/wellbeing/
 ├── index.client.tsx       # client entry: initClientHelpers + sidebar surface registration
 ├── client/
 │   ├── surface.tsx        # WellbeingSurface React component (dashboard + controls)
+│   ├── host-ui.tsx        # locally composed row/stack/button/progress pieces over the host SDK
 │   └── entry.test.ts      # static test: entry injects required host deps
 ├── server/
 │   ├── presence.ts        # PresenceTracker: the deterministic model
