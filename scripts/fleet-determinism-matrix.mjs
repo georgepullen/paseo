@@ -235,8 +235,8 @@ const PARTS = [
     },
     evidence: [
       [`agents.ts:425-543`, "`buildAgentTree` links parents to children from ids"],
-      [`agents.ts:689-707`, "`checkRepoMainDirty` shells `git status` and parses the result"],
-      [`agents.ts:758`, "`fetchPaseoAgents` reads `paseo ls --json`"],
+      [`agents.ts:748-765`, "`checkRepoMainDirty` resolves the primary checkout, shells `git status`/`git rev-parse` and parses the result"],
+      [`agents.ts:767`, "`fetchPaseoAgents` reads `paseo ls --json`"],
     ],
     note: "Subprocess and filesystem reads. Same inputs, same tree; nothing here consults a model.",
   },

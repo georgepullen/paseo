@@ -135,7 +135,14 @@ const orchestrators = [
     "paseo",
     "/home/dev-user/code/paseo",
     "running",
-    { attributedWork: { issue: 621 }, metrics: metrics() },
+    {
+      attributedWork: { issue: 621 },
+      metrics: metrics(),
+      // The 2026-10-04 incident: the primary checkout was parked on a feature
+      // branch and the daemon served stale code from it.
+      isRepoRootOffMain: true,
+      repoHeadBranch: "feat/antigravity-claude-plugin",
+    },
   ),
   orchestrator(
     "agent-orch-aur-auto01",

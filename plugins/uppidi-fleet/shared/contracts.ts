@@ -789,6 +789,10 @@ export const UppidiAgentSchema = z.object({
   labels: z.record(z.string(), z.string()).optional(),
   isMainDirty: z.boolean().optional(),
   mainDirtySummary: z.string().optional(),
+  /** Checked-out branch of the primary repo root; `HEAD` when detached (#919). */
+  repoHeadBranch: z.string().optional(),
+  /** True when the primary repo root is not on `main` (detached HEAD included) (#919). */
+  isRepoRootOffMain: z.boolean().optional(),
   /** Pending daemon permission prompts blocking this agent (#534). */
   pendingPermissions: z.array(PendingPermissionSchema).optional(),
   /** True when the agent is blocked awaiting operator clearance (#534). */

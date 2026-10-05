@@ -705,24 +705,63 @@ export function getAgentDiskMetadataMap(): Map<string, Partial<RawAgentRecord>> 
 }
 
 
-export async function checkRepoMainDirty(cwd?: string): Promise<{ isDirty: boolean; summary?: string }> {
-  if (!cwd) return { isDirty: false };
+export interface RepoRootInspection {
+  isDirty: boolean;
+  summary?: string;
+  /** Checked-out branch of the primary checkout; `HEAD` when detached. */
+  branch?: string;
+  /** True unless the primary checkout is on `main` (detached HEAD counts as off-main). */
+  isOffMain: boolean;
+}
+
+async function readGit(cwd: string, args: string[]): Promise<string | undefined> {
   try {
-    const { stdout } = await execFileAsync("git", ["status", "--porcelain"], {
+    const { stdout } = await execFileAsync("git", args, {
       cwd,
       timeout: 3000,
       encoding: "utf-8",
     });
-    const trimmed = stdout.trim();
-    if (!trimmed) return { isDirty: false };
-    const lines = trimmed.split("\n").filter(Boolean);
-    return {
-      isDirty: true,
-      summary: String(lines.length) + " uncommitted file" + (lines.length === 1 ? "" : "s"),
-    };
+    return String(stdout).trim();
   } catch {
-    return { isDirty: false };
+    return undefined;
   }
+}
+
+/**
+ * Resolves the primary checkout root for an arbitrary checkout or linked
+ * worktree. The orchestrator's `cwd` can be an ephemeral worktree; the invariant
+ * this inspection guards lives on the primary checkout, which owns the shared
+ * common git directory. A linked worktree's `--git-dir` differs from
+ * `--git-common-dir`, whose parent is the primary checkout root.
+ */
+async function resolvePrimaryCheckoutRoot(cwd: string): Promise<string | undefined> {
+  const [gitDir, commonDir] = await Promise.all([
+    readGit(cwd, ["rev-parse", "--path-format=absolute", "--git-dir"]),
+    readGit(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]),
+  ]);
+  if (!commonDir) return undefined;
+  if (gitDir === commonDir) return cwd;
+  if (path.basename(commonDir) === ".git") return path.dirname(commonDir);
+  return undefined;
+}
+
+export async function checkRepoMainDirty(cwd?: string): Promise<RepoRootInspection> {
+  if (!cwd) return { isDirty: false, isOffMain: false };
+  const repoRoot = (await resolvePrimaryCheckoutRoot(cwd)) || cwd;
+  const [status, branch] = await Promise.all([
+    readGit(repoRoot, ["status", "--porcelain"]),
+    readGit(repoRoot, ["rev-parse", "--abbrev-ref", "HEAD"]),
+  ]);
+  if (status === undefined) return { isDirty: false, isOffMain: false };
+  const lines = status ? status.split("\n").filter(Boolean) : [];
+  return {
+    isDirty: lines.length > 0,
+    summary: lines.length > 0
+      ? String(lines.length) + " uncommitted file" + (lines.length === 1 ? "" : "s")
+      : undefined,
+    branch: branch || undefined,
+    isOffMain: branch !== undefined && branch !== "main",
+  };
 }
 
 export async function fetchPaseoAgents(context?: PluginHandlerContext): Promise<UppidiAgent[]> {
@@ -871,9 +910,11 @@ export async function handleUppidiAgents(
       a.queuedHooksCount = queued;
 
       if (a.category === "orchestrator" && a.cwd) {
-        const dirtyStatus = await checkRepoMainDirty(a.cwd);
-        a.isMainDirty = dirtyStatus.isDirty;
-        a.mainDirtySummary = dirtyStatus.summary;
+        const rootStatus = await checkRepoMainDirty(a.cwd);
+        a.isMainDirty = rootStatus.isDirty;
+        a.mainDirtySummary = rootStatus.summary;
+        a.repoHeadBranch = rootStatus.branch;
+        a.isRepoRootOffMain = rootStatus.isOffMain;
       }
     }
 

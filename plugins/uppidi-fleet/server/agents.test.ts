@@ -1,5 +1,6 @@
 import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -34,6 +35,7 @@ import {
   handleFleetTeardown,
   getPersistedStateDir,
   resolveRegisteredFrontDeskAgentId,
+  checkRepoMainDirty,
 } from "./agents.js";
 import { HookRouter, setActiveHookRouter } from "./hook-router.js";
 import { DEFAULT_PROJECT } from "../shared/contracts.js";
@@ -1143,5 +1145,100 @@ describe("Front Desk intro prompt hook context (#903)", () => {
     const prompt = buildFrontDeskIntroPrompt();
     assert.ok(prompt.includes("auth: no shared webhook secret at"), "absence is stated");
     assert.ok(prompt.includes(path.join(tmpDir, "missing.secret")), "expected location is named");
+  });
+});
+
+describe("repo root off-main inspection (#919)", () => {
+  let root: string;
+  let worktreeParent: string;
+  let worktree: string;
+
+  const git = (cwd: string, args: string[]): string =>
+    execFileSync("git", args, {
+      cwd,
+      encoding: "utf-8",
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: "Test",
+        GIT_AUTHOR_EMAIL: "test@example.com",
+        GIT_COMMITTER_NAME: "Test",
+        GIT_COMMITTER_EMAIL: "test@example.com",
+        GIT_CONFIG_GLOBAL: "/dev/null",
+        GIT_CONFIG_SYSTEM: "/dev/null",
+      },
+    }).trim();
+
+  beforeEach(() => {
+    root = fs.mkdtempSync(path.join(os.tmpdir(), "paseo-919-root-"));
+    worktreeParent = fs.mkdtempSync(path.join(os.tmpdir(), "paseo-919-wt-"));
+    worktree = path.join(worktreeParent, "checkout");
+    git(root, ["init", "-b", "main"]);
+    fs.writeFileSync(path.join(root, "README.md"), "hello\n");
+    git(root, ["add", "README.md"]);
+    git(root, ["commit", "-m", "init"]);
+    git(root, ["worktree", "add", "-b", "feat/919-inspect", worktree]);
+  });
+
+  afterEach(() => {
+    try {
+      git(root, ["worktree", "remove", "--force", worktree]);
+    } catch {
+      // best-effort cleanup
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+    fs.rmSync(worktreeParent, { recursive: true, force: true });
+  });
+
+  it("reports main as on-main and clean on the primary checkout", async () => {
+    const result = await checkRepoMainDirty(root);
+    assert.equal(result.isDirty, false);
+    assert.equal(result.branch, "main");
+    assert.equal(result.isOffMain, false);
+  });
+
+  it("inspects the primary checkout when handed a linked worktree cwd", async () => {
+    // The worktree is on feat/919-inspect; the badge must reflect the repo root.
+    assert.equal(git(worktree, ["rev-parse", "--abbrev-ref", "HEAD"]), "feat/919-inspect");
+    const result = await checkRepoMainDirty(worktree);
+    assert.equal(result.branch, "main");
+    assert.equal(result.isOffMain, false);
+  });
+
+  it("flags a non-main primary branch and reflects it from a worktree cwd", async () => {
+    git(root, ["checkout", "-b", "feat/primary-off-main"]);
+    const primary = await checkRepoMainDirty(root);
+    assert.equal(primary.branch, "feat/primary-off-main");
+    assert.equal(primary.isOffMain, true);
+
+    const fromWorktree = await checkRepoMainDirty(worktree);
+    assert.equal(fromWorktree.branch, "feat/primary-off-main");
+    assert.equal(fromWorktree.isOffMain, true);
+  });
+
+  it("treats detached HEAD as off-main", async () => {
+    git(root, ["checkout", "--detach"]);
+    const result = await checkRepoMainDirty(root);
+    assert.equal(result.branch, "HEAD");
+    assert.equal(result.isOffMain, true);
+  });
+
+  it("reports dirty state with a summary", async () => {
+    fs.writeFileSync(path.join(root, "dirty.txt"), "uncommitted\n");
+    const result = await checkRepoMainDirty(root);
+    assert.equal(result.isDirty, true);
+    assert.equal(result.summary, "1 uncommitted file");
+    assert.equal(result.isOffMain, false);
+  });
+
+  it("returns a safe default when cwd is missing or not a repository", async () => {
+    assert.deepEqual(await checkRepoMainDirty(undefined), { isDirty: false, isOffMain: false });
+    const nonRepo = fs.mkdtempSync(path.join(os.tmpdir(), "paseo-919-nonrepo-"));
+    try {
+      const result = await checkRepoMainDirty(nonRepo);
+      assert.equal(result.isDirty, false);
+      assert.equal(result.isOffMain, false);
+    } finally {
+      fs.rmSync(nonRepo, { recursive: true, force: true });
+    }
   });
 });

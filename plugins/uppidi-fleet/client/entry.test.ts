@@ -141,6 +141,28 @@ describe("uppidi-fleet client entry contract", () => {
     );
   });
 
+  it("verifies client/tree-view.tsx renders off-main repo-root badge on orchestrator row (#919)", () => {
+    const treeViewPath = path.resolve(__dirname, "tree-view.tsx");
+    assert.ok(fs.existsSync(treeViewPath), "client/tree-view.tsx must exist");
+    const source = fs.readFileSync(treeViewPath, "utf8");
+
+    assert.match(
+      source,
+      /agent\.isRepoRootOffMain/,
+      "client/tree-view.tsx must check agent.isRepoRootOffMain"
+    );
+    assert.match(
+      source,
+      /Not Main/,
+      "client/tree-view.tsx must render Not Main badge label"
+    );
+    assert.match(
+      source,
+      /agent\.repoHeadBranch/,
+      "client/tree-view.tsx must include the repo HEAD branch in the badge"
+    );
+  });
+
   it("verifies client/tree-view.tsx defines getParentBadgeLabel and ParentAgentPill (#430)", () => {
     const treeViewPath = path.resolve(__dirname, "tree-view.tsx");
     assert.ok(fs.existsSync(treeViewPath), "client/tree-view.tsx must exist");

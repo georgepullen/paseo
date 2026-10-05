@@ -2129,6 +2129,31 @@ export function OrchestratorRow({
               />
             </InteractiveRow>
           )}
+          {agent.isRepoRootOffMain && (
+            <InteractiveRow
+              accessibilityRole="button"
+              accessibilityLabel={`Repo root on ${agent.repoHeadBranch || "detached HEAD"}, not main`}
+              title={`Repo root / primary checkout is on ${agent.repoHeadBranch || "detached HEAD"}, not main. Click to open orchestrator.`}
+              onPress={(e) => {
+                e?.stopPropagation?.();
+                if (navigation?.openAgent) {
+                  navigation.openAgent({ agentId: agent.id });
+                }
+              }}
+              pressedOpacity={0.7}
+              style={{
+                paddingHorizontal: 2,
+                paddingVertical: 1,
+              }}
+            >
+              <Badge
+                label={`● Not Main${agent.repoHeadBranch ? `: ${agent.repoHeadBranch}` : ""}`}
+                variant="warning"
+                size="sm"
+                textStyle={{ fontSize: 10, fontWeight: "600" }}
+              />
+            </InteractiveRow>
+          )}
           {!isExpanded && hasChildren && childCount > 0 && (
             <Badge
               label={`${childCount} subagent${childCount === 1 ? "" : "s"}`}
