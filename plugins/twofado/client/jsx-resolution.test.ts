@@ -31,6 +31,7 @@ const helperSrcBarrel = path.resolve(
 // the local boundary).
 const SURFACE_FILES = [
   "index.client.tsx",
+  "client/host-ui.tsx",
   "client/approvals.tsx",
   "client/ask.tsx",
 ];
@@ -320,5 +321,28 @@ describe("2fado client JSX element types resolve statically (#555)", () => {
     const vendored = [...collectBarrelExports(path.join(vendorRoot, "index.ts"))].sort();
     const source = [...collectBarrelExports(helperSrcBarrel)].sort();
     expect(vendored).toEqual(source);
+  });
+});
+
+describe("2fado is off the frozen helper client kit (#937)", () => {
+  it("has no non-vendored paseo-plugin-helper/client imports", () => {
+    const offenders: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        if (entry.name === "vendor" || entry.name === "node_modules") continue;
+        const abs = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+          walk(abs);
+          continue;
+        }
+        if (!/\.(ts|tsx)$/.test(entry.name) || /\.test\.(ts|tsx)$/.test(entry.name)) continue;
+        const src = fs.readFileSync(abs, "utf8");
+        if (/from\s+["']paseo-plugin-helper\/client["']/.test(src)) {
+          offenders.push(path.relative(pluginRoot, abs));
+        }
+      }
+    };
+    walk(pluginRoot);
+    expect(offenders).toEqual([]);
   });
 });

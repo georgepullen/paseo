@@ -1,6 +1,8 @@
 import { useEffect, useState } from "react";
 import { Text, View } from "react-native";
-import { Badge, Button, Card, Icon, TextInput, usePluginTheme } from "paseo-plugin-helper/client";
+import { Icon } from "@getpaseo/plugin/client/react-native";
+import { useHostTheme } from "paseo-plugin-helper/lifecycle";
+import { Badge, Button, Card, TextInput } from "./host-ui";
 import type { ApprovalOption } from "../shared/approval";
 
 const EXPIRY_URGENT_S = 30;
@@ -104,7 +106,7 @@ function OptionButton({
   disabled: boolean;
   onPress: () => void;
 }) {
-  const { colors } = usePluginTheme();
+  const { colors } = useHostTheme();
   const icon = selected ? "CheckCircle2" : "CircleDot";
   return (
     <View style={{ gap: 4 }}>
@@ -147,7 +149,7 @@ export function AskItem({
   errorText?: string;
   onSubmit(payload: AskSelectionPayload): void;
 }) {
-  const { colors, fonts } = usePluginTheme();
+  const { colors } = useHostTheme();
   const [picked, setPicked] = useState<string[]>([]);
   const [writeIn, setWriteIn] = useState("");
   const [showWriteIn, setShowWriteIn] = useState(false);
@@ -242,7 +244,7 @@ export function AskItem({
         <Text
           selectable
           numberOfLines={2}
-          style={{ color: colors.accent, fontFamily: fonts.mono, fontSize: 11 }}
+          style={{ color: colors.accent, fontFamily: "monospace", fontSize: 11 }}
         >
           {item.link}
         </Text>

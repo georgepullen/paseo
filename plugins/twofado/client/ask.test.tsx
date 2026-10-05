@@ -44,6 +44,18 @@ vi.mock("react-native", () => {
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
+// The host SDK's react-native entry is `export {}` at runtime (the host bundle
+// injects the real primitives), so the test provides the same mock set the host
+// seam would.
+vi.mock("@getpaseo/plugin/client/react-native", () => ({
+  Icon: (props: { name?: string }) => React.createElement("mock-icon", { name: props.name }),
+  TextInput: (props: Record<string, unknown>) => React.createElement("mock-text-input", props, null),
+  ScrollView: (props: Record<string, unknown>) =>
+    React.createElement("mock-scroll-view", props, (props.children as React.ReactNode) ?? null),
+  useToast: () => ({ show: () => {}, error: () => {} }),
+  copyText: async () => {},
+}));
+
 function installStubs() {
   initClientHelpers({
     Icon: (props: { name?: string }) => React.createElement("mock-icon", { name: props.name }),

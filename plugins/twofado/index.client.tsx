@@ -10,7 +10,7 @@ import {
 } from "@getpaseo/plugin/client/ui";
 import { initClientHelpers } from "paseo-plugin-helper/core";
 import { registerSidebarSurface } from "paseo-plugin-helper/lifecycle";
-import { registerHelperSettingsScreen } from "paseo-plugin-helper/client";
+import { registerHelperSettingsScreen } from "paseo-plugin-helper/ui";
 import {
   ApprovalHeaderIcon,
   ApprovalSurface,

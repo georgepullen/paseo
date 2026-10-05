@@ -4,7 +4,9 @@ import type {
   PluginButtonRegistration,
   PluginSurfaceProps,
 } from "@getpaseo/plugin/client";
-import { Icon, useToast } from "@getpaseo/plugin/client/react-native";
+import { Icon, copyText, useToast } from "@getpaseo/plugin/client/react-native";
+import { HostThemeProvider, useHostTheme } from "paseo-plugin-helper/lifecycle";
+import { usePluginSettings } from "paseo-plugin-helper/core";
 import {
   ActionBar,
   AttentionBeacon,
@@ -20,16 +22,12 @@ import {
   KeyValue,
   KeyValueGroup,
   ModalBody,
-  PluginThemeProvider,
   Select,
   StatusDot,
   Tabs,
   TextInput,
   Toggle,
-  usePluginTheme,
-} from "paseo-plugin-helper/client";
-import { copyToClipboard } from "paseo-plugin-helper/lifecycle";
-import { usePluginSettings } from "paseo-plugin-helper/core";
+} from "./host-ui";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { Easing, Text, View } from "react-native";
@@ -60,6 +58,10 @@ import {
 } from "../shared/companion";
 import type { ApprovalSettingsValues, NotificationTarget } from "../shared/approval";
 import type { DaemonLogEntry } from "../shared/companion";
+
+// The host theme carries colors but no type scale; the plugin pins the mono
+// face it used to read from the deleted client-kit typography tokens.
+const MONO_FONT = "monospace";
 
 const LIST_KEY = ["twofado", "pending"];const RECENT_KEY = ["twofado", "recent"];
 const POLL_MS = 3000;
@@ -282,7 +284,7 @@ function ApprovalHeaderIconInner(props: PluginButtonIconProps) {
     : color;
 
   return (
-    <PluginThemeProvider theme={{ colors: theme.colors }}>
+    <HostThemeProvider theme={theme}>
       <AttentionBeacon
         mode="pulse"
         tone={down || hasConfirm ? "danger" : "warning"}
@@ -298,7 +300,7 @@ function ApprovalHeaderIconInner(props: PluginButtonIconProps) {
           />
         </View>
       </AttentionBeacon>
-    </PluginThemeProvider>
+    </HostThemeProvider>
   );
 }
 
@@ -307,7 +309,7 @@ export function ApprovalHeaderIcon(props: PluginButtonIconProps) {
 }
 
 function SectionHeader({ title, count }: { title: string; count?: number }) {
-  const { colors } = usePluginTheme();
+  const { colors } = useHostTheme();
   return (
     <View style={{ flexDirection: "row", alignItems: "center", gap: 8, marginTop: 8, marginBottom: 2 }}>
       <Text
@@ -410,11 +412,11 @@ function ApprovalItem({
   onDecide(item: { id: string; argv: string[]; cwd: string }, decision: "approve" | "deny"): void;
   onAlways(item: { id: string; argv: string[]; cwd: string; preview?: { resolvedBinary?: string } }, target: "whitelist" | "blacklist"): void;
 }) {
-  const { colors, fonts } = usePluginTheme();
+  const { colors } = useHostTheme();
   const [program] = item.argv;
   const isConfirm = item.step === "confirm";
   const urgent = item.expiresIn <= EXPIRY_URGENT_S;
-  const fontFamily = fonts.mono;
+  const fontFamily = MONO_FONT;
   const isDeciding = Boolean(deciding);
 
   return (
@@ -666,18 +668,21 @@ function NotifyItem({
   acking?: boolean;
   onAck(item: { id: string }): void;
 }) {
-  const { colors, fonts } = usePluginTheme();
+  const { colors } = useHostTheme();
   const toast = useToast();
   const [copied, setCopied] = useState(false);
   const urgent = item.expiresIn <= EXPIRY_URGENT_S;
-  const fontFamily = fonts.mono;
+  const fontFamily = MONO_FONT;
 
   const handleCopyLink = async () => {
     if (!item.link) return;
-    const ok = await copyToClipboard(item.link, { toast, toastMessage: "Link" });
-    if (ok) {
+    try {
+      await copyText(item.link);
+      toast.show("Link");
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
+    } catch {
+      toast.error("Copy failed");
     }
   };
 
@@ -800,7 +805,7 @@ function ExecutingItem({  item,
     output?: string;
   };
 }) {
-  const { colors, fonts } = usePluginTheme();
+  const { colors } = useHostTheme();
   const [program] = item.argv ?? ["(command)"];
   const isConfirming = item.status === "confirming";
   const isCompleted = item.status === "completed";
@@ -813,7 +818,7 @@ function ExecutingItem({  item,
       ? colors.statusWarning
       : colors.accent;
 
-  const fontFamily = fonts.mono;
+  const fontFamily = MONO_FONT;
 
   return (
     <Card
@@ -910,7 +915,7 @@ function RecentItem({
     summary?: string;
   };
 }) {
-  const { colors, fonts } = usePluginTheme();
+  const { colors } = useHostTheme();
   const isNotify = item.kind === "notify";
   const acked = item.decision === "ack";
   const approved = item.decision === "approve" || acked;
@@ -928,7 +933,7 @@ function RecentItem({
       ? colors.statusWarning
       : colors.statusSuccess;
 
-  const fontFamily = fonts.mono;
+  const fontFamily = MONO_FONT;
 
   return (
     <Card
@@ -998,7 +1003,7 @@ function RecentItem({
 }
 
 function TelegramStatusBar() {
-  const { colors } = usePluginTheme();
+  const { colors } = useHostTheme();
   const tg = useTelegramInfo();
   const info = tg.data;
 
@@ -1056,7 +1061,7 @@ const COMPANION_STATE_LABELS: Record<string, { label: string; variant: "success"
  * explicit operator choices; nothing here spawns a process on render.
  */
 function CompanionControls({ socketPath }: { socketPath: string | undefined }) {
-  const { colors } = usePluginTheme();
+  const { colors } = useHostTheme();
   const toast = useToast();
   const queryClient = useQueryClient();
   const state = useCompanionStatus();
@@ -1196,7 +1201,7 @@ function CompanionLogs({
   logs: (input: { limit?: number }) => Promise<{ entries: DaemonLogEntry[] }>;
   visible: boolean;
 }) {
-  const { colors } = usePluginTheme();
+  const { colors } = useHostTheme();
   const query = useQuery({
     queryKey: [...COMPANION_KEY, "logs"],
     queryFn: () => logs({ limit: 100 }),
@@ -1233,7 +1238,7 @@ function CompanionLogs({
  * contract defaults.
  */
 function SettingsTab() {
-  const { colors } = usePluginTheme();
+  const { colors } = useHostTheme();
   const toast = useToast();
   const health = useDaemonHealth();
   const socketPath = useSocketPath();
@@ -1788,7 +1793,7 @@ function ApprovalSurfaceInner({
   const policyExact = policyDialog ? policyDialog.item.argv.join(" ") : "";
 
   return (
-    <PluginThemeProvider theme={{ colors: theme.colors }} layout={layout}>
+    <HostThemeProvider theme={theme}>
       <ModalBody
         size="large"
         style={{ backgroundColor: theme.colors.surface0 }}
@@ -1960,7 +1965,7 @@ function ApprovalSurfaceInner({
 
         </View>
       </ModalBody>
-    </PluginThemeProvider>
+    </HostThemeProvider>
   );
 }
 
