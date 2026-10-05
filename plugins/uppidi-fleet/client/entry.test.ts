@@ -59,7 +59,14 @@ describe("uppidi-fleet client entry contract", () => {
       /icon:\s*["']GitPullRequest["']/,
       "workspace panel must specify icon 'GitPullRequest'",
     );
+
+    assert.match(
+      source,
+      /client\.addHeaderButton\s*\(\s*\{[\s\S]*id:\s*["']uppidi-fleet-agent-switcher["'][\s\S]*\}\s*\)/,
+      "index.client.tsx must register agent switcher header button",
+    );
   });
+
 
   it("verifies client/index.ts exports panel and registerWorkspacePanel helper", () => {
     const indexPath = path.resolve(__dirname, "index.ts");

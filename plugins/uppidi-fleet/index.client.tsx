@@ -21,11 +21,59 @@ import {
   registerWorkspacePanel,
   UPPIDI_FLEET_FLAIR,
   UPPIDI_FORGE_FLAIR,
+  AgentSwitcherHeaderIcon,
+  AgentSwitcherPopover,
 } from "./client/index.js";
 
 initClientHelpers({ Icon, Modal, useRpc, useToast, copyText, ScrollView, FlatList, TextInput: HostTextInput });
 
 export default function contribute(client: PluginClientContext) {
+  const headerButtons = new Map<string, () => void>();
+
+  const addSwitcherButton = (workspaceId: string) => {
+    if (!workspaceId || headerButtons.has(workspaceId)) return;
+    if (typeof client.addHeaderButton === "function") {
+      const registration = client.addHeaderButton({
+        id: "uppidi-fleet-agent-switcher",
+        workspaceId,
+        button: {
+          title: "Agent Switcher",
+          icon: AgentSwitcherHeaderIcon,
+          behavior: {
+            kind: "popover",
+            Content: AgentSwitcherPopover,
+          },
+        },
+      });
+      headerButtons.set(workspaceId, () => {
+        if (typeof registration?.remove === "function") {
+          registration.remove();
+        }
+      });
+    }
+  };
+
+  const unsubscribeAgents = client.paseo?.agents?.subscribe?.((update: any) => {
+    if (update.kind !== "upsert" || !update.agent?.workspaceId) return;
+    addSwitcherButton(update.agent.workspaceId);
+  });
+
+  if (client.paseo?.agents?.list) {
+    void Promise.resolve()
+      .then(() => client.paseo.agents.list())
+      .then(
+        (res: any) => {
+          const entries = Array.isArray(res?.entries) ? res.entries : [];
+          for (const { agent } of entries) {
+            if (typeof agent?.workspaceId === "string") {
+              addSwitcherButton(agent.workspaceId);
+            }
+          }
+        },
+        (err) => console.warn("[uppidi-fleet] Failed to list agents for header switcher:", err),
+      );
+  }
+
   const removeSidebar = registerSidebarSurface(client, {
     id: "uppidi-fleet",
     title: "Uppidi Fleet",
@@ -55,6 +103,14 @@ export default function contribute(client: PluginClientContext) {
   });
 
   return () => {
+    if (typeof unsubscribeAgents === "function") {
+      unsubscribeAgents();
+    }
+    for (const remove of headerButtons.values()) {
+      remove();
+    }
+    headerButtons.clear();
+
     if (typeof removeSettings === "function") {
       removeSettings();
     } else if (removeSettings && typeof (removeSettings as any).remove === "function") {
@@ -81,4 +137,7 @@ export {
   registerWorkspacePanel,
   UPPIDI_FLEET_FLAIR,
   UPPIDI_FORGE_FLAIR,
+  AgentSwitcherHeaderIcon,
+  AgentSwitcherPopover,
 };
+
