@@ -1,24 +1,25 @@
 import { useState } from "react";
 import { View } from "react-native";
 import {
-  ActionBar,
-  Badge,
-  Button,
-  Card,
-  Collapsible,
-  EmptyState,
-  FormRow,
-  ModalBody,
-  Row,
-  SectionHeader,
-  Select,
-  Stack,
-  Tabs,
-  TextInput,
-  Toggle,
+  HostActionBar,
+  HostBadge,
+  HostButton,
+  HostCard,
+  HostCardHeader,
+  HostCollapsible,
+  HostEmptyState,
+  HostFormRow,
+  HostRow,
+  HostScroll,
+  HostSectionHeader,
+  HostSelect,
+  HostStack,
+  HostTabs,
+  HostTextInput,
+  HostToggle,
   spacing,
-  type TabItem,
-} from "paseo-plugin-helper/client";
+  type HostTabItem,
+} from "./host-ui";
 import { usePluginSettings, useRpcMutation, useRpcQuery } from "paseo-plugin-helper/core";
 import {
   COMMAND_NAME_HINT,
@@ -43,7 +44,7 @@ import {
   type SlashVerb,
 } from "../shared/resources";
 
-const ACTION_TABS: TabItem[] = [
+const ACTION_TABS: HostTabItem[] = [
   { id: "send", label: "Send", icon: "Send" },
   { id: "open", label: "Open", icon: "ExternalLink" },
   { id: "rpc", label: "RPC", icon: "Zap" },
@@ -62,11 +63,9 @@ const VERB_VARIANT = {
 } as const;
 
 
-// Header-only rows: the helper reserves an 8px bottom margin for content that
-// follows. Command rows have none, so reclaim it and use the token scale for
-// the row's own inset instead of Card's full surface padding.
+// Header-only rows carry their own inset instead of the card's full surface
+// padding.
 const ROW_HEADER_STYLE = {
-  marginBottom: 0,
   paddingHorizontal: spacing.md,
   paddingVertical: spacing.sm,
 };
@@ -84,43 +83,43 @@ interface CommandRowProps {
 function CommandRow({ prefix, command, shipped, onToggle, onEdit, onRemove }: CommandRowProps) {
   const label = `/${prefix}${command.name}`;
   return (
-    <Card variant="elevated" noPadding>
-      <Card.Header
+    <HostCard variant="elevated" noPadding>
+      <HostCardHeader
         icon={VERB_ICON[command.action.verb]}
         title={label}
         subtitle={command.description || command.title}
         badge={
-          <Row gap="xs" align="center">
-            <Badge
+          <HostRow gap="xs" align="center">
+            <HostBadge
               size="sm"
               label={actionSummary(command.action)}
               variant={VERB_VARIANT[command.action.verb]}
             />
-            {shipped ? <Badge size="sm" label="Shipped" variant="neutral" /> : null}
-          </Row>
+            {shipped ? <HostBadge size="sm" label="Shipped" variant="neutral" /> : null}
+          </HostRow>
         }
         action={
-          <Row gap="xs" align="center">
-            <Toggle value={command.enabled} onValueChange={onToggle} />
-            <Button
+          <HostRow gap="xs" align="center">
+            <HostToggle value={command.enabled} onValueChange={onToggle} />
+            <HostButton
               size="sm"
               variant="ghost"
               icon="Pencil"
               accessibilityLabel={`Edit ${label}`}
               onPress={onEdit}
             />
-            <Button
+            <HostButton
               size="sm"
               variant="danger"
               icon="Trash2"
               accessibilityLabel={`Remove ${label}`}
               onPress={onRemove}
             />
-          </Row>
+          </HostRow>
         }
         style={ROW_HEADER_STYLE}
       />
-    </Card>
+    </HostCard>
   );
 }
 
@@ -139,25 +138,25 @@ function CommandForm({ draft, errors, warnings, catalog, onChange }: CommandForm
   const openChoices = openOptions.map((target) => ({ label: target, value: target }));
 
   return (
-    <Stack gap="sm">
-      <FormRow label="Name" description={COMMAND_NAME_HINT}>
-        <TextInput
+    <HostStack gap="sm">
+      <HostFormRow label="Name" description={COMMAND_NAME_HINT}>
+        <HostTextInput
           value={draft.name}
           errorText={errors.name}
           placeholder="my-command"
           onChangeText={(name) => onChange({ name })}
         />
-      </FormRow>
-      <FormRow label="Title">
-        <TextInput
+      </HostFormRow>
+      <HostFormRow label="Title">
+        <HostTextInput
           value={draft.title}
           errorText={errors.title}
           placeholder="My command"
           onChangeText={(title) => onChange({ title })}
         />
-      </FormRow>
-      <FormRow label="Description">
-        <TextInput
+      </HostFormRow>
+      <HostFormRow label="Description">
+        <HostTextInput
           value={draft.description}
           errorText={errors.description}
           placeholder="Optional one-line summary"
@@ -165,17 +164,17 @@ function CommandForm({ draft, errors, warnings, catalog, onChange }: CommandForm
           numberOfLines={2}
           onChangeText={(description) => onChange({ description })}
         />
-      </FormRow>
-      <FormRow label="Action">
-        <Tabs
+      </HostFormRow>
+      <HostFormRow label="Action">
+        <HostTabs
           tabs={ACTION_TABS}
           activeTab={draft.verb}
           onTabChange={(verb) => onChange({ verb: verb as SlashVerb })}
         />
-      </FormRow>
+      </HostFormRow>
       {draft.verb === "send" ? (
-        <FormRow label="Prompt template">
-          <TextInput
+        <HostFormRow label="Prompt template">
+          <HostTextInput
             value={draft.template}
             errorText={errors.action}
             placeholder="Review the current changes: {args}"
@@ -183,39 +182,39 @@ function CommandForm({ draft, errors, warnings, catalog, onChange }: CommandForm
             numberOfLines={3}
             onChangeText={(template) => onChange({ template })}
           />
-        </FormRow>
+        </HostFormRow>
       ) : draft.verb === "open" ? (
-        <FormRow label="Target surface">
-          <Stack gap="xs">
+        <HostFormRow label="Target surface">
+          <HostStack gap="xs">
             {openOptions.length > 0 ? (
-              <Select
+              <HostSelect
                 value={draft.target}
                 options={openChoices}
                 placeholder="Choose a shipped surface…"
                 onValueChange={(target) => onChange({ target })}
               />
             ) : null}
-            <TextInput
+            <HostTextInput
               value={draft.target}
               errorText={errors.action}
               helperText={warnings.action}
               placeholder="slash-console"
               onChangeText={(target) => onChange({ target })}
             />
-          </Stack>
-        </FormRow>
+          </HostStack>
+        </HostFormRow>
       ) : (
-        <FormRow label="RPC operation">
-          <Stack gap="xs">
+        <HostFormRow label="RPC operation">
+          <HostStack gap="xs">
             {rpcOptions.length > 0 ? (
-              <Select
+              <HostSelect
                 value={draft.operation}
                 options={rpcChoices}
                 placeholder="Choose a catalog operation…"
                 onValueChange={(operation) => onChange({ operation })}
               />
             ) : null}
-            <TextInput
+            <HostTextInput
               value={draft.operation}
               errorText={errors.action}
               helperText={warnings.action}
@@ -223,13 +222,13 @@ function CommandForm({ draft, errors, warnings, catalog, onChange }: CommandForm
               mono
               onChangeText={(operation) => onChange({ operation })}
             />
-          </Stack>
-        </FormRow>
+          </HostStack>
+        </HostFormRow>
       )}
-      <FormRow label="Enabled">
-        <Toggle value={draft.enabled} onValueChange={(enabled) => onChange({ enabled })} />
-      </FormRow>
-    </Stack>
+      <HostFormRow label="Enabled">
+        <HostToggle value={draft.enabled} onValueChange={(enabled) => onChange({ enabled })} />
+      </HostFormRow>
+    </HostStack>
   );
 }
 
@@ -290,34 +289,34 @@ export function SlashConsole() {
 
   return (
     <View style={{ flex: 1, minHeight: 0, width: "100%" }}>
-      <ModalBody scrollMode="always">
-        <Card variant="tinted">
-          <FormRow label="Command prefix">
-            <TextInput
+      <HostScroll>
+        <HostCard variant="tinted">
+          <HostFormRow label="Command prefix">
+            <HostTextInput
               value={prefix}
               placeholder={`${SUGGESTED_PREFIX} (suggestion — leave empty for none)`}
               onChangeText={(val) => updateSettings({ prefix: val })}
             />
-          </FormRow>
+          </HostFormRow>
           {form ? null : (
-            <ActionBar align="flex-start" direction="row" style={{ marginTop: spacing.sm }}>
-              <Button
+            <HostActionBar align="start" direction="row" style={{ marginTop: spacing.sm }}>
+              <HostButton
                 label="Add command"
                 size="sm"
                 variant="primary"
                 icon="Plus"
                 onPress={() => setForm({ originalName: null, draft: emptyCommandDraft() })}
               />
-            </ActionBar>
+            </HostActionBar>
           )}
-        </Card>
+        </HostCard>
 
         {form ? (
-          <Card variant="elevated">
-            <Card.Header
+          <HostCard variant="elevated">
+            <HostCardHeader
               title={form.originalName ? `Edit /${prefix}${form.originalName}` : "New command"}
               badge={
-                <Badge size="sm" label={form.draft.verb} variant={VERB_VARIANT[form.draft.verb]} />
+                <HostBadge size="sm" label={form.draft.verb} variant={VERB_VARIANT[form.draft.verb]} />
               }
             />
             <CommandForm
@@ -327,9 +326,9 @@ export function SlashConsole() {
               catalog={operationCatalog}
               onChange={updateDraft}
             />
-            <ActionBar align="flex-end" style={{ marginTop: spacing.sm }}>
-              <Button label="Cancel" size="sm" variant="ghost" onPress={() => setForm(null)} />
-              <Button
+            <HostActionBar align="end" style={{ marginTop: spacing.sm }}>
+              <HostButton label="Cancel" size="sm" variant="ghost" onPress={() => setForm(null)} />
+              <HostButton
                 label={form.originalName ? "Save changes" : "Add command"}
                 size="sm"
                 variant="primary"
@@ -337,19 +336,19 @@ export function SlashConsole() {
                 disabled={!validation.command}
                 onPress={saveForm}
               />
-            </ActionBar>
-          </Card>
+            </HostActionBar>
+          </HostCard>
         ) : null}
 
-        <SectionHeader title="Commands" count={commands.length} />
+        <HostSectionHeader title="Commands" count={commands.length} />
         {commands.length === 0 ? (
-          <EmptyState
+          <HostEmptyState
             icon="Terminal"
             title="No slash commands"
             description="Add one above or pick a shipped command from the catalog."
           />
         ) : (
-          <Stack gap="xs">
+          <HostStack gap="xs">
             {commands.map((command) => (
               <CommandRow
                 key={command.name}
@@ -365,15 +364,15 @@ export function SlashConsole() {
                 onRemove={() => updateSettings({ commands: removeCommandByName(commands, command.name) })}
               />
             ))}
-          </Stack>
+          </HostStack>
         )}
 
-        <Collapsible
+        <HostCollapsible
           title="Shipped catalog"
           subtitle={`${catalogCommands.length} commands bundled with the plugin`}
           icon="Package"
           badge={
-            <Badge
+            <HostBadge
               size="sm"
               label={
                 missingFromCatalog.length > 0 ? `${missingFromCatalog.length} to add` : "All added"
@@ -383,24 +382,24 @@ export function SlashConsole() {
           }
         >
           {catalog.isLoading ? (
-            <EmptyState icon="Package" title="Loading the shipped catalog…" />
+            <HostEmptyState icon="Package" title="Loading the shipped catalog…" />
           ) : catalogCommands.length === 0 ? (
-            <EmptyState
+            <HostEmptyState
               icon="Package"
               title="Shipped catalog unavailable"
               description="The bundled command list could not be loaded."
             />
           ) : (
-            <Stack gap="xs">
+            <HostStack gap="xs">
               {catalogCommands.map((command) => {
                 const added = presentNames.has(command.name);
                 return (
-                  <Card key={command.name} variant="tinted" noPadding>
-                    <Card.Header
+                  <HostCard key={command.name} variant="tinted" noPadding>
+                    <HostCardHeader
                       title={`/${command.name}`}
                       subtitle={command.description || command.title}
                       badge={
-                        <Badge
+                        <HostBadge
                           size="sm"
                           label={actionSummary(command.action)}
                           variant={VERB_VARIANT[command.action.verb]}
@@ -408,9 +407,9 @@ export function SlashConsole() {
                       }
                       action={
                         added ? (
-                          <Badge size="sm" label="Added" variant="neutral" />
+                          <HostBadge size="sm" label="Added" variant="neutral" />
                         ) : (
-                          <Button
+                          <HostButton
                             label="Add"
                             size="sm"
                             variant="secondary"
@@ -421,42 +420,42 @@ export function SlashConsole() {
                       }
                       style={ROW_HEADER_STYLE}
                     />
-                  </Card>
+                  </HostCard>
                 );
               })}
-            </Stack>
+            </HostStack>
           )}
-        </Collapsible>
+        </HostCollapsible>
 
-        <Collapsible
+        <HostCollapsible
           title="Advanced"
           subtitle="Hook endpoint, bundle import/export and reset"
           icon="Wrench"
         >
-          <FormRow
+          <HostFormRow
             label="Hook URL"
             description="Base URL for rpc operations targeting the forgejo hook. Empty uses PASEO_FORGEJO_HOOK_URL, then http://127.0.0.1:8099."
           >
-            <TextInput
+            <HostTextInput
               value={settings.hookUrl ?? ""}
               placeholder="http://10.20.30.24:8099"
               mono
               onChangeText={(hookUrl) => updateSettings({ hookUrl })}
             />
-          </FormRow>
-          <FormRow
+          </HostFormRow>
+          <HostFormRow
             label="Hook secret file"
             description="Path to the file holding the hook bearer secret. The secret value is never stored in settings."
           >
-            <TextInput
+            <HostTextInput
               value={settings.hookSecretFile ?? ""}
               placeholder="~/.paseo/forgejo-hook.secret"
               mono
               onChangeText={(hookSecretFile) => updateSettings({ hookSecretFile })}
             />
-          </FormRow>
-          <FormRow label="Bundle JSON" description="Paste an exported bundle to import (validated server-side)">
-            <TextInput
+          </HostFormRow>
+          <HostFormRow label="Bundle JSON" description="Paste an exported bundle to import (validated server-side)">
+            <HostTextInput
               value={bundleJson}
               placeholder='{"bundle":"slash-commands","version":1,"commands":[…]}'
               multiline
@@ -467,9 +466,9 @@ export function SlashConsole() {
                 setBundleError("");
               }}
             />
-          </FormRow>
-          <ActionBar align="flex-end" style={{ marginTop: spacing.sm }}>
-            <Button
+          </HostFormRow>
+          <HostActionBar align="end" style={{ marginTop: spacing.sm }}>
+            <HostButton
               label="Export"
               size="sm"
               variant="secondary"
@@ -477,7 +476,7 @@ export function SlashConsole() {
               loading={exportBundle.isPending}
               onPress={handleExport}
             />
-            <Button
+            <HostButton
               label="Import"
               size="sm"
               variant="secondary"
@@ -485,16 +484,16 @@ export function SlashConsole() {
               loading={importBundle.isPending}
               onPress={handleImport}
             />
-            <Button
+            <HostButton
               label="Reset to seeds"
               size="sm"
               variant="danger"
               icon="RotateCcw"
               onPress={() => void resetSettings()}
             />
-          </ActionBar>
-        </Collapsible>
-      </ModalBody>
+          </HostActionBar>
+        </HostCollapsible>
+      </HostScroll>
     </View>
   );
 }
