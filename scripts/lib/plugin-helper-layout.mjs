@@ -17,16 +17,18 @@ import path from "node:path";
 // Per-plugin helper src trees to vendor. "core" and "ui" are client-side
 // exports and are colocated under <plugin>/client/vendor; "mcp" is server-side
 // (node-only) and lands in <plugin>/server/vendor/paseo-plugin-helper/mcp/.
+// The registration wrappers in src/client import ui/theme for HostThemeProvider,
+// so any plugin that vendors "client" also has to vendor "ui".
 export const PLUGINS = {
-  "top": ["client", "server", "shared"],
-  "mcp-tools": ["client", "server", "shared", "mcp"],
+  "top": ["client", "ui", "server", "shared"],
+  "mcp-tools": ["client", "ui", "server", "shared", "mcp"],
   "demo": ["client", "core", "ui", "server", "shared"],
-  "forges": ["client", "server", "shared"],
-  "slash": ["client", "server", "shared"],
-  "x-comms": ["client", "server", "shared", "mcp"],
-  "twofado": ["client", "server", "shared"],
-  "plugin-updates": ["client", "server", "shared"],
-  "wellbeing": ["client", "server", "shared"],
+  "forges": ["client", "ui", "server", "shared"],
+  "slash": ["client", "ui", "server", "shared"],
+  "x-comms": ["client", "ui", "server", "shared", "mcp"],
+  "twofado": ["client", "ui", "server", "shared"],
+  "plugin-updates": ["client", "ui", "server", "shared"],
+  "wellbeing": ["client", "ui", "server", "shared"],
   "permission-logger": ["client", "ui", "server", "shared"],
 };
 

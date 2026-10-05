@@ -9,6 +9,7 @@ import React, { type ComponentType } from "react";
 import { View } from "react-native";
 import type { HostSurfaceProps as PluginSurfaceProps } from "./host";
 import { PluginThemeProvider } from "./theme/provider";
+import { HostThemeProvider } from "./ui/theme";
 import { ModalBodyScrollOwnerContext } from "./layout/ModalBody";
 import type { VisualFlair } from "./theme/flair";
 
@@ -109,15 +110,17 @@ export function registerSidebarSurface(
 
   const WrappedComponent: ComponentType<PluginSurfaceProps> = (props) => (
     <PluginThemeProvider theme={props.theme} layout={props.layout} flair={flair}>
-      <ModalBodyScrollOwnerContext.Provider value="required">
-        {maxContentWidth === false ? (
-          <Component {...props} />
-        ) : (
-          <SurfaceContentColumn maxContentWidth={maxContentWidth}>
+      <HostThemeProvider theme={props.theme}>
+        <ModalBodyScrollOwnerContext.Provider value="required">
+          {maxContentWidth === false ? (
             <Component {...props} />
-          </SurfaceContentColumn>
-        )}
-      </ModalBodyScrollOwnerContext.Provider>
+          ) : (
+            <SurfaceContentColumn maxContentWidth={maxContentWidth}>
+              <Component {...props} />
+            </SurfaceContentColumn>
+          )}
+        </ModalBodyScrollOwnerContext.Provider>
+      </HostThemeProvider>
     </PluginThemeProvider>
   );
 

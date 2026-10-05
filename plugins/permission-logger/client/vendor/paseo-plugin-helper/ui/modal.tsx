@@ -3,6 +3,7 @@ import {
   ScrollView as FallbackScrollView,
   StyleSheet,
   View,
+  type ScrollViewProps,
   type StyleProp,
   type ViewStyle,
 } from "react-native";
@@ -60,17 +61,22 @@ export function HostScroll({
   children,
   style,
   contentContainerStyle,
+  ...props
 }: {
   children: ReactNode;
   style?: StyleProp<ViewStyle>;
   contentContainerStyle?: StyleProp<ViewStyle>;
-}) {
+} & ScrollViewProps) {
   const ResolvedScrollView = selectHostScrollView(
     getOptionalClientHost(),
     FallbackScrollView as unknown as HostScrollView,
   );
   return (
-    <ResolvedScrollView style={[styles.fluid, style]} contentContainerStyle={contentContainerStyle}>
+    <ResolvedScrollView
+      {...(props as ScrollViewProps)}
+      style={[styles.fluid, style]}
+      contentContainerStyle={contentContainerStyle}
+    >
       {children}
     </ResolvedScrollView>
   );

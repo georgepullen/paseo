@@ -23,6 +23,7 @@
  */
 
 export * from "../../../../shared/vendor/paseo-plugin-helper/rpc";
+export * from "../../../../shared/vendor/paseo-plugin-helper/features";
 export * from "../../../../shared/vendor/paseo-plugin-helper/settings";
 export * from "../../../../shared/vendor/paseo-plugin-helper/suite-settings";
 export * from "../../../../shared/vendor/paseo-plugin-helper/formatters";

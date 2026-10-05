@@ -1,6 +1,6 @@
 import React__default, { ReactNode } from 'react';
 import { R as ResponsiveLayout, T as ThemeColors, d as StatusVariant, a as PluginTheme } from '../settings-CPUeD-cx.js';
-import { StyleProp, ViewStyle, TextStyle, KeyboardTypeOptions, GestureResponderEvent, AccessibilityRole } from 'react-native';
+import { StyleProp, ViewStyle, ScrollViewProps, TextStyle, KeyboardTypeOptions, GestureResponderEvent, AccessibilityRole } from 'react-native';
 import { M as MetricThresholds } from '../formatters-B3gu9GmM.js';
 export { H as HelperSettingsCardProps, a as HelperSettingsField, b as HelperSettingsFieldKind, c as HelperSettingsFieldOverrides, d as HelperSettingsInputProps, e as HelperSettingsRowBaseProps, f as HelperSettingsScreenContribution, g as HelperSettingsScreenRegistrar, h as HelperSettingsSectionProps, i as HelperSettingsSelectComponent, j as HelperSettingsSelectProps, k as HelperSettingsSwitchProps, l as HelperSettingsUiBundle, R as RegisterHelperSettingsScreenOptions, m as contractSchemaToFields, r as registerHelperSettingsScreen } from '../settings-screen-Bpcxrbgd.js';
 import 'zod';
@@ -146,11 +146,11 @@ declare function HostModalContent({ children, style, contentContainerStyle, }: {
  * React Native ScrollView. Callers own the decision to scroll; this component
  * never nests itself inside another scroller.
  */
-declare function HostScroll({ children, style, contentContainerStyle, }: {
+declare function HostScroll({ children, style, contentContainerStyle, ...props }: {
     children: ReactNode;
     style?: StyleProp<ViewStyle>;
     contentContainerStyle?: StyleProp<ViewStyle>;
-}): React__default.JSX.Element;
+} & ScrollViewProps): React__default.JSX.Element;
 /**
  * Fluid inner content for pill-embedded modals (`registerComposerPill`
  * `renderModal`).

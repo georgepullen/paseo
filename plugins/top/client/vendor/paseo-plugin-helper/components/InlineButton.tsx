@@ -1,0 +1,101 @@
+/**
+ * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
+ * frozen: no new features, bug fixes only. Migrate to the `ui/` adapter layer
+ * (`paseo-plugin-helper/ui`) composed with host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
+import React, { type ReactNode } from "react";
+import {
+  Pressable,
+  StyleSheet,
+  Text,
+  type StyleProp,
+  type TextStyle,
+  type ViewStyle,
+} from "react-native";
+import { getClientHost } from "../host";
+import { usePluginTheme } from "../theme/provider";
+
+export interface InlineButtonProps {
+  label: string;
+  onPress?: () => void | Promise<void>;
+  icon?: string | ReactNode;
+  disabled?: boolean;
+  accessibilityLabel?: string;
+  accessibilityRole?: "button" | "link";
+  style?: StyleProp<ViewStyle>;
+  textStyle?: StyleProp<TextStyle>;
+}
+
+/** Compact text/link action for inline cards and timeline content. */
+/**
+ * @deprecated Deprecated bespoke UI kit (paseo#847): frozen, bug fixes only.
+ * Migrate to `paseo-plugin-helper/ui` + host SDK primitives
+ * (`@getpaseo/plugin/client/react-native`, `@getpaseo/plugin/client/ui`).
+ * See `docs/client-migration.md`.
+ */
+export function InlineButton({
+  label,
+  onPress,
+  icon,
+  disabled = false,
+  accessibilityLabel,
+  accessibilityRole = "button",
+  style,
+  textStyle,
+}: InlineButtonProps) {
+  const { Icon } = getClientHost();
+  const { colors, touchTargetMin, alpha } = usePluginTheme();
+
+  return (
+    <Pressable
+      onPress={onPress}
+      disabled={disabled}
+      accessibilityRole={accessibilityRole}
+      accessibilityLabel={accessibilityLabel || label}
+      hitSlop={Math.max(0, (touchTargetMin - 24) / 2)}
+      style={({ pressed }) => [
+        styles.base,
+        {
+          opacity: disabled ? 0.45 : 1,
+          backgroundColor: pressed && !disabled ? alpha(colors.accent, 0.12) : "transparent",
+        },
+        style,
+      ]}
+    >
+      {typeof icon === "string" ? <Icon name={icon} size={13} color={colors.accent} /> : icon}
+      <Text
+        accessibilityLabel={label}
+        numberOfLines={1}
+        ellipsizeMode="tail"
+        style={[styles.text, { color: colors.accent }, textStyle]}
+      >
+        {label}
+      </Text>
+    </Pressable>
+  );
+}
+
+const styles = StyleSheet.create({
+  base: {
+    alignSelf: "flex-start",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    minHeight: 24,
+    paddingHorizontal: 3,
+    paddingVertical: 2,
+    borderRadius: 4,
+    // Caller-supplied labels are unbounded; without a shrink budget the control
+    // claims its full text width and overflows narrow viewports.
+    flexShrink: 1,
+    maxWidth: "100%",
+  },
+  text: {
+    fontSize: 12,
+    fontWeight: "600",
+    // The label must be allowed to compress for `numberOfLines` to engage.
+    flexShrink: 1,
+  },
+});

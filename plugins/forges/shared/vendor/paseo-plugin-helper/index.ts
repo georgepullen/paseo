@@ -1,5 +1,6 @@
 export * from "./types";
 export * from "./rpc";
+export * from "./features";
 export * from "./formatters";
 export * from "./settings";
 export * from "./suite-settings";

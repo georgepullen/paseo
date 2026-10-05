@@ -28,6 +28,7 @@ import type {
   PluginButtonRegistration,
 } from "@getpaseo/plugin/client";
 import { PluginThemeProvider } from "./theme/provider";
+import { HostThemeProvider } from "./ui/theme";
 import type { VisualFlair } from "./theme/flair";
 import { ModalBodyScrollOwnerContext } from "./layout/ModalBody";
 import { reportSuppressed } from "../../../shared/vendor/paseo-plugin-helper/suppressed";
@@ -433,18 +434,20 @@ export function registerComposerPill<TPayload = any>(
                     style={{ flex: 1, minHeight: 0 }}
                   >
                     <PluginThemeProvider theme={theme} layout={layout} flair={options.flair}>
-                      <ModalBodyScrollOwnerContext.Provider
-                        value={resolvePillModalScrollable(options.hostScroll) ? "host" : "required"}
-                      >
-                        {options.renderModal({
-                          agentId,
-                          workspaceId: props.workspaceId,
-                          theme,
-                          layout,
-                          host: props.host ?? { id: "", label: "" },
-                          close: () => setCenteredOpen(agentId, false),
-                        })}
-                      </ModalBodyScrollOwnerContext.Provider>
+                      <HostThemeProvider theme={theme}>
+                        <ModalBodyScrollOwnerContext.Provider
+                          value={resolvePillModalScrollable(options.hostScroll) ? "host" : "required"}
+                        >
+                          {options.renderModal({
+                            agentId,
+                            workspaceId: props.workspaceId,
+                            theme,
+                            layout,
+                            host: props.host ?? { id: "", label: "" },
+                            close: () => setCenteredOpen(agentId, false),
+                          })}
+                        </ModalBodyScrollOwnerContext.Provider>
+                      </HostThemeProvider>
                     </PluginThemeProvider>
                   </View>
                 ) : null}
@@ -501,17 +504,19 @@ export function registerComposerPill<TPayload = any>(
     };
     return (
       <PluginThemeProvider theme={props.theme} layout={props.layout} flair={options.flair}>
-        <View
-          style={{
-            ...styles.popoverContainer,
-            maxHeight: frameMaxHeight,
-            ...(frameWidth ? { width: frameWidth } : null),
-          }}
-        >
-          <ModalBodyScrollOwnerContext.Provider value="popover">
-            {options.renderModal?.({ ...pillProps, close: props.close })}
-          </ModalBodyScrollOwnerContext.Provider>
-        </View>
+        <HostThemeProvider theme={props.theme}>
+          <View
+            style={{
+              ...styles.popoverContainer,
+              maxHeight: frameMaxHeight,
+              ...(frameWidth ? { width: frameWidth } : null),
+            }}
+          >
+            <ModalBodyScrollOwnerContext.Provider value="popover">
+              {options.renderModal?.({ ...pillProps, close: props.close })}
+            </ModalBodyScrollOwnerContext.Provider>
+          </View>
+        </HostThemeProvider>
       </PluginThemeProvider>
     );
   }
