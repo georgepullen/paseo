@@ -224,6 +224,18 @@ export interface OrchestratorRecord {
   agentId: string;
   updatedAt?: string | null;
   by?: string | null;
+  /** Consecutive board sweeps where the agent was absent from `paseo ls` (#889). */
+  missCount?: number;
+  /** ISO timestamp of the first absence in the current streak (#889). */
+  firstMissAt?: string | null;
+  /** Last sweep where the agent was observed alive (#889). */
+  lastSeenAt?: string | null;
+  /** True once the registration is presumed stale but not yet eligible for pruning (#889). */
+  stale?: boolean;
+  /** ISO timestamp when the record was first marked stale (#889). */
+  staleSince?: string | null;
+  /** Human-readable reason for the stale marker (#889). */
+  staleReason?: string | null;
 }
 
 export interface FrontDeskRecord {
@@ -2060,10 +2072,24 @@ export function countActiveWorkers(
   return count;
 }
 
+/** Consecutive sweeps an absent orchestrator must stay missing before pruning (#889). */
+export const ORCHESTRATOR_PRUNE_GRACE_SWEEPS = 3;
+
+export interface StaleOrchestratorMark {
+  key: string;
+  agentId: string;
+  missCount: number;
+  reason: string;
+}
+
 export interface PruneResult {
   ok: boolean;
   prunedCount: number;
   pruned: Array<{ key: string; agentId: string; reason: string }>;
+  /** Registrations kept but flagged stale because the agent was absent (#889). */
+  markedStale?: StaleOrchestratorMark[];
+  /** Registrations whose agent reappeared and whose stale markers were cleared (#889). */
+  recovered?: string[];
   dryRun?: boolean;
   error?: string;
 }
@@ -2107,6 +2133,8 @@ export interface BoardSweepResult {
   notified: number;
   /** Repos whose board check failed; surfaced to the caller and Front Desk. */
   errors?: Array<{ repo: string; error: string }>;
+  /** Enrolled repos auto-staffed by this sweep because they were unstaffed with pending work (#889). */
+  autoEnsured?: Array<{ repo: string; agentId?: string; status?: string; error?: string }>;
   error?: string;
 }
 
@@ -2593,6 +2621,14 @@ export class HookRouter {
       bypass,
       sosState,
     });
+
+    // Queue ingress self-heal (#889): an enrolled repo receiving work with no
+    // registered orchestrator is staffed without blocking webhook ack.
+    if (!orch && !bypass) {
+      void this.ensureUnstaffedEnrolledRepo(repoKey, { reason: "webhook ingress" }).catch((err) =>
+        this.log(`[warn] Auto-ensure failed for ${repoKey}: ${err instanceof Error ? err.message : String(err)}`),
+      );
+    }
     return { key: repoKey, result, frontDesk: false, bypass };
   }
 
@@ -3185,6 +3221,48 @@ export class HookRouter {
     return Array.from(set);
   }
 
+  /** True when `repo` is enrolled in the fleet under any known key form (#889). */
+  public isEnrolledRepo(repo: string): boolean {
+    const candidate = String(repo ?? "").trim();
+    if (!candidate) return false;
+    const canonical = canonicalRepoKey(candidate) ?? candidate;
+    for (const enrolled of this.getEnrolledRepos()) {
+      if (enrolled === candidate || isRepoMatching(enrolled, candidate)) return true;
+      if ((canonicalRepoKey(enrolled) ?? enrolled) === canonical) return true;
+    }
+    return false;
+  }
+
+  /**
+   * Self-heal staffing for an enrolled repo with pending work (#889). When no
+   * active orchestrator is registered, provision one through
+   * `ensureOrchestrator` without hardcoding a model, so `resolveOrchestratorModel`
+   * (#890) skips any cooling-down/quota-exhausted candidate. Returns the ensure
+   * result, or `null` when the repo is ineligible or already staffed.
+   */
+  public async ensureUnstaffedEnrolledRepo(
+    repo: string,
+    opts: { reason?: string; agentMap?: Map<string, WatchdogAgent> | null } = {},
+  ): Promise<EnsureOrchestratorResult | null> {
+    const canonical = canonicalRepoKey(repo) ?? String(repo ?? "").trim();
+    if (!canonical) return null;
+    if (this.isRepoMuted(canonical) || this.isPaused(canonical)) return null;
+    if (!this.isEnrolledRepo(canonical)) return null;
+
+    try {
+      const active = await this.getActiveOrchestrator(canonical, opts.agentMap);
+      if (active) return null;
+    } catch {
+      // Liveness unknown: skip rather than spawn a duplicate.
+      return null;
+    }
+
+    this.log(
+      `[info] Auto-ensure: unstaffed enrolled repo ${canonical}${opts.reason ? ` (${opts.reason})` : ""}; provisioning orchestrator`,
+    );
+    return await this.ensureOrchestrator({ repo: canonical });
+  }
+
   private isRepoMutedMatch(a: string, b: string): boolean {
     if (a.toLowerCase() === b.toLowerCase()) return true;
     const cleanA = a.toLowerCase().replace(/^https?:\/\//, "").replace(/\.git$/, "");
@@ -3324,6 +3402,12 @@ export class HookRouter {
               agentId: parsed.agentId.trim(),
               updatedAt: parsed.updatedAt ?? null,
               by: parsed.by ?? null,
+              missCount: typeof parsed.missCount === "number" ? parsed.missCount : 0,
+              firstMissAt: parsed.firstMissAt ?? null,
+              lastSeenAt: parsed.lastSeenAt ?? null,
+              stale: Boolean(parsed.stale),
+              staleSince: parsed.staleSince ?? null,
+              staleReason: parsed.staleReason ?? null,
             };
           }
         } catch {
@@ -3335,18 +3419,33 @@ export class HookRouter {
   }
 
   public writeOrchestrator(key: string, agentId: string, by = "orchestrator"): void {
-    mkdirSync(this.stateDir, { recursive: true });
-    const candidates = candidateRepoKeys(key);
-    const primaryKey = canonicalRepoKey(key) ?? key;
-    const record: OrchestratorRecord = {
-      key: primaryKey,
+    const nowIso = new Date().toISOString();
+    this.persistOrchestratorRecord({
+      key: canonicalRepoKey(key) ?? key,
       agentId,
-      updatedAt: new Date().toISOString(),
+      updatedAt: nowIso,
       by,
-    };
+      missCount: 0,
+      firstMissAt: null,
+      lastSeenAt: nowIso,
+      stale: false,
+      staleSince: null,
+      staleReason: null,
+    });
+  }
+
+  /**
+   * Persist a full orchestrator record under every candidate key. Unlike
+   * `writeOrchestrator`, this preserves grace/stale bookkeeping fields so a
+   * prune sweep can update a registration in place (#889).
+   */
+  private persistOrchestratorRecord(record: OrchestratorRecord): void {
+    mkdirSync(this.stateDir, { recursive: true });
+    const candidates = candidateRepoKeys(record.key);
+    const primaryKey = canonicalRepoKey(record.key) ?? record.key;
     const targets = new Set<string>();
     targets.add(primaryKey);
-    targets.add(key);
+    targets.add(record.key);
     for (const cand of candidates) {
       if (cand.includes("/")) targets.add(cand);
     }
@@ -3568,6 +3667,53 @@ export class HookRouter {
       );
       return false;
     }
+  }
+
+  /**
+   * Whether an agent still carries a `paseo.parent-agent-id` label. Returns
+   * `null` when the daemon state cannot be determined, so the caller keeps the
+   * conservative detach behavior (#889).
+   */
+  public async hasParentAgentLabel(agentId: string): Promise<boolean | null> {
+    const paseo = this.getPaseo();
+    if (paseo?.agents?.ref) {
+      try {
+        const ref = paseo.agents.ref(agentId);
+        const current: any = typeof (ref as any)?.current === "function" ? (ref as any).current() : null;
+        const labels = current?.labels ?? current?.agent?.labels;
+        if (labels && typeof labels === "object") {
+          return Boolean(labels["paseo.parent-agent-id"]);
+        }
+        if (typeof (ref as any)?.refresh === "function") {
+          const refreshed: any = await (ref as any).refresh().catch(() => null);
+          const refreshedAgent = refreshed?.agent ?? refreshed;
+          const refreshedLabels = refreshedAgent?.labels;
+          if (refreshedLabels && typeof refreshedLabels === "object") {
+            return Boolean(refreshedLabels["paseo.parent-agent-id"]);
+          }
+        }
+      } catch {
+        // fall through to the CLI probe
+      }
+    }
+
+    // Stay hermetic under test: the mock spawn seam has no daemon to inspect.
+    if (!this.options?.allowCliSpawn && (this.isTestMode || process.env.NODE_ENV === "test")) {
+      return null;
+    }
+
+    try {
+      const { stdout } = await execFileAsync("paseo", ["agent", "inspect", agentId, "--json"], { timeout: 5000 });
+      const parsed: any = JSON.parse(stdout);
+      const resolved = parsed?.agent ?? parsed;
+      const parent = resolved?.ParentAgentId ?? resolved?.parentAgentId;
+      if (parent !== undefined) return Boolean(parent);
+      const labels = resolved?.labels;
+      if (labels && typeof labels === "object") return Boolean(labels["paseo.parent-agent-id"]);
+    } catch {
+      return null;
+    }
+    return null;
   }
 
   public async detachAgent(agentId: string): Promise<boolean> {
@@ -3951,8 +4097,16 @@ export class HookRouter {
       await this.setAgentMode(agentId, targetMode);
     }
 
-    // Detach agent so it operates as an autonomous peer rather than inheriting Front Desk/caller parentage
-    await this.detachAgent(agentId).catch(() => {});
+    // Detach an orchestrator only when it actually inherited a parent. #895
+    // already strips the parent label at spawn for the CLI path; detaching a
+    // peer makes the daemon archive it instead of promoting it, which fed the
+    // prune cascade (#889).
+    const hasParent = await this.hasParentAgentLabel(agentId).catch(() => null);
+    if (hasParent === false) {
+      this.log(`[info] Skipping detach for ${agentId.slice(0, 7)}: spawned as a top-level peer (#889)`);
+    } else {
+      await this.detachAgent(agentId).catch(() => {});
+    }
 
     // Update metadata
     const metadata: Record<string, string> = {
@@ -4044,6 +4198,12 @@ export class HookRouter {
                 agentId: parsed.agentId,
                 updatedAt: parsed.updatedAt ?? null,
                 by: parsed.by ?? null,
+                missCount: typeof parsed.missCount === "number" ? parsed.missCount : 0,
+                firstMissAt: parsed.firstMissAt ?? null,
+                lastSeenAt: parsed.lastSeenAt ?? null,
+                stale: Boolean(parsed.stale),
+                staleSince: parsed.staleSince ?? null,
+                staleReason: parsed.staleReason ?? null,
               };
               const canonical = canonicalRepoKey(rec.key) ?? rec.key;
               const existing = recordsMap.get(canonical);
@@ -4605,10 +4765,25 @@ export class HookRouter {
     };
   }
 
+  /**
+   * Conservative pruning (#889). A missing orchestrator is never unlinked on
+   * first absence: the registration is kept and flagged stale until it has been
+   * absent for `graceSweeps` consecutive sweeps, and only then is a hard delete
+   * performed once `verifyAgentAbsent` confirms the agent is really gone. This
+   * preserves registrations across transient crashes, restarts, and quota
+   * errors, where the agent temporarily drops out of `paseo ls`.
+   */
   public async pruneOrchestrators(opts: {
     agentMap?: Map<string, WatchdogAgent> | null;
     orchestratorRecords?: OrchestratorRecord[];
     dryRun?: boolean;
+    /** Consecutive absences required before a hard delete (default 3, #889). */
+    graceSweeps?: number;
+    /** Confirms an absent agent is permanently gone; defaults to inspect + disk state (#889). */
+    verifyAgentAbsent?: (agentId: string) => Promise<boolean>;
+    /** Persisted metadata directory used by the default verifier (#889). */
+    agentsDir?: string;
+    now?: number;
   } = {}): Promise<PruneResult> {
     let agentMap = opts.agentMap ?? null;
     if (!agentMap) {
@@ -4618,22 +4793,132 @@ export class HookRouter {
       return { ok: false, error: "daemon unreachable", prunedCount: 0, pruned: [] };
     }
 
+    const graceSweeps = Math.max(1, opts.graceSweeps ?? ORCHESTRATOR_PRUNE_GRACE_SWEEPS);
+    const nowIso = new Date(opts.now ?? Date.now()).toISOString();
+    const verify = opts.verifyAgentAbsent ?? ((agentId: string) => this.verifyAgentAbsent(agentId, opts.agentsDir));
     const orchRecords = opts.orchestratorRecords ?? this.listOrchestratorRecords();
     const pruned: Array<{ key: string; agentId: string; reason: string }> = [];
+    const markedStale: StaleOrchestratorMark[] = [];
+    const recovered: string[] = [];
+    const seen = new Set<string>();
+
     for (const record of orchRecords) {
       const { key, agentId } = record;
-      if (!agentId || !agentMap.has(agentId)) {
-        if (!opts.dryRun) {
-          const res = this.deleteOrchestrator(key);
-          if (res.ok) {
-            pruned.push({ key, agentId, reason: "agent not found on daemon" });
+      if (!key || seen.has(key) || !agentId) continue;
+      seen.add(key);
+
+      if (agentMap.has(agentId)) {
+        // The agent is back: clear the stale bookkeeping so a transient outage
+        // never accumulates toward a prune (#889).
+        if ((record.missCount ?? 0) > 0 || record.stale) {
+          if (!opts.dryRun) {
+            this.persistOrchestratorRecord({
+              ...record,
+              missCount: 0,
+              firstMissAt: null,
+              lastSeenAt: nowIso,
+              stale: false,
+              staleSince: null,
+              staleReason: null,
+            });
           }
-        } else {
-          pruned.push({ key, agentId, reason: "agent not found on daemon (dry-run)" });
+          recovered.push(key);
         }
+        continue;
+      }
+
+      const missCount = (record.missCount ?? 0) + 1;
+      if (opts.dryRun) {
+        pruned.push({ key, agentId, reason: "agent not found on daemon (dry-run)" });
+        continue;
+      }
+
+      if (missCount < graceSweeps) {
+        const updated: OrchestratorRecord = {
+          ...record,
+          missCount,
+          firstMissAt: record.firstMissAt ?? nowIso,
+          stale: true,
+          staleSince: record.staleSince ?? nowIso,
+          staleReason: `agent absent from daemon (grace ${missCount}/${graceSweeps})`,
+        };
+        this.persistOrchestratorRecord(updated);
+        markedStale.push({ key, agentId, missCount, reason: updated.staleReason! });
+        continue;
+      }
+
+      // Grace exhausted: require positive confirmation before unlinking.
+      let absent = false;
+      try {
+        absent = await verify(agentId);
+      } catch (err) {
+        this.log(`[warn] prune verification failed for ${agentId}: ${err instanceof Error ? err.message : String(err)}`);
+        absent = false;
+      }
+
+      if (absent) {
+        const res = this.deleteOrchestrator(key);
+        if (res.ok) {
+          pruned.push({ key, agentId, reason: "agent verified absent on daemon" });
+        }
+      } else {
+        const updated: OrchestratorRecord = {
+          ...record,
+          missCount: graceSweeps,
+          firstMissAt: record.firstMissAt ?? nowIso,
+          stale: true,
+          staleSince: record.staleSince ?? nowIso,
+          staleReason: "agent absent from daemon (verification pending)",
+        };
+        this.persistOrchestratorRecord(updated);
+        markedStale.push({ key, agentId, missCount: graceSweeps, reason: updated.staleReason! });
       }
     }
-    return { ok: true, prunedCount: pruned.length, pruned, ...(opts.dryRun ? { dryRun: true } : {}) };
+
+    return {
+      ok: true,
+      prunedCount: pruned.length,
+      pruned,
+      markedStale,
+      recovered,
+      ...(opts.dryRun ? { dryRun: true } : {}),
+    };
+  }
+
+  /**
+   * Confirm an absent orchestrator is permanently gone (#889). Historical
+   * disk state is definitive when it marks the agent archived/closed; otherwise
+   * `paseo agent inspect` is consulted. An unreachable daemon or unparseable
+   * response is treated as "not confirmed" so a transient outage never deletes
+   * a live registration.
+   */
+  public async verifyAgentAbsent(agentId: string, agentsDir?: string): Promise<boolean> {
+    const id = String(agentId ?? "").trim();
+    if (!id) return false;
+
+    try {
+      const disk = loadAgentDiskMetadata(agentsDir ?? defaultAgentsDir());
+      const meta = disk.get(id);
+      if (meta) {
+        const status = String(meta.lastStatus ?? "").toLowerCase();
+        if (meta.archivedAt || status === "closed" || status === "archived" || status === "terminated") {
+          return true;
+        }
+      }
+    } catch {
+      // best-effort: unreadable disk state is not proof of absence
+    }
+
+    try {
+      const { stdout } = await execFileAsync("paseo", ["agent", "inspect", id, "--json"], { timeout: 5000 });
+      const parsed: any = JSON.parse(stdout);
+      if (parsed?.error?.code === "AGENT_NOT_FOUND") return true;
+      const resolved = parsed?.agent ?? parsed;
+      if (resolved?.Id || resolved?.id) return false;
+    } catch {
+      return false;
+    }
+    return false;
   }
 
   // -------------------------------------------------------------------------
@@ -5011,6 +5296,20 @@ export class HookRouter {
       actionable.push({ repo, count: res.candidates.length, dispatchable });
     }
 
+    // Self-heal staffing (#889): an enrolled repo with actionable board work but
+    // no active orchestrator gets one provisioned before the notification.
+    const autoEnsured: Array<{ repo: string; agentId?: string; status?: string; error?: string }> = [];
+    for (const item of actionable) {
+      try {
+        const ensured = await this.ensureUnstaffedEnrolledRepo(item.repo, { reason: "board sweep actionable" });
+        if (ensured) {
+          autoEnsured.push({ repo: item.repo, agentId: ensured.agentId, status: ensured.status, error: ensured.error });
+        }
+      } catch (err) {
+        this.log(`[warn] Auto-ensure failed for ${item.repo}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+
     let notified = 0;
     const frontDeskId = this.readFrontDesk()?.agentId ?? null;
     if (frontDeskId && (actionable.length > 0 || errors.length > 0)) {
@@ -5042,7 +5341,7 @@ export class HookRouter {
       }
     }
     this.log(
-      `[info] Board sweep complete: ${targets.length} repo(s) swept, ${actionable.length} actionable, ${prunedCount} orchestrator record(s) pruned, ${errors.length} failed`,
+      `[info] Board sweep complete: ${targets.length} repo(s) swept, ${actionable.length} actionable, ${prunedCount} orchestrator record(s) pruned, ${autoEnsured.length} auto-staffed, ${errors.length} failed`,
     );
     return {
       ok: true,
@@ -5051,6 +5350,7 @@ export class HookRouter {
       notified,
       prunedCount,
       ...(errors.length > 0 ? { errors } : {}),
+      ...(autoEnsured.length > 0 ? { autoEnsured } : {}),
     };
   }
 

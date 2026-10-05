@@ -2120,24 +2120,96 @@ describe("hook-router orchestrator pruning (#458)", () => {
     } catch {}
   });
 
-  it("deletes orchestrator records for agents that no longer exist on the daemon", async () => {
+  it("keeps a registration and marks it stale on first absence (#889)", async () => {
     const router = new HookRouter(null, { queueDir, stateDir, port: 0 });
     router.writeOrchestrator("repo-keep", "agent-keep");
-    router.writeOrchestrator("repo-prune", "agent-dead");
+    router.writeOrchestrator("repo-stale", "agent-dead");
 
     const result = await router.pruneOrchestrators({
       orchestratorRecords: [
         { key: "repo-keep", agentId: "agent-keep" },
-        { key: "repo-prune", agentId: "agent-dead" },
+        { key: "repo-stale", agentId: "agent-dead" },
       ],
       agentMap: new Map([["agent-keep", { id: "agent-keep", status: "idle" }]]),
     });
 
     assert.equal(result.ok, true);
-    assert.equal(result.prunedCount, 1);
-    assert.equal(result.pruned[0].key, "repo-prune");
+    assert.equal(result.prunedCount, 0, "first absence must never hard-delete");
+    assert.equal(result.markedStale?.length, 1);
+    assert.equal(result.markedStale?.[0]?.key, "repo-stale");
+    assert.equal(result.markedStale?.[0]?.missCount, 1);
     assert.equal(router.readOrchestrator("repo-keep")?.agentId, "agent-keep");
-    assert.equal(router.readOrchestrator("repo-prune"), null);
+
+    const stale = router.readOrchestrator("repo-stale");
+    assert.equal(stale?.agentId, "agent-dead", "registration must survive a transient absence");
+    assert.equal(stale?.stale, true);
+    assert.equal(stale?.missCount, 1);
+  });
+
+  it("clears stale markers when an absent agent reappears (#889)", async () => {
+    const router = new HookRouter(null, { queueDir, stateDir, port: 0 });
+    router.writeOrchestrator("repo-transient", "agent-flaky");
+
+    const first = await router.pruneOrchestrators({
+      orchestratorRecords: router.listOrchestratorRecords(),
+      agentMap: new Map(),
+    });
+    assert.equal(first.prunedCount, 0);
+    assert.equal(router.readOrchestrator("repo-transient")?.stale, true);
+
+    const second = await router.pruneOrchestrators({
+      orchestratorRecords: router.listOrchestratorRecords(),
+      agentMap: new Map([["agent-flaky", { id: "agent-flaky", status: "idle" }]]),
+    });
+    assert.equal(second.prunedCount, 0);
+    assert.deepEqual(second.recovered, ["repo-transient"]);
+    const recovered = router.readOrchestrator("repo-transient");
+    assert.equal(recovered?.agentId, "agent-flaky");
+    assert.equal(recovered?.stale, false);
+    assert.equal(recovered?.missCount, 0);
+  });
+
+  it("hard-deletes only after the grace window and positive verification (#889)", async () => {
+    const router = new HookRouter(null, { queueDir, stateDir, port: 0 });
+    router.writeOrchestrator("repo-gone", "agent-gone");
+    const verified: string[] = [];
+    const opts = {
+      agentMap: new Map<string, WatchdogAgent>(),
+      verifyAgentAbsent: async (id: string) => {
+        verified.push(id);
+        return true;
+      },
+    };
+
+    const first = await router.pruneOrchestrators({ ...opts, orchestratorRecords: router.listOrchestratorRecords() });
+    assert.equal(first.prunedCount, 0);
+    const second = await router.pruneOrchestrators({ ...opts, orchestratorRecords: router.listOrchestratorRecords() });
+    assert.equal(second.prunedCount, 0);
+    assert.equal(verified.length, 0, "verification must not run during the grace window");
+
+    const third = await router.pruneOrchestrators({ ...opts, orchestratorRecords: router.listOrchestratorRecords() });
+    assert.equal(third.prunedCount, 1);
+    assert.equal(third.pruned[0].key, "repo-gone");
+    assert.deepEqual(verified, ["agent-gone"]);
+    assert.equal(router.readOrchestrator("repo-gone"), null);
+  });
+
+  it("keeps the registration stale when verification cannot confirm absence (#889)", async () => {
+    const router = new HookRouter(null, { queueDir, stateDir, port: 0 });
+    router.writeOrchestrator("repo-unconfirmed", "agent-unconfirmed");
+    const opts = {
+      agentMap: new Map<string, WatchdogAgent>(),
+      verifyAgentAbsent: async () => false,
+    };
+
+    for (let i = 0; i < 4; i++) {
+      await router.pruneOrchestrators({ ...opts, orchestratorRecords: router.listOrchestratorRecords() });
+    }
+
+    const record = router.readOrchestrator("repo-unconfirmed");
+    assert.equal(record?.agentId, "agent-unconfirmed");
+    assert.equal(record?.stale, true);
+    assert.equal(record?.missCount, 3);
   });
 
   it("deleteOrchestrator reports not found on a repeat delete", () => {
@@ -2362,7 +2434,7 @@ describe("hook-router HTTP handoff, prune, and board sweep routes (#458)", () =>
     try {
       writeFileSync(
         join(binDir, "paseo"),
-        `#!/bin/sh\nif [ "$1" = "ls" ] && [ "$2" = "--json" ]; then\n  printf '%s' '${JSON.stringify(agents)}'\n  exit 0\nfi\nexit 127\n`,
+        `#!/bin/sh\nif [ "$1" = "ls" ] && [ "$2" = "--json" ]; then\n  printf '%s' '${JSON.stringify(agents)}'\n  exit 0\nfi\nif [ "$1" = "agent" ] && [ "$2" = "inspect" ]; then\n  printf '%s' '{"error":{"code":"AGENT_NOT_FOUND","message":"Agent not found"}}'\n  exit 0\nfi\nexit 127\n`,
         { mode: 0o755 },
       );
       process.env.PATH = `${binDir}:${prevPath ?? ""}`;
@@ -2397,15 +2469,18 @@ describe("hook-router HTTP handoff, prune, and board sweep routes (#458)", () =>
     assert.equal(afterBody.handoffPath, router.handoffPath());
   });
 
-  it("prunes stale orchestrators via POST /orchestrators/prune", async () => {
+  it("prunes stale orchestrators via POST /orchestrators/prune after the grace window (#889)", async () => {
     router.writeOrchestrator("repo-stale", "agent-does-not-exist");
     router.writeOrchestrator("repo-live", "agent-live");
-    const res = await withStubbedPaseoAgents([{ id: "agent-live", status: "running" }], () =>
-      fetch(`http://127.0.0.1:${router.port}/orchestrators/prune`, { method: "POST" }),
-    );
-    assert.equal(res.status, 200);
-    const body = await res.json();
-    assert.equal(body.ok, true);
+    let body: any = null;
+    await withStubbedPaseoAgents([{ id: "agent-live", status: "running" }], async () => {
+      for (let i = 0; i < 3; i++) {
+        const res = await fetch(`http://127.0.0.1:${router.port}/orchestrators/prune`, { method: "POST" });
+        assert.equal(res.status, 200);
+        body = await res.json();
+        assert.equal(body.ok, true);
+      }
+    });
     assert.equal(body.prunedCount, 1);
     assert.equal(body.pruned[0].key, "repo-stale");
     assert.equal(router.readOrchestrator("repo-live")?.agentId, "agent-live");
@@ -4093,6 +4168,49 @@ describe("hook-router ensure-orchestrator deterministic resolution and idempoten
     assert.equal(res.repo, "unknown/repo");
   });
 
+  it("skips detach when the orchestrator spawned as a top-level peer (#889)", async () => {
+    const detachCalls: string[] = [];
+    (router as any).hasParentAgentLabel = async () => false;
+    (router as any).detachAgent = async (id: string) => {
+      detachCalls.push(id);
+      return true;
+    };
+
+    const res = await router.ensureOrchestrator({ repo: "xpufx-org/paseo" });
+    assert.equal(res.ok, true);
+    assert.equal(detachCalls.length, 0, "a top-level peer must not be detached");
+  });
+
+  it("detaches an orchestrator that still inherited a parent (#889)", async () => {
+    const detachCalls: string[] = [];
+    (router as any).hasParentAgentLabel = async () => true;
+    (router as any).detachAgent = async (id: string) => {
+      detachCalls.push(id);
+      return true;
+    };
+
+    const res = await router.ensureOrchestrator({ repo: "xpufx-org/paseo" });
+    assert.equal(res.ok, true);
+    assert.deepEqual(detachCalls, ["agent-1"]);
+  });
+
+  it("reads the parent label from the daemon ref (#889)", async () => {
+    const mockPaseo = {
+      agents: {
+        ref: () => ({ current: () => ({ id: "agent-parent", labels: { "paseo.parent-agent-id": "frontdesk-1" } }) }),
+      },
+    } as any;
+    (router as any).activePaseo = mockPaseo;
+    assert.equal(await router.hasParentAgentLabel("agent-parent"), true);
+
+    const peerPaseo = {
+      agents: { ref: () => ({ current: () => ({ id: "agent-peer", labels: {} }) }) },
+    } as any;
+    (router as any).activePaseo = peerPaseo;
+    assert.equal(await router.hasParentAgentLabel("agent-peer"), false);
+    (router as any).activePaseo = null;
+  });
+
   it("deterministically resolves workspace and provisions orchestrator defaulting to yolo mode", async () => {
     const res = await router.ensureOrchestrator({ repo: "xpufx-org/paseo" });
     assert.equal(res.ok, true);
@@ -4463,13 +4581,15 @@ describe("board sweep auto-reconciliation (#794)", () => {
     } catch {}
   });
 
-  it("reports actionable repos without auto-provisioning an orchestrator", async () => {
+  it("does not auto-provision an unenrolled repo with actionable work (#889)", async () => {
+    (router as any).fetchAgentMap = async () => new Map();
     const sweep = await router.runBoardSweep(["xpufx-org/paseo"]);
     assert.equal(sweep.ok, true);
     assert.equal(sweep.swept, 1);
     assert.equal(sweep.actionable.length, 1);
     assert.equal(sweep.prunedCount, 0);
-    assert.equal(spawnedCalls.length, 0);
+    assert.equal(sweep.autoEnsured, undefined);
+    assert.equal(spawnedCalls.length, 0, "only enrolled repos are auto-staffed");
 
     assert.equal(deliveredMessages.length, 1);
     assert.equal(deliveredMessages[0].dest, "front-desk-1");
@@ -4479,14 +4599,80 @@ describe("board sweep auto-reconciliation (#794)", () => {
     );
   });
 
-  it("prunes orchestrator records whose agents are absent from the daemon", async () => {
+  it("auto-staffs an enrolled repo with pending work and no active orchestrator (#889)", async () => {
+    router.enrollRepo("xpufx-org/paseo");
+    (router as any).fetchAgentMap = async () => new Map();
+
+    const sweep = await router.runBoardSweep(["xpufx-org/paseo"]);
+
+    assert.equal(sweep.actionable.length, 1);
+    assert.equal(sweep.autoEnsured?.length, 1);
+    assert.match(sweep.autoEnsured?.[0]?.repo ?? "", /xpufx-org\/paseo$/);
+    assert.equal(sweep.autoEnsured?.[0]?.status, "provisioned");
+    assert.equal(spawnedCalls.length, 1, "expected one auto-provisioned orchestrator");
+    assert.equal(router.readOrchestrator("xpufx-org/paseo")?.agentId, "agent-1");
+  });
+
+  it("does not auto-staff an enrolled repo that already has an active orchestrator (#889)", async () => {
+    router.enrollRepo("xpufx-org/paseo");
+    router.writeOrchestrator("xpufx-org/paseo", "agent-live");
+    (router as any).fetchAgentMap = async () =>
+      new Map([["agent-live", { id: "agent-live", status: "idle" }]]);
+
+    const sweep = await router.runBoardSweep(["xpufx-org/paseo"]);
+
+    assert.equal(sweep.actionable.length, 1);
+    assert.equal(sweep.autoEnsured, undefined);
+    assert.equal(spawnedCalls.length, 0, "staffed repo must not spawn a duplicate");
+    assert.equal(router.readOrchestrator("xpufx-org/paseo")?.agentId, "agent-live");
+  });
+
+  it("auto-staffs an unorchestrated enrolled repo on webhook queue ingress (#889)", async () => {
+    router.enrollRepo("xpufx-org/paseo");
+    (router as any).fetchAgentMap = async () => new Map();
+
+    const res = await router.ingestWebhook("issues", {
+      repository: { full_name: "xpufx-org/paseo", html_url: "https://forge.mrs.uppidi.com/xpufx-org/paseo" },
+      issue: { number: 7, title: "Task" },
+      action: "opened",
+      sender: { login: "alice" },
+    });
+    assert.equal(res.frontDesk, false);
+
+    await new Promise((r) => setTimeout(r, 25));
+    assert.equal(spawnedCalls.length, 1, "webhook ingress should auto-staff the unstaffed repo");
+    assert.equal(router.readOrchestrator("xpufx-org/paseo")?.agentId, "agent-1");
+  });
+
+  it("does not auto-staff on webhook ingress when an orchestrator is registered (#889)", async () => {
+    router.enrollRepo("xpufx-org/paseo");
+    router.writeOrchestrator("xpufx-org/paseo", "agent-live");
+    (router as any).fetchAgentMap = async () =>
+      new Map([["agent-live", { id: "agent-live", status: "idle" }]]);
+
+    await router.ingestWebhook("issues", {
+      repository: { full_name: "xpufx-org/paseo", html_url: "https://forge.mrs.uppidi.com/xpufx-org/paseo" },
+      issue: { number: 8, title: "Task" },
+      action: "opened",
+      sender: { login: "alice" },
+    });
+
+    await new Promise((r) => setTimeout(r, 25));
+    assert.equal(spawnedCalls.length, 0);
+    assert.equal(router.readOrchestrator("xpufx-org/paseo")?.agentId, "agent-live");
+  });
+
+  it("marks an absent orchestrator stale on the first sweep and auto-heals it (#889)", async () => {
     router.writeOrchestrator("xpufx-org/paseo", "dead-agent");
     (router as any).fetchAgentMap = async () => new Map();
 
     const sweep = await router.runBoardSweep(["xpufx-org/paseo"]);
 
-    assert.equal(sweep.prunedCount, 1);
-    assert.equal(router.readOrchestrator("xpufx-org/paseo"), null);
+    assert.equal(sweep.prunedCount, 0, "first absence must never prune");
+    assert.equal(spawnedCalls.length, 1, "unstaffed enrolled repo is auto-healed");
+    const record = router.readOrchestrator("xpufx-org/paseo");
+    assert.equal(record?.agentId, "agent-1");
+    assert.equal(record?.stale, false);
   });
 
   it("does not treat error-status orchestrators as active", async () => {
