@@ -16,7 +16,7 @@ import {
   type TextStyle,
   type ViewStyle,
 } from "react-native";
-import { useRpcQuery } from "paseo-plugin-helper/client";
+import { useRpcQuery } from "paseo-plugin-helper/core";
 import type {
   PluginTheme,
   ResponsiveLayout,

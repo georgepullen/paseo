@@ -1,4 +1,4 @@
-import { shouldEmitSnapshotUpdate } from "paseo-plugin-helper/client";
+import { shouldEmitSnapshotUpdate } from "paseo-plugin-helper/core";
 import type { TopSettings } from "../shared/resources";
 
 export type SettingsListener = (settings: TopSettings) => void;

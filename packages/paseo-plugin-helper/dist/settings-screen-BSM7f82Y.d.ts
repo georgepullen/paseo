@@ -1,6 +1,6 @@
 import { ReactNode, ComponentType } from 'react';
-import { S as SettingsContract } from './settings-BNRcFeSP.cjs';
-import { o as HostSurfaceProps, P as PluginCleanup } from './host-whQ9H8yb.cjs';
+import { S as SettingsContract } from './settings-CP1gv9q3.js';
+import { h as HostSurfaceProps, P as PluginCleanup } from './host-CcdHvtoG.js';
 
 /**
  * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and

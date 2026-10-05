@@ -24,14 +24,10 @@ import {
   ActionBar,
   ForgeIcon,
   HighlightedText,
-  useRpcQuery,
-  useRpcMutation,
-  usePluginSettings,
   usePluginTheme,
-  copyToClipboard,
-  getClientHost,
-  type RenderModalProps,
 } from "paseo-plugin-helper/client";
+import { copyToClipboard, type RenderModalProps } from "paseo-plugin-helper/lifecycle";
+import { useRpcQuery, useRpcMutation, usePluginSettings, getClientHost } from "paseo-plugin-helper/core";
 import { hasFuzzyHighlight, normalizeSearchQuery } from "paseo-plugin-helper/shared";
 import {
   ATTENTION_LABELS,

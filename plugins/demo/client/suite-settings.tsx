@@ -8,9 +8,9 @@ import {
   KeyValue,
   KeyValueGroup,
   Toggle,
-  triggerHaptic,
   usePluginTheme,
 } from "paseo-plugin-helper/client";
+import { triggerHaptic } from "paseo-plugin-helper/lifecycle";
 import { useSuiteSettings } from "paseo-plugin-helper/core";
 
 export function SharedSuiteCard() {

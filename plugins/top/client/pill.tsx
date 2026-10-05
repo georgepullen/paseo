@@ -11,17 +11,19 @@ import { Icon } from "@getpaseo/plugin/client/react-native";
 import {
   registerComposerPill,
   registerSidebarSurface,
-  getClientHost,
-  type ComposerPillRegistrar,
+  triggerHaptic,
   type SidebarSurfaceRegistrar,
   type PillLiveContext,
   type RegisterComposerPillOptions,
+  type RenderModalProps,
+} from "paseo-plugin-helper/lifecycle";
+import {
+  getClientHost,
   useRpcQuery,
   usePluginSettings,
-  triggerHaptic,
+  type ComposerPillRegistrar,
   type HostPillProps,
-  type RenderModalProps,
-} from "paseo-plugin-helper/client";
+} from "paseo-plugin-helper/core";
 import {
   HostAboutSection,
   HostBadge,

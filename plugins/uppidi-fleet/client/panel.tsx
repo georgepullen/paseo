@@ -2,9 +2,8 @@ import React from "react";
 import type { PluginClientContext, PluginWorkspacePanelProps } from "@getpaseo/plugin/client";
 import {
   ModalBodyScrollOwnerContext,
-  PluginThemeProvider,
-  type VisualFlair,
-} from "paseo-plugin-helper/client";
+} from "paseo-plugin-helper/lifecycle";
+import { PluginThemeProvider, type VisualFlair } from "paseo-plugin-helper/client";
 import { UppidiFleetSurface, UppidiForgeSurface } from "./surface.js";
 
 export const UPPIDI_FLEET_FLAIR: VisualFlair = {

@@ -18,14 +18,15 @@ const root = path.resolve(here, "..");
  * stubbed React Native. The helper resolves through the workspace link to its
  * built `dist`, so tests exercise the same helper bundle the plugin ships.
  *
- * `paseo-plugin-helper/client` aliases to the helper *source* instead: the
- * helper's lifecycle registrars and headless hooks resolve host dependencies
- * (`getClientHost`, `initClientHelpers`) through that entry, and the published
- * `dist` builds each entry as a separate bundle with its own host state. A test
- * that calls `initClientHelpers` from the client entry would never reach a
- * separate bundle's copy, so surfaces would throw "used before
- * initClientHelpers". Aliasing to source gives tests the same single host
- * instance the esbuild-bundled plugin has in production.
+ * `paseo-plugin-helper/core` and `paseo-plugin-helper/lifecycle` alias to the
+ * helper *source* instead: the helper's lifecycle registrars and headless hooks
+ * resolve host dependencies (`getClientHost`, `initClientHelpers`) through the
+ * shared `client/host` module, and the published `dist` builds each entry as a
+ * separate bundle with its own host state. A test that calls `initClientHelpers`
+ * from the core entry would never reach a separate lifecycle bundle's copy, so
+ * surfaces would throw "used before initClientHelpers". Aliasing to source gives
+ * tests the same single host instance the esbuild-bundled plugin has in
+ * production.
  */
 export default defineConfig({
   root,
@@ -33,9 +34,13 @@ export default defineConfig({
     alias: {
       "node:test": path.resolve(root, "server/__node-test-shim.ts"),
       "react-native": path.resolve(root, "client/test-utils/react-native.ts"),
-      "paseo-plugin-helper/client": path.resolve(
+      "paseo-plugin-helper/core": path.resolve(
         root,
-        "../../packages/paseo-plugin-helper/src/client/index.ts",
+        "../../packages/paseo-plugin-helper/src/core/index.ts",
+      ),
+      "paseo-plugin-helper/lifecycle": path.resolve(
+        root,
+        "../../packages/paseo-plugin-helper/src/lifecycle/index.ts",
       ),
     },
   },

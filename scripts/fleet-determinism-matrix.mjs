@@ -653,7 +653,7 @@ const PARTS = [
     evidence: [
       [`panel.tsx:10-18`, "flair is a static `VisualFlair` literal"],
       [`panel.tsx:20-30`, "the panel delegates to the tree view"],
-      [`panel.tsx:37-46`, "registration wraps `client.addWorkspacePanel`"],
+      [`panel.tsx:36-45`, "registration wraps `client.addWorkspacePanel`"],
     ],
     note: "Chrome around the tree view. No model.",
   },

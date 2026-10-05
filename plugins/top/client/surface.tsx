@@ -17,7 +17,7 @@ import {
   HostThemeProvider,
   HostToggle,
 } from "./host-ui";
-import { usePluginSettings } from "paseo-plugin-helper/client";
+import { usePluginSettings } from "paseo-plugin-helper/core";
 import { formatBytes, formatUptime } from "paseo-plugin-helper/shared";
 import { PermissionAuditView } from "permission-audit/client";
 import {

@@ -26,10 +26,10 @@ import {
   Tabs,
   TextInput,
   Toggle,
-  copyToClipboard,
-  usePluginSettings,
   usePluginTheme,
 } from "paseo-plugin-helper/client";
+import { copyToClipboard } from "paseo-plugin-helper/lifecycle";
+import { usePluginSettings } from "paseo-plugin-helper/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { Easing, Text, View } from "react-native";

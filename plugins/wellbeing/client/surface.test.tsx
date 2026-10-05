@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { initClientHelpers } from "paseo-plugin-helper/client";
+import { initClientHelpers } from "paseo-plugin-helper/core";
 import { WellbeingSurface } from "./surface";
 
 // The real `react-native` entrypoint carries Flow syntax Vite cannot parse.

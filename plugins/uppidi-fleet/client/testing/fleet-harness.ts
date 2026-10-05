@@ -162,7 +162,8 @@ export async function getFleetHarness(): Promise<FleetRenderHarness> {
       const React = (await import("react")).default;
       const TestRenderer = (await import("react-test-renderer")).default;
       const { QueryClient, QueryClientProvider } = await import("@tanstack/react-query");
-      const { initClientHelpers, defaultDarkTheme } = await import("paseo-plugin-helper/client");
+      const { initClientHelpers } = await import("paseo-plugin-helper/core");
+      const { defaultDarkTheme } = await import("paseo-plugin-helper/client");
       const { UppidiFleetSurface } = await import("../surface.js");
       const { UppidiFleetTreeView, DenseAgentRow } = await import("../tree-view.js");
       const { UppidiFleetPanel } = await import("../panel.js");

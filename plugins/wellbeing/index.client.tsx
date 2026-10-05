@@ -9,7 +9,8 @@ import {
   TextInput as HostTextInput,
   copyText,
 } from "@getpaseo/plugin/client/react-native";
-import { initClientHelpers, registerSidebarSurface } from "paseo-plugin-helper/client";
+import { initClientHelpers } from "paseo-plugin-helper/core";
+import { registerSidebarSurface } from "paseo-plugin-helper/lifecycle";
 import { WellbeingSurface } from "./client/surface.js";
 
 initClientHelpers({

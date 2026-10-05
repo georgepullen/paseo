@@ -17,11 +17,9 @@ import {
   TextInput,
   Toggle,
   spacing,
-  usePluginSettings,
-  useRpcMutation,
-  useRpcQuery,
   type TabItem,
 } from "paseo-plugin-helper/client";
+import { usePluginSettings, useRpcMutation, useRpcQuery } from "paseo-plugin-helper/core";
 import {
   COMMAND_NAME_HINT,
   SUGGESTED_PREFIX,

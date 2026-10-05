@@ -37,14 +37,17 @@ describe("permission-logger surface", () => {
 });
 
 describe("permission-logger client/ migration (paseo#847 Phase 3)", () => {
-  it("keeps only lifecycle engines and host-seam types from paseo-plugin-helper/client", () => {
+  it("keeps lifecycle engines and the host seam off paseo-plugin-helper/client", () => {
     const entry = readSource("index.client.tsx");
     const surface = readSource("client/surface.tsx");
     for (const source of [entry, surface]) {
-      expect(source).not.toMatch(/import\s*\{[^}]*\b(ModalBody|DataTable|SearchInput|usePluginTheme|PluginThemeProvider|Badge|Button|EmptyState)\b[^}]*\}\s*from\s*"paseo-plugin-helper\/client"/);
+      expect(source).not.toMatch(/from\s*["']paseo-plugin-helper\/client["']/);
     }
+    expect(entry).toContain('from "paseo-plugin-helper/lifecycle"');
+    expect(entry).toContain('from "paseo-plugin-helper/core"');
     expect(entry).toContain("initClientHelpers");
     expect(entry).toContain("registerSidebarSurface");
+    expect(surface).toContain("PluginSurfaceProps");
   });
 
   it("carries a vendored paseo-plugin-helper/ui publish tree", () => {

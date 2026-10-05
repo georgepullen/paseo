@@ -55,6 +55,9 @@ export type {
   HostAgentsApi,
   HostAgentRef,
   HostAgentUpdate,
+  ComposerPillRegistrar,
+  HostPillProps,
+  HostSurfaceProps,
   PluginCleanup,
 } from "../client/host.js";
 

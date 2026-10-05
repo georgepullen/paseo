@@ -1,4 +1,4 @@
-import { P as PluginCleanup } from './host-whQ9H8yb.js';
+import { P as PluginCleanup } from './host-CcdHvtoG.cjs';
 
 /**
  * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and

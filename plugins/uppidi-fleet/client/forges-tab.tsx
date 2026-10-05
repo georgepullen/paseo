@@ -13,8 +13,6 @@ import {
   Row,
   Stack,
   ModalBody,
-  useRpcQuery,
-  getClientHost,
   TicketLifecycleView,
   NewIssueComposer,
   MarkdownLite,
@@ -23,6 +21,7 @@ import {
   ScopedLabelGroup,
   InteractiveRow,
 } from "paseo-plugin-helper/client";
+import { useRpcQuery, getClientHost } from "paseo-plugin-helper/core";
 import { useFleetTheme } from "./theme.js";
 import { defineContract } from "paseo-plugin-helper/shared";
 import { z } from "zod";

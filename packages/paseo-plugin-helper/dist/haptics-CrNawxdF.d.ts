@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { ReactNode, ComponentType } from 'react';
-import { p as HostPillProps, q as ComposerPillRegistrar, P as PluginCleanup, o as HostSurfaceProps, r as HostAgentPanelProps, t as HostWorkspacePanelProps, h as HostToast } from './host-whQ9H8yb.cjs';
-import { V as VisualFlair } from './flair-Bn-9stbh.cjs';
+import { f as HostPillProps, a as ComposerPillRegistrar, P as PluginCleanup, h as HostSurfaceProps, r as HostAgentPanelProps, t as HostWorkspacePanelProps, k as HostToast } from './host-CcdHvtoG.js';
+import { V as VisualFlair } from './flair-Bn-9stbh.js';
 
 /**
  * Scroll-ownership signal for `ModalBody`.

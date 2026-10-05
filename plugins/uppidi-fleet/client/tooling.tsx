@@ -13,9 +13,8 @@ import {
   type SelectOption,
   Stack,
   TextInput,
-  useRpcQuery,
-  useRpcMutation,
 } from "paseo-plugin-helper/client";
+import { useRpcQuery, useRpcMutation } from "paseo-plugin-helper/core";
 import { useFleetTheme } from "./theme.js";
 import {
   uppidiFleetToolListContract,

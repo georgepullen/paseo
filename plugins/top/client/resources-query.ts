@@ -4,7 +4,7 @@ import {
   sharedSnapshotKey,
   normalizeSnapshotScope,
   type UseAutoRefreshQueryOptions,
-} from "paseo-plugin-helper/client";
+} from "paseo-plugin-helper/core";
 import {
   getSystemResourcesRpc,
   getCustomPillsRpc,

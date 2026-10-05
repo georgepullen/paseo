@@ -12,7 +12,7 @@ import {
   HostThemeProvider,
   getStatusColor,
 } from "./host-ui";
-import { usePluginSettings } from "paseo-plugin-helper/client";
+import { usePluginSettings } from "paseo-plugin-helper/core";
 import {
   formatBytes,
   formatUptime,

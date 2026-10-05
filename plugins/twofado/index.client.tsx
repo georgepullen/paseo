@@ -8,11 +8,9 @@ import {
   SettingsSelect,
   SettingsSwitch,
 } from "@getpaseo/plugin/client/ui";
-import {
-  initClientHelpers,
-  registerHelperSettingsScreen,
-  registerSidebarSurface,
-} from "paseo-plugin-helper/client";
+import { initClientHelpers } from "paseo-plugin-helper/core";
+import { registerSidebarSurface } from "paseo-plugin-helper/lifecycle";
+import { registerHelperSettingsScreen } from "paseo-plugin-helper/client";
 import {
   ApprovalHeaderIcon,
   ApprovalSurface,

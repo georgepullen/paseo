@@ -3,7 +3,7 @@ import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
 import { ScrollView, Text, View } from "react-native";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { initClientHelpers } from "paseo-plugin-helper/client";
+import { initClientHelpers } from "paseo-plugin-helper/core";
 import {
   PermissionAuditThemeProvider,
   PermissionAuditView,

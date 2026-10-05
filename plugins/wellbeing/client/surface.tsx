@@ -3,12 +3,11 @@ import { View, Text, ActivityIndicator } from "react-native";
 import {
   Button,
   usePluginTheme,
-  useRpcQuery,
-  useRpcMutation,
   ProgressBar,
   Row,
   Stack,
 } from "paseo-plugin-helper/client";
+import { useRpcQuery, useRpcMutation } from "paseo-plugin-helper/core";
 import {
   statusRpc,
   toggleBedModeRpc,

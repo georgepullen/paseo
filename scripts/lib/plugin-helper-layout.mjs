@@ -21,16 +21,16 @@ import path from "node:path";
 // "client" also has to vendor "lifecycle". Plugins that still render the ui/
 // adapter layer keep vendoring "ui".
 export const PLUGINS = {
-  "top": ["client", "lifecycle", "ui", "server", "shared"],
-  "mcp-tools": ["client", "lifecycle", "ui", "server", "shared", "mcp"],
+  "top": ["client", "lifecycle", "core", "ui", "server", "shared"],
+  "mcp-tools": ["client", "lifecycle", "core", "ui", "server", "shared", "mcp"],
   "demo": ["client", "lifecycle", "core", "ui", "server", "shared"],
-  "forges": ["client", "lifecycle", "ui", "server", "shared"],
-  "slash": ["client", "lifecycle", "ui", "server", "shared"],
-  "x-comms": ["client", "lifecycle", "ui", "server", "shared", "mcp"],
-  "twofado": ["client", "lifecycle", "ui", "server", "shared"],
-  "plugin-updates": ["client", "lifecycle", "ui", "server", "shared"],
-  "wellbeing": ["client", "lifecycle", "ui", "server", "shared"],
-  "permission-logger": ["client", "lifecycle", "ui", "server", "shared"],
+  "forges": ["client", "lifecycle", "core", "ui", "server", "shared"],
+  "slash": ["client", "lifecycle", "core", "ui", "server", "shared"],
+  "x-comms": ["client", "lifecycle", "core", "ui", "server", "shared", "mcp"],
+  "twofado": ["client", "lifecycle", "core", "ui", "server", "shared"],
+  "plugin-updates": ["client", "lifecycle", "core", "ui", "server", "shared"],
+  "wellbeing": ["client", "lifecycle", "core", "ui", "server", "shared"],
+  "permission-logger": ["client", "lifecycle", "core", "ui", "server", "shared"],
 };
 
 export const TREES = ["client", "lifecycle", "core", "ui", "server", "shared", "mcp"];

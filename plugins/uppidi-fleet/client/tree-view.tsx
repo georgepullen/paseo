@@ -16,10 +16,9 @@ import {
   Stack,
   StatusDot,
   TextInput,
-  copyToClipboard,
-  useRpcMutation,
-  useRpcQuery,
 } from "paseo-plugin-helper/client";
+import { copyToClipboard } from "paseo-plugin-helper/lifecycle";
+import { useRpcMutation, useRpcQuery } from "paseo-plugin-helper/core";
 import { useFleetTheme } from "./theme.js";
 import { MetricsBar } from "./metrics-bar.js";
 import { useToast } from "@getpaseo/plugin/client/react-native";

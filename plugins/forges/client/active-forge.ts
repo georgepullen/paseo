@@ -8,7 +8,7 @@ import {
   resolveForgeTarget,
   type ForgeRepoIdentity,
 } from "../shared/issues.js";
-import { usePluginSettings, useRpcQuery } from "paseo-plugin-helper/client";
+import { usePluginSettings, useRpcQuery } from "paseo-plugin-helper/core";
 
 /** Workspace directory backing an agent, or undefined while it cannot resolve. */
 export function useAgentDirectory(agentId: string): string | undefined {

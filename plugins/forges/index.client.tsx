@@ -1,12 +1,12 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
 import { useRpc } from "@getpaseo/plugin/client";
 import { Icon, Modal, useToast, ScrollView, FlatList, TextInput as HostTextInput, copyText } from "@getpaseo/plugin/client/react-native";
+import { initClientHelpers } from "paseo-plugin-helper/core";
 import {
-  initClientHelpers,
   registerComposerPill,
   registerSidebarSurface,
   registerWorkspacePanel,
-} from "paseo-plugin-helper/client";
+} from "paseo-plugin-helper/lifecycle";
 import {
   ISSUES_PILL_ID,
   ForgeIssuesModal,

@@ -9,7 +9,7 @@ import {
   TextInput as HostTextInput,
   copyText,
 } from "@getpaseo/plugin/client/react-native";
-import { initClientHelpers } from "paseo-plugin-helper/client";
+import { initClientHelpers } from "paseo-plugin-helper/core";
 import { contributeClient } from "./client/pill";
 import { TopTimelineTelemetryCard } from "./client/telemetry";
 import { TurnCounterPanel } from "./client/turn-panel";

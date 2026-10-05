@@ -517,58 +517,30 @@ test("every top pill variant shares one centered presentation model", () => {
   );
 });
 
-test("no deprecated client/ UI-kit imports remain in the plugin", () => {
-  // Sanctioned `client/` imports per docs/client-migration.md: the host seam,
-  // headless hooks, lifecycle registrars, and pure helpers. Everything else in
-  // the deprecated bespoke UI kit must be gone.
-  const sanctioned = new Set([
-    "initClientHelpers",
-    "getClientHost",
-    "useRpcQuery",
-    "useRpcMutation",
-    "useAutoRefreshQuery",
-    "usePluginSettings",
-    "useSharedPluginSettings",
-    "registerComposerPill",
-    "registerSidebarSurface",
-    "registerWorkspacePanel",
-    "registerAgentPanel",
-    "registerCommandCenterItem",
-    "registerCustomPills",
-    "sharedSnapshotKey",
-    "normalizeSnapshotScope",
-    "shouldEmitSnapshotUpdate",
-    "copyToClipboard",
-    "triggerHaptic",
-    // Structural types for the host seam and lifecycle registrars.
-    "ComposerPillRegistrar",
-    "SidebarSurfaceRegistrar",
-    "PillLiveContext",
-    "RegisterComposerPillOptions",
-    "HostPillProps",
-    "RenderModalProps",
-    "UseAutoRefreshQueryOptions",
-  ]);
-  const clientDir = path.join(__dirname, "..", "client");
-  const sources = fs
-    .readdirSync(clientDir, { recursive: true })
+test("no paseo-plugin-helper/client imports remain in the plugin", () => {
+  // #937: the deprecated client/ bespoke UI kit is gone; the host seam and
+  // headless hooks live in `paseo-plugin-helper/core`, and lifecycle
+  // registrars in `paseo-plugin-helper/lifecycle`.
+  const pluginDir = path.join(__dirname, "..");
+  const offenders = fs
+    .readdirSync(pluginDir, { recursive: true })
     .filter(
       (entry): entry is string =>
-        typeof entry === "string" && /\.(ts|tsx)$/.test(entry) && !/\.test\.(ts|tsx)$/.test(entry),
+        typeof entry === "string" &&
+        /\.(ts|tsx)$/.test(entry) &&
+        !entry.split(path.sep).includes("vendor") &&
+        !entry.split(path.sep).includes("node_modules") &&
+        !/\.test\.(ts|tsx)$/.test(entry),
     )
-    .map((entry) => fs.readFileSync(path.join(clientDir, entry), "utf8"));
-  const forbidden = sources.flatMap((source) => {
-    const imports = [...source.matchAll(/import\s*\{([^}]*)\}\s*from "paseo-plugin-helper\/client"/g)];
-    return imports.flatMap((match) =>
-      [...match[1].matchAll(/([A-Za-z]+)/g)]
-        .map((m) => m[1])
-        .filter((name) => name !== "type" && !sanctioned.has(name)),
+    .filter((entry) =>
+      /from\s+["']paseo-plugin-helper\/client["']/.test(
+        fs.readFileSync(path.join(pluginDir, entry), "utf8"),
+      ),
     );
-  });
   assert.deepEqual(
-    forbidden,
+    offenders,
     [],
-    `deprecated client/ UI-kit imports remain: ${[...new Set(forbidden)].join(", ")} — migrate to host SDK primitives`,
+    `paseo-plugin-helper/client imports remain: ${offenders.join(", ")} — migrate to core/lifecycle`,
   );
 });
 

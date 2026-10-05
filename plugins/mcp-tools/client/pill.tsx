@@ -1,9 +1,5 @@
 import { useRpc } from "@getpaseo/plugin/client";
 import { Icon, useToast, ScrollView, FlatList, TextInput as HostTextInput, copyText } from "@getpaseo/plugin/client/react-native";
-import {
-  initClientHelpers,
-  type ComposerPillRegistrar,
-} from "paseo-plugin-helper/client";
 
 initClientHelpers({ Icon, Modal, useRpc, useToast, copyText, ScrollView, FlatList, TextInput: HostTextInput });
 import { useMemo, useState } from "react";
@@ -25,14 +21,11 @@ import {
   Tabs,
   TextInput,
   Toggle,
-  copyToClipboard,
-  registerComposerPill,
-  triggerHaptic,
-  usePluginSettings,
   usePluginTheme,
-  type RenderModalProps,
   type TabItem,
 } from "paseo-plugin-helper/client";
+import { copyToClipboard, registerComposerPill, triggerHaptic, type RenderModalProps } from "paseo-plugin-helper/lifecycle";
+import { initClientHelpers, usePluginSettings, type ComposerPillRegistrar } from "paseo-plugin-helper/core";
 import { useMcpHealthQuery, useMcpQuery } from "./mcp-query";
 import {
   callMcpTool,

@@ -2,12 +2,10 @@ import React, { useEffect, useState } from "react";
 import { Text, View } from "react-native";
 import { useRpc } from "@getpaseo/plugin/client";
 import { Icon, Modal, useToast, ScrollView, FlatList, TextInput as HostTextInput, copyText } from "@getpaseo/plugin/client/react-native";
-import { type ComposerPillRegistrar } from "paseo-plugin-helper/client";
 
 
 initClientHelpers({ Icon, Modal, useRpc, useToast, copyText, ScrollView, FlatList, TextInput: HostTextInput });
 import {
-  registerComposerPill,
   PluginThemeProvider,
   ActionBar,
   Card,
@@ -30,7 +28,6 @@ import {
   AttentionBeacon,
   Collapsible,
   SectionHeader,
-  triggerHaptic,
   usePluginTheme,
   useResponsive,
   inputRecipe,
@@ -39,12 +36,12 @@ import {
   tabStripRecipe,
   tabItemRecipe,
   badgeRecipe,
-  type RenderModalProps,
   type VisualFlair,
   type AttentionBeaconMode,
   type AttentionBeaconTone,
 } from "paseo-plugin-helper/client";
-import { useAutoRefreshQuery, useRpcMutation, usePluginSettings, initClientHelpers } from "paseo-plugin-helper/core";
+import { registerComposerPill, triggerHaptic, type RenderModalProps } from "paseo-plugin-helper/lifecycle";
+import { useAutoRefreshQuery, useRpcMutation, usePluginSettings, initClientHelpers, type ComposerPillRegistrar } from "paseo-plugin-helper/core";
 import { formatBytes, formatUptime } from "paseo-plugin-helper/shared";
 import {
   getDemoDataRpc,

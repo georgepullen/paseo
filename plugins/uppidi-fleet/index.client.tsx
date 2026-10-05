@@ -8,11 +8,9 @@ import {
   SettingsSelect,
   SettingsInput,
 } from "@getpaseo/plugin/client/ui";
-import {
-  initClientHelpers,
-  registerSidebarSurface,
-  registerHelperSettingsScreen,
-} from "paseo-plugin-helper/client";
+import { initClientHelpers } from "paseo-plugin-helper/core";
+import { registerSidebarSurface } from "paseo-plugin-helper/lifecycle";
+import { registerHelperSettingsScreen } from "paseo-plugin-helper/client";
 import { uppidiFleetSettingsContract } from "./shared/contracts.js";
 import { UppidiFleetSurface, UppidiForgeSurface } from "./client/surface.js";
 import {

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
-import { initClientHelpers } from "paseo-plugin-helper/client";
+import { initClientHelpers } from "paseo-plugin-helper/core";
 import {
   AskItem,
   buildSelectionPayload,

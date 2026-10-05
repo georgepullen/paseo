@@ -32,10 +32,8 @@ import {
   TextInput,
   TicketLifecycleView,
   NewIssueComposer,
-  useRpcQuery,
-  useRpcMutation,
-  usePluginSettings,
 } from "paseo-plugin-helper/client";
+import { useRpcQuery, useRpcMutation, usePluginSettings } from "paseo-plugin-helper/core";
 import { useFleetTheme } from "./theme.js";
 import { MetricsBar } from "./metrics-bar.js";
 import {

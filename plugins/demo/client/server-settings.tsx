@@ -15,11 +15,9 @@ import {
   StatusDot,
   TextInput,
   Toggle,
-  registerSidebarSurface,
-  triggerHaptic,
   usePluginTheme,
-  type SidebarSurfaceRegistrar,
 } from "paseo-plugin-helper/client";
+import { registerSidebarSurface, triggerHaptic, type SidebarSurfaceRegistrar } from "paseo-plugin-helper/lifecycle";
 import { useRpcQuery, useRpcMutation } from "paseo-plugin-helper/core";
 import {
   DEMO_SERVER_SETTINGS_EXPECTED_PATH,

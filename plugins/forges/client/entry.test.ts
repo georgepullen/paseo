@@ -27,11 +27,11 @@ describe("forges client entry contract (#783)", () => {
   it("registers the workspace panel via registerWorkspacePanel (issue #783)", () => {
     const source = readSource("index.client.tsx");
 
-    // Must import registerWorkspacePanel from paseo-plugin-helper/client
+    // Must import registerWorkspacePanel from paseo-plugin-helper/lifecycle
     assert.match(
       source,
-      /import\s*\{[^}]*registerWorkspacePanel[^}]*\}\s*from\s*["']paseo-plugin-helper\/client["']/,
-      "index.client.tsx must import registerWorkspacePanel from paseo-plugin-helper/client",
+      /import\s*\{[^}]*registerWorkspacePanel[^}]*\}\s*from\s*["']paseo-plugin-helper\/lifecycle["']/,
+      "index.client.tsx must import registerWorkspacePanel from paseo-plugin-helper/lifecycle",
     );
 
     // Must call registerWorkspacePanel(client, { ... })

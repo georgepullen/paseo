@@ -63,14 +63,15 @@ a Paseo plugin client may import:
 | `CopyButton` | Host `copyText` + local button |
 | `EmptyState`, `SectionHeader`, `Collapsible`, `CommandBox`, `AboutSection`, `HighlightedText`, `TruncatedText`, `InteractiveRow`, `AttentionBeacon`, `Responsive` / `useResponsive` | Local composition per plugin; no host equivalent — keep them plugin-local, not shared |
 | `Row` / `Stack` / `Grid` / `ActionBar` / `FormRow` | Plain `react-native` `View` with flexbox |
-| `copyToClipboard` | Host `copyText` (via `initClientHelpers({ copyText })` or direct import) |
-| `triggerHaptic` | No host equivalent — keep plugin-local if still needed |
+| `copyToClipboard` | Host `copyText` (via `initClientHelpers({ copyText })` or direct import); the tiered helper stays in `paseo-plugin-helper/lifecycle` |
+| `triggerHaptic` | `paseo-plugin-helper/lifecycle` (no host equivalent) |
 | `Icon` | Host `Icon` (`@getpaseo/plugin/client/react-native`) |
-| `ForgeIcon`, `resolveForgeMark` | Keep from `client/` (pure resolver also in `paseo-plugin-helper/shared`) — no host equivalent yet |
-| `useRpcQuery`, `useRpcMutation`, `useAutoRefreshQuery` | Keep from `client/` — headless hooks, not UI (extraction to `core` tracked separately) |
-| `usePluginSettings`, `useSharedPluginSettings` | Keep from `client/` — headless hooks, not UI |
-| `registerComposerPill`, `registerSidebarSurface`, `registerWorkspacePanel`, `registerAgentPanel`, `registerCommandCenterItem`, `registerCustomPills` | Lifecycle engines, not design system — the engines now live in `paseo-plugin-helper/lifecycle` and stay re-exported from `client/` for compatibility |
-| `initClientHelpers` | **Still required** — the `ui/` adapters resolve host components through it |
+| `ForgeIcon`, `resolveForgeMark` | `resolveForgeMark` is in `paseo-plugin-helper/shared`; `ForgeIcon` still renders from `client/` (RN + legacy theme) — no host equivalent yet |
+| `useRpcQuery`, `useRpcMutation`, `useAutoRefreshQuery` | `paseo-plugin-helper/core` — headless hooks, not UI |
+| `usePluginSettings`, `useSharedPluginSettings` | `paseo-plugin-helper/core` — headless hooks, not UI |
+| `registerComposerPill`, `registerSidebarSurface`, `registerWorkspacePanel`, `registerAgentPanel`, `registerCustomPills` | Lifecycle engines, not design system — `paseo-plugin-helper/lifecycle` (they stay re-exported from `client/` for compatibility) |
+| `registerCommandCenterItem` | `paseo-plugin-helper/core` (headless command-center registrar) |
+| `initClientHelpers`, `getClientHost`, `host.ts` | `paseo-plugin-helper/core` — the host seam; **still required** because the `ui/` adapters resolve host components through it |
 
 ---
 
@@ -217,23 +218,29 @@ initClientHelpers({ Icon, Modal, useRpc, useToast, copyText, ScrollView, TextInp
 5. Swap settings fields to the host `@getpaseo/plugin/client/ui` primitives via `registerHelperSettingsScreen` from `ui/`.
 6. Replace `Row`/`Stack`/`Grid`/`ActionBar`/`FormRow` with plain `View` flexbox; keep `gap` values from the host layout, not a density scale.
 7. Move plugin-specific visuals (badges, gauges, tabs, about sections) into the plugin's own client code — deliberately local, not shared.
-8. Keep the headless hooks (`useRpcQuery`, `usePluginSettings`, …) importable from `client/` until their extraction lands. The lifecycle registrars (`registerComposerPill`, `registerSidebarSurface`, …) have moved to `paseo-plugin-helper/lifecycle` (client-safe, no frozen `client/` design system) and are still re-exported from `client/` for compatibility.
+8. Import the headless hooks (`useRpcQuery`, `usePluginSettings`, …) and the host seam (`initClientHelpers`) from `paseo-plugin-helper/core`, and the lifecycle registrars (`registerComposerPill`, `registerSidebarSurface`, …) from `paseo-plugin-helper/lifecycle`. They are still re-exported from `client/` for compatibility.
 9. Run the plugin's tests; then the repo suite (`npm test` at the root).
 
 ---
 
 ## 5. What stays in `client/`
 
-The following are **not** UI-design-system pieces and remain in `client/`
-until their tracked extraction (they are equally importable from `ui/` where
-noted):
+The headless and lifecycle pieces have moved out of `client/` (#938) and are
+importable from their new entries (#937):
 
-- Lifecycle engines: `registerComposerPill`, `registerSidebarSurface`,
-  `registerWorkspacePanel`, `registerAgentPanel`,
-  `registerCommandCenterItem`, `registerCustomPills`
-- Headless hooks: `useRpcQuery`, `useRpcMutation`, `useAutoRefreshQuery`,
-  `usePluginSettings`, `useSharedPluginSettings`
-- Host seam: `initClientHelpers`, `host.ts`
-- Settings renderer: `registerHelperSettingsScreen` (re-exported by `ui/`)
-- Pure helpers: `sharedSnapshotKey`, `shouldEmitSnapshotUpdate`,
-  `copyToClipboard`, `triggerHaptic`, `ForgeIcon` / `resolveForgeMark`
+- Lifecycle engines (`registerComposerPill`, `registerSidebarSurface`,
+  `registerWorkspacePanel`, `registerAgentPanel`, `registerCustomPills`),
+  `copyToClipboard`, `triggerHaptic`, the host theme/layout providers and the
+  scroll-owner context live in `paseo-plugin-helper/lifecycle`.
+- Headless hooks and seams (`initClientHelpers`, `getClientHost`, `host.ts`,
+  `useRpcQuery` / `useRpcMutation` / `useAutoRefreshQuery`,
+  `usePluginSettings` / `useSharedPluginSettings`, snapshot helpers,
+  `registerCommandCenterItem`, `resolveForgeMark`) live in
+  `paseo-plugin-helper/core`.
+
+The deprecated bespoke **UI kit** (components, styles, layout, theme/flair,
+`tickets`, `ForgeIcon`) still lives in `client/`. It is frozen and has no new
+home yet: migrating a plugin off it means composing the component locally from
+host SDK primitives, per section 2. Until then a plugin may keep its UI imports
+on `client/` while its headless/lifecycle imports use the new entries.
+`registerHelperSettingsScreen` stays on `client/` (re-exported by `ui/`).

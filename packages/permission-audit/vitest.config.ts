@@ -12,12 +12,12 @@ export default defineConfig({
       // parse; render tests stub it (same approach as the helper's own
       // ui/ conformance suite).
       "react-native": path.resolve(root, "src/__tests__/mocks/react-native.ts"),
-      // Alias the helper client entry to source: the view resolves its host
-      // dependencies through the client bundle, and the published `dist`
+      // Alias the helper core entry to source: the view resolves its host
+      // dependencies through the core bundle, and the published `dist`
       // builds each entry separately with its own host state. A test calling
-      // `initClientHelpers` from the client entry must reach the same source
+      // `initClientHelpers` from the core entry must reach the same source
       // graph the view under test imports.
-      "paseo-plugin-helper/client": path.resolve(helperSrc, "client/index.ts"),
+      "paseo-plugin-helper/core": path.resolve(helperSrc, "core/index.ts"),
     },
   },
 });

@@ -1,8 +1,8 @@
 import { StyleProp, ViewStyle, TextStyle } from 'react-native';
-import { a as PluginTheme, P as PlatformType, R as ResponsiveLayout, T as ThemeColors, S as StatusVariant } from './types-BKH2AGK1.cjs';
+import { a as PluginTheme, P as PlatformType, R as ResponsiveLayout, T as ThemeColors, S as StatusVariant } from './types-BKH2AGK1.js';
 import React__default, { ReactNode } from 'react';
-import { d as HostLayout } from './host-whQ9H8yb.cjs';
-import { D as DensityStyle, V as VisualFlair, S as SurfaceStyle } from './flair-Bn-9stbh.cjs';
+import { e as HostLayout } from './host-CcdHvtoG.js';
+import { D as DensityStyle, V as VisualFlair, S as SurfaceStyle } from './flair-Bn-9stbh.js';
 
 /**
  * @deprecated The `client/` bespoke UI kit is deprecated (paseo#847) and
