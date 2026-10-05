@@ -43,7 +43,7 @@ import {
   getStatusColor,
   useHostLayout,
   useHostTheme,
-} from "paseo-plugin-helper/ui";
+} from "./host-ui";
 import {
   formatBytes,
   formatUptime,
@@ -1014,7 +1014,17 @@ function MetricSurfaceMatrix({
   );
 }
 
-function ResourceModal({ theme, layout, workspaceId, agentId, initialTab, payload }: ResourceModalProps) {
+function ResourceModal(props: ResourceModalProps) {
+  return (
+    <HostThemeProvider theme={props.theme}>
+      <HostLayoutProvider layout={props.layout}>
+        <ResourceModalBody {...props} />
+      </HostLayoutProvider>
+    </HostThemeProvider>
+  );
+}
+
+function ResourceModalBody({ workspaceId, agentId, initialTab, payload }: ResourceModalProps) {
   const { colors } = useHostTheme();
   const { compact } = useHostLayout();
   // Host-density padding rhythm (the helper's "comfortable" scale): the host

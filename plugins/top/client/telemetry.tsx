@@ -11,7 +11,7 @@ import {
   HostStack,
   HostThemeProvider,
   getStatusColor,
-} from "paseo-plugin-helper/ui";
+} from "./host-ui";
 import { usePluginSettings } from "paseo-plugin-helper/client";
 import {
   formatBytes,

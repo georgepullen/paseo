@@ -568,7 +568,33 @@ test("no deprecated client/ UI-kit imports remain in the plugin", () => {
   assert.deepEqual(
     forbidden,
     [],
-    `deprecated client/ UI-kit imports remain: ${[...new Set(forbidden)].join(", ")} — migrate to paseo-plugin-helper/ui + host SDK primitives`,
+    `deprecated client/ UI-kit imports remain: ${[...new Set(forbidden)].join(", ")} — migrate to host SDK primitives`,
+  );
+});
+
+test("no paseo-plugin-helper/ui imports remain in the plugin", () => {
+  // #937 / #924: the helper ui/ entry is deleted; plugin UI is local
+  // composition over the host SDK now. Vendored copies are refreshed by
+  // vendor-sync and are not plugin imports.
+  const clientDir = path.join(__dirname, "..", "client");
+  const offenders = fs
+    .readdirSync(clientDir, { recursive: true })
+    .filter(
+      (entry): entry is string =>
+        typeof entry === "string" &&
+        /\.(ts|tsx)$/.test(entry) &&
+        !entry.split(path.sep).includes("vendor") &&
+        !/\.test\.(ts|tsx)$/.test(entry),
+    )
+    .filter((entry) =>
+      /from\s+["']paseo-plugin-helper\/ui["']/.test(
+        fs.readFileSync(path.join(clientDir, entry), "utf8"),
+      ),
+    );
+  assert.deepEqual(
+    offenders,
+    [],
+    `paseo-plugin-helper/ui imports remain: ${offenders.join(", ")}`,
   );
 });
 

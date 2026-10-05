@@ -13,7 +13,7 @@ import {
   HostStatusDot,
   useHostLayout,
   useHostTheme,
-} from "paseo-plugin-helper/ui";
+} from "./host-ui";
 import {
   aggregateFleet,
   type FleetHostSnapshot,

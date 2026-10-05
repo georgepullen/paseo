@@ -5,7 +5,7 @@ import {
   HostRow,
   HostStack,
   useHostTheme,
-} from "paseo-plugin-helper/ui";
+} from "./host-ui";
 
 export interface ChipOption<T extends string | number> {
   id: T;

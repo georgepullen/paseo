@@ -17,7 +17,7 @@ import {
   HostThemeProvider,
   useHostLayout,
   useHostTheme,
-} from "paseo-plugin-helper/ui";
+} from "./host-ui";
 import {
   currentTurn,
   fetchAllTurns,
