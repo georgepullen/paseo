@@ -14,58 +14,26 @@ boards, and router health — in one place.
 > components and occasional intervention by humans. All features may not work
 > 100% reliably.
 
-<table>
-  <tr>
-    <td colspan="2">
-      <figure>
-        <a href="https://raw.githubusercontent.com/xpufx/paseo/main/plugins/uppidi-fleet/screenshots/fleet-main.png"><img src="https://raw.githubusercontent.com/xpufx/paseo/main/plugins/uppidi-fleet/screenshots/fleet-main.png" alt="Uppidi Fleet Cockpit — the full surface: agent tree, board, queues and router health" width="100%" /></a>
-        <figcaption><strong>Uppidi Fleet Cockpit</strong> — full surface: agent tree, board, queues, and router health.</figcaption>
-      </figure>
-    </td>
-  </tr>
-  <tr>
-    <td>
-      <figure>
-        <a href="https://raw.githubusercontent.com/xpufx/paseo/main/plugins/uppidi-fleet/screenshots/fleet-kanban.png"><img src="https://raw.githubusercontent.com/xpufx/paseo/main/plugins/uppidi-fleet/screenshots/fleet-kanban.png" alt="Kanban board — drag-and-drop issue columns" width="100%" /></a>
-        <figcaption><strong>Kanban board</strong> — drag-and-drop issue columns.</figcaption>
-      </figure>
-    </td>
-    <td>
-      <figure>
-        <a href="https://raw.githubusercontent.com/xpufx/paseo/main/plugins/uppidi-fleet/screenshots/fleet-forge-issues.png"><img src="https://raw.githubusercontent.com/xpufx/paseo/main/plugins/uppidi-fleet/screenshots/fleet-forge-issues.png" alt="Forge issues — the board as source of truth" width="100%" /></a>
-        <figcaption><strong>Forge issues</strong> — board as source of truth.</figcaption>
-      </figure>
-    </td>
-  </tr>
-  <tr>
-    <td>
-      <figure>
-        <a href="https://raw.githubusercontent.com/xpufx/paseo/main/plugins/uppidi-fleet/screenshots/fleet-work-queue.png"><img src="https://raw.githubusercontent.com/xpufx/paseo/main/plugins/uppidi-fleet/screenshots/fleet-work-queue.png" alt="Work Queue — open issues, Fleet Needs Attention board and filter presets" width="100%" /></a>
-        <figcaption><strong>Work Queue</strong> — open issues, Fleet Needs Attention board, and filter presets.</figcaption>
-      </figure>
-    </td>
-    <td>
-      <figure>
-        <a href="https://raw.githubusercontent.com/xpufx/paseo/main/plugins/uppidi-fleet/screenshots/fleet-frontdesk-chat.png"><img src="https://raw.githubusercontent.com/xpufx/paseo/main/plugins/uppidi-fleet/screenshots/fleet-frontdesk-chat.png" alt="Front Desk chat — operator-facing liaison" width="100%" /></a>
-        <figcaption><strong>Front Desk chat</strong> — operator-facing liaison.</figcaption>
-      </figure>
-    </td>
-  </tr>
-  <tr>
-    <td>
-      <figure>
-        <a href="https://raw.githubusercontent.com/xpufx/paseo/main/plugins/uppidi-fleet/screenshots/fleet-settings.png"><img src="https://raw.githubusercontent.com/xpufx/paseo/main/plugins/uppidi-fleet/screenshots/fleet-settings.png" alt="Settings — hook service control, listen host and port" width="100%" /></a>
-        <figcaption><strong>Settings</strong> — hook service control, listen host and port.</figcaption>
-      </figure>
-    </td>
-    <td>
-      <figure>
-        <a href="https://raw.githubusercontent.com/xpufx/paseo/main/plugins/uppidi-fleet/screenshots/fleet-tooling.png"><img src="https://raw.githubusercontent.com/xpufx/paseo/main/plugins/uppidi-fleet/screenshots/fleet-tooling.png" alt="Tooling — agent tool configuration" width="100%" /></a>
-        <figcaption><strong>Tooling</strong> — agent tool configuration.</figcaption>
-      </figure>
-    </td>
-  </tr>
-</table>
+[![Uppidi Fleet Cockpit — full surface: agent tree, board, queues, and router health](screenshots/fleet-main.png)](screenshots/fleet-main.png)
+*Uppidi Fleet Cockpit — full surface: agent tree, board, queues, and router health.*
+
+[![Kanban board — drag-and-drop issue columns](screenshots/fleet-kanban.png)](screenshots/fleet-kanban.png)
+*Kanban board — drag-and-drop issue columns.*
+
+[![Forge issues — board as source of truth](screenshots/fleet-forge-issues.png)](screenshots/fleet-forge-issues.png)
+*Forge issues — board as source of truth.*
+
+[![Work Queue — open issues, Fleet Needs Attention board, and filter presets](screenshots/fleet-work-queue.png)](screenshots/fleet-work-queue.png)
+*Work Queue — open issues, Fleet Needs Attention board, and filter presets.*
+
+[![Front Desk chat — operator-facing liaison](screenshots/fleet-frontdesk-chat.png)](screenshots/fleet-frontdesk-chat.png)
+*Front Desk chat — operator-facing liaison.*
+
+[![Settings — hook service control, listen host and port](screenshots/fleet-settings.png)](screenshots/fleet-settings.png)
+*Settings — hook service control, listen host and port.*
+
+[![Tooling — agent tool configuration](screenshots/fleet-tooling.png)](screenshots/fleet-tooling.png)
+*Tooling — agent tool configuration.*
 
 This README is written for a **third party** who has never used the system and
 wants to stand one up for their own forge, repositories, models, and team
