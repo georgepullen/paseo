@@ -132,11 +132,11 @@ function metaOf(stampedPrompt) {
   return JSON.parse(v5[1]);
 }
 
-test("lists 11 tools under paseo_cross_daemon_*", async () => {
+test("lists 12 tools under x_comms_*", async () => {
   const { client, transport } = await startClient();
   try {
     const { tools } = await client.listTools();
-    assert.equal(tools.length, 11);
+    assert.equal(tools.length, 12);
     const names = tools.map((t) => t.name).sort();
     assert.ok(names.every((n) => n.startsWith(PREFIX)), `unexpected names: ${names.join(", ")}`);
     assert.deepEqual(names, [
@@ -150,6 +150,7 @@ test("lists 11 tools under paseo_cross_daemon_*", async () => {
       PREFIX + "logs",
       PREFIX + "remove_daemon",
       PREFIX + "send",
+      PREFIX + "spawn",
       PREFIX + "wait",
     ]);
     for (const t of tools) {
@@ -303,6 +304,71 @@ test("full pairing URL passes through untouched", async () => {
     });
     const agents = JSON.parse(textOf(res));
     assert.equal(agents[0].sawHost, RELAY_URL);
+  } finally {
+    await client.close();
+  }
+});
+
+test("spawn provisions a new agent via paseo run --background", async () => {
+  const { client, transport } = await startClient({}, tempRemotes({ hsi: DIRECT_HOST }));
+  try {
+    const res = await client.callTool({
+      name: `${PREFIX}spawn`,
+      arguments: {
+        daemon: "hsi",
+        prompt: "continue the discussion",
+        provider: "omp/zai/glm-5.3-flash",
+        thinking: "max",
+        cwd: "/home/george/3090_infra",
+        title: "3090-infra discussion",
+        label: ["origin=xcomms"],
+      },
+    });
+    const spawned = JSON.parse(textOf(res));
+    assert.equal(spawned.agentId, "spawned-agent-1");
+    assert.equal(spawned.daemon, "hsi");
+    assert.equal(spawned.sawHost, DIRECT_HOST);
+    assert.equal(spawned.sawBackground, true, "spawn must be fire-and-forget (--background)");
+    assert.equal(spawned.provider, "omp/zai/glm-5.3-flash");
+    assert.equal(spawned.cwd, "/home/george/3090_infra");
+    assert.equal(spawned.title, "3090-infra discussion");
+    assert.equal(spawned.sawThinking, "max");
+    assert.deepEqual(spawned.labels, ["origin=xcomms"]);
+    assert.equal(spawned.promptHead, "continue the discussion", "prompt is the bare initial task");
+  } finally {
+    await client.close();
+  }
+});
+
+test("spawn with daemon local omits --host (local home daemon)", async () => {
+  const { client, transport } = await startClient();
+  try {
+    const res = await client.callTool({
+      name: `${PREFIX}spawn`,
+      arguments: { daemon: "local", prompt: "local smoke", provider: "omp/zai/glm-5.3-flash:low" },
+    });
+    const spawned = JSON.parse(textOf(res));
+    assert.equal(spawned.agentId, "spawned-agent-1");
+    assert.equal(spawned.daemon, "local");
+    assert.equal(spawned.sawHost, null, "local spawn must not pass --host");
+    assert.equal(spawned.sawBackground, true);
+  } finally {
+    await client.close();
+  }
+});
+
+test("spawn surfaces the real CLI's provider requirement as a tool error", async () => {
+  const { client, transport } = await startClient(
+    { FAKE_PASEO_FAIL: "Provider is required" },
+    tempRemotes({ hsi: DIRECT_HOST }),
+  );
+  try {
+    const res = await client.callTool({
+      name: `${PREFIX}spawn`,
+      arguments: { daemon: "hsi", prompt: "no provider given" },
+    });
+    assert.equal(res.isError, true);
+    assert.match(textOf(res), /Provider is required/);
   } finally {
     await client.close();
   }

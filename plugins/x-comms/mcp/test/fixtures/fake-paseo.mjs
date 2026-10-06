@@ -32,6 +32,12 @@ const FLAG_ALLOWLISTS = {
   inspect: GLOBAL_FLAGS,
   ls: new Set([...GLOBAL_FLAGS, "-a", "--all", "-g", "--global", "--label", "--thinking"]),
   send: new Set([...GLOBAL_FLAGS, "--prompt", "--prompt-file", "--image", "--no-wait"]),
+  run: new Set([
+    ...GLOBAL_FLAGS, "-d", "--background", "--title", "--provider", "--model", "--thinking",
+    "--mode", "--new-workspace", "--worktree-slug", "--worktree-mode", "--new-branch", "--base",
+    "--branch", "--pr-number", "--forge", "--workspace", "--image", "--cwd", "--env", "--label",
+    "--wait-timeout", "--output-schema",
+  ]),
   logs: new Set([...GLOBAL_FLAGS, "-f", "--follow", "--tail", "--filter", "--since"]),
   wait: new Set([...GLOBAL_FLAGS, "--timeout"]),
   "permit ls": new Set(["--json", "--host", "--home", "-h", "--help"]),
@@ -120,6 +126,20 @@ switch (sub) {
     break;
   case "ls":
     respond([{ id: "agent-1", shortId: "agent-1", name: "fake-agent", status, sawHost: host }]);
+    break;
+  case "run":
+    respond({
+      agentId: "spawned-agent-1",
+      status: "running",
+      provider: argAfter("--provider"),
+      cwd: argAfter("--cwd"),
+      title: argAfter("--title"),
+      sawHost: host,
+      sawBackground: args.includes("--background"),
+      sawThinking: argAfter("--thinking"),
+      promptHead: prompt,
+      labels: args.flatMap((a, i) => (a === "--label" ? [args[i + 1]] : [])),
+    });
     break;
   case "send":
     respond({ ok: true, to: rest[0], sawHost: host, sawNoWait: args.includes("--no-wait"), promptHead: prompt });
