@@ -23,10 +23,12 @@ Four files, all under `plugins/x-comms/mcp/`:
 
 ## Syncing with upstream
 
+The fork's `main` = upstream `main` + this downstream patch.
+
 ```sh
 git remote add upstream https://github.com/xpufx/paseo   # once
 git fetch upstream
-git checkout feat/x-comms-spawn
+git checkout main
 git merge upstream/main          # or rebase; resolve in plugins/x-comms/mcp
 cd plugins/x-comms/mcp
 npm ci                           # esbuild must stay PINNED (0.27.7); the
@@ -34,7 +36,7 @@ npm ci                           # esbuild must stay PINNED (0.27.7); the
 node bundle.mjs                  # rebuild the committed artifact
 node --test test/*.test.mjs      # full suite must pass
 git add -A && git commit         # include the rebuilt bundle
-git push origin feat/x-comms-spawn
+git push origin main
 ```
 
 ## Deploy targets (installed copies)
