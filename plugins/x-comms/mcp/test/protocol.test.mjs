@@ -319,7 +319,7 @@ test("spawn provisions a new agent via paseo run --background", async () => {
         prompt: "continue the discussion",
         provider: "omp/zai/glm-5.3-flash",
         thinking: "max",
-        cwd: "/home/george/3090_infra",
+        cwd: "/home/dev-user/3090_infra",
         title: "3090-infra discussion",
         label: ["origin=xcomms"],
       },
@@ -330,7 +330,7 @@ test("spawn provisions a new agent via paseo run --background", async () => {
     assert.equal(spawned.sawHost, DIRECT_HOST);
     assert.equal(spawned.sawBackground, true, "spawn must be fire-and-forget (--background)");
     assert.equal(spawned.provider, "omp/zai/glm-5.3-flash");
-    assert.equal(spawned.cwd, "/home/george/3090_infra");
+    assert.equal(spawned.cwd, "/home/dev-user/3090_infra");
     assert.equal(spawned.title, "3090-infra discussion");
     assert.equal(spawned.sawThinking, "max");
     assert.deepEqual(spawned.labels, ["origin=xcomms"]);
