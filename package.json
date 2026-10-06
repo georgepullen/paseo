@@ -18,7 +18,9 @@
     "plugins/uppidi-fleet",
     "plugins/worktree-install",
     "plugins/wellbeing",
-    "plugins/permission-logger"
+    "plugins/permission-logger",
+    "plugins/paseo-research-feed",
+    "plugins/paseo-remote-power"
   ],
   "scripts": {
     "typecheck": "npm run typecheck --workspaces --if-present",
