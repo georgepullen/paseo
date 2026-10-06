@@ -1,0 +1,54 @@
+{
+  "name": "@georgepullen/paseo-research-feed",
+  "version": "0.1.0",
+  "description": "A human-gated research feed for Paseo: fetch public sources, rank them into a daily skim, then promote, discuss, shape, queue, and run the ideas you choose.",
+  "type": "module",
+  "private": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "stamp": "node -e \"import('paseo-plugin-helper/server').then(m => m.stampVersion({ targetFile: 'shared/version.ts' }))\"",
+    "typecheck": "tsc --noEmit",
+    "test": "node --test tests/store.test.ts tests/sources.test.ts tests/registry.test.ts"
+  },
+  "keywords": [
+    "paseo",
+    "plugin",
+    "research",
+    "arxiv",
+    "huggingface",
+    "openreview",
+    "feed"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@getpaseo/plugin": "^0.9.0",
+    "@tanstack/react-query": "^5.90.11",
+    "@types/react": "^19.0.10",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
+    "typescript": "^5.9.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/georgepullen/paseo.git",
+    "directory": "plugins/paseo-research-feed"
+  },
+  "files": [
+    "paseo-plugin.json",
+    "README.md",
+    "LICENSE",
+    "index.client.tsx",
+    "index.server.ts",
+    "client",
+    "server",
+    "shared",
+    "!**/*.test.ts",
+    "!**/*.test.tsx",
+    "!**/.DS_Store"
+  ]
+}

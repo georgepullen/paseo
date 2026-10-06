@@ -1,0 +1,5 @@
+{
+  "exempt": {
+    "no-raw-mcp-subprocess": "server/agent-client.ts is a minimal vendor-agnostic Agent Client Protocol (ACP) client: it spawns a native coding agent (claude/codex adapter) and drives a JSON-RPC session over stdio. ACP is not MCP — the helper's McpClient wraps MCP servers, which is the wrong seam for an agent session, so this plugin owns the one small client (as the upstream accelerator design it ports does)."
+  }
+}

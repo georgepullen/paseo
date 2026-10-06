@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title type="html">ArXiv Query: search_query=cat:cs.LG</title>
+  <id>arxiv:query</id>
+  <updated>2026-07-28T00:00:00-04:00</updated>
+  <entry>
+    <id>http://arxiv.org/abs/2607.12345v2</id>
+    <updated>2026-07-27T18:00:00Z</updated>
+    <published>2026-07-26T09:00:00Z</published>
+    <title>Merging Low-Rank Adapters in Weight Space</title>
+    <summary>
+      We study interference when merging LoRA adapters and
+      propose a rank-aware merge rule.
+    </summary>
+    <author>
+      <name>A. Researcher</name>
+    </author>
+    <author>
+      <name>B. Writer</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2607.67890</id>
+    <updated>2026-07-27T12:00:00Z</updated>
+    <published>2026-07-25T11:30:00Z</published>
+    <title>Task Vectors Across Modalities</title>
+    <summary>Task arithmetic transfers across vision and language heads.</summary>
+    <author>
+      <name>C. Author</name>
+    </author>
+  </entry>
+  <entry>
+    <id>http://arxiv.org/abs/2607.00000v3</id>
+    <updated>2026-07-26T08:00:00Z</updated>
+    <published>2026-07-24T08:00:00Z</published>
+    <title></title>
+    <summary>A malformed entry with no title should be dropped.</summary>
+    <author>
+      <name>D. Nobody</name>
+    </author>
+  </entry>
+</feed>
