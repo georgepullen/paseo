@@ -1,0 +1,58 @@
+{
+  "name": "@georgepullen/paseo-remote-power",
+  "version": "0.1.0",
+  "description": "Wake and status control for remote machines — homelab boxes, GPU workstations — from the Paseo daemon: roster UI plus embedded MCP tools (power_status, power_wake, power_job_status) so agents can wake a host before running work on it.",
+  "type": "module",
+  "private": false,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "stamp": "node -e \"import('../../packages/paseo-plugin-helper/src/server/version.ts').then(m => m.stampVersion({ targetFile: 'shared/version.ts' }))\"",
+    "typecheck": "tsc --noEmit",
+    "test": "npm run typecheck && NODE_ENV=test node --import ./tests/register-ts-hooks.mjs --test shared/registry.test.ts server/wol.test.ts server/probe.test.ts server/wake-engine.test.ts server/registry.test.ts index.server.test.ts mcp/test/protocol.test.mjs"
+  },
+  "keywords": [
+    "paseo",
+    "paseo-plugin",
+    "mcp",
+    "wake-on-lan",
+    "power",
+    "agent",
+    "homelab"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@getpaseo/plugin": "^0.9.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@tanstack/react-query": "^5.90.11",
+    "@types/react": "^19.0.10",
+    "esbuild": "0.27.7",
+    "react": "19.1.0",
+    "react-native": "0.81.5",
+    "typescript": "^5.9.3"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/georgepullen/paseo.git",
+    "directory": "plugins/paseo-remote-power"
+  },
+  "files": [
+    "paseo-plugin.json",
+    "README.md",
+    "LICENSE",
+    "index.client.tsx",
+    "index.server.ts",
+    "client",
+    "server",
+    "shared",
+    "mcp",
+    "!**/*.test.ts",
+    "!**/*.test.mjs",
+    "!mcp/test",
+    "!**/.DS_Store"
+  ]
+}
