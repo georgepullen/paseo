@@ -350,8 +350,9 @@ test("transport descriptions are log-safe: no userinfo survives redaction", () =
   assert.equal(describeTransport({ type: "wol", mac: "00:11:22:33:44:55" }), "00:11:22:33:44:55");
   assert.equal(describeTransport({ type: "wol", mac: "00:11:22:33:44:55", host: "192.0.2.255" }), "00:11:22:33:44:55 via 192.0.2.255");
   assert.equal(describeTransport({ type: "command", command: "wake", args: ["--port", "9"] }), "wake --port 9");
-  assert.equal(describeTransport({ type: "microlink", host: "cyril.tailnet" }), "microlink(cyril.tailnet:48320 http)");
-  assert.equal(describeTransport({ type: "microlink", host: "192.0.2.5", port: 49152, mode: "udp" }), "microlink(192.0.2.5:49152 udp)");
+  assert.equal(describeTransport({ type: "microlink", host: "wake.tailnet.net" }), "microlink(wake.tailnet.net:48320 http Microlink-HMAC)");
+  assert.equal(describeTransport({ type: "microlink", host: "192.0.2.5", port: 49152, mode: "udp" }), "microlink(192.0.2.5:49152 udp Microlink-HMAC)");
+  assert.equal(describeTransport({ type: "microlink", host: "wake.tailnet.net", scheme: "Legacy-HMAC" }), "microlink(wake.tailnet.net:48320 http Legacy-HMAC)");
 });
 
 test("microlink transports receive the resolved hex secret through secretRef", async () => {
@@ -378,15 +379,15 @@ test("microlink transports receive the resolved hex secret through secretRef", a
       clock += WAKE_POLL_INTERVAL_MS;
     },
     now: () => clock,
-    resolveTokenRef: (ref) => (ref === "ref-cyril" ? "aabbccddeeff0011" : null),
+    resolveTokenRef: (ref) => (ref === "ref-wake" ? "aabbccddeeff0011" : null),
     loadJobs: () => jobs.map((job) => structuredClone(job)),
     saveJobs: (next) => jobs.splice(0, jobs.length, ...next),
     log: () => {},
   });
 
-  await engine.startWake(host({}, [{ type: "microlink", host: "cyril.tailnet", secretRef: "ref-cyril" }]));
+  await engine.startWake(host({}, [{ type: "microlink", host: "wake.tailnet.net", secretRef: "ref-wake" }]));
   await settle(jobs);
-  await engine.startWake(host({}, [{ type: "microlink", host: "cyril.tailnet" }]));
+  await engine.startWake(host({}, [{ type: "microlink", host: "wake.tailnet.net" }]));
   await settle(jobs);
   assert.deepEqual(seenSecrets, ["aabbccddeeff0011", null], "the secret rides secretRef like http's tokenRef");
 });
@@ -431,7 +432,7 @@ test("microlink runs its slot in the transport ladder and falls through on failu
   const started = await engine.startWake(
     host({}, [
       { type: "http", url: "http://192.0.2.10/wake" },
-      { type: "microlink", host: "cyril.tailnet", mode: "udp" },
+      { type: "microlink", host: "wake.tailnet.net", mode: "udp" },
     ]),
   );
   assert.equal(started.accepted, true);
@@ -439,7 +440,7 @@ test("microlink runs its slot in the transport ladder and falls through on failu
   assert.deepEqual(calls.filter((entry) => entry.endsWith(":run")), ["http:run", "microlink:run"]);
   const job = jobs[0];
   assert.equal(job.status, "up");
-  assert.ok(job.log.some((line) => line.includes("trying microlink (microlink(cyril.tailnet:48320 udp))")));
+  assert.ok(job.log.some((line) => line.includes("trying microlink (microlink(wake.tailnet.net:48320 udp Microlink-HMAC))")));
   assert.ok(job.log.some((line) => line.includes("microlink accepted")));
 });
 
@@ -489,12 +490,12 @@ test("a failing microlink transport never surfaces the resolved secret", async (
       clock += WAKE_POLL_INTERVAL_MS;
     },
     now: () => clock,
-    resolveTokenRef: (ref) => (ref === "ref-cyril" ? secret : null),
+    resolveTokenRef: (ref) => (ref === "ref-wake" ? secret : null),
     loadJobs: () => jobs.map((job) => structuredClone(job)),
     saveJobs: (next) => jobs.splice(0, jobs.length, ...next),
     log: (line) => logLines.push(line),
   });
-  await engine.startWake(host({}, [{ type: "microlink", host: "127.0.0.1", port: 1, secretRef: "ref-cyril" }]));
+  await engine.startWake(host({}, [{ type: "microlink", host: "127.0.0.1", port: 1, secretRef: "ref-wake" }]));
   await settle(jobs, "failed");
   const job = jobs[0];
   assert.equal(job.status, "failed", "a refused wake is a failed transport, not a crash");

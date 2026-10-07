@@ -58,6 +58,8 @@ interface TransportDraft {
   microlinkPort: string;
   microlinkMode: string;
   microlinkSecretRef: string;
+  microlinkScheme: string;
+  microlinkHeaderPrefix: string;
 }
 
 function emptyDraft(): TransportDraft {
@@ -73,6 +75,8 @@ function emptyDraft(): TransportDraft {
     microlinkPort: "",
     microlinkMode: "http",
     microlinkSecretRef: "",
+    microlinkScheme: "",
+    microlinkHeaderPrefix: "",
   };
 }
 
@@ -103,6 +107,8 @@ function draftToTransport(draft: TransportDraft): WakeTransport | null {
         ...(draft.microlinkMode === "udp" ? { mode: "udp" as const } : {}),
         ...(draft.microlinkSecretRef.trim().length > 0 ? { secretRef: draft.microlinkSecretRef.trim() } : {}),
         ...(Number.isInteger(parsedPort) && parsedPort >= 1 && parsedPort <= 65535 ? { port: parsedPort } : {}),
+        ...(draft.microlinkScheme.trim().length > 0 ? { scheme: draft.microlinkScheme.trim() } : {}),
+        ...(draft.microlinkHeaderPrefix.trim().length > 0 ? { headerPrefix: draft.microlinkHeaderPrefix.trim() } : {}),
       };
     }
   }
@@ -122,6 +128,8 @@ function transportToDraft(transport: WakeTransport): TransportDraft {
     base.microlinkMode = transport.mode ?? "http";
     base.microlinkPort = transport.port !== undefined ? String(transport.port) : "";
     base.microlinkSecretRef = transport.secretRef ?? "";
+    base.microlinkScheme = transport.scheme ?? "";
+    base.microlinkHeaderPrefix = transport.headerPrefix ?? "";
   } else {
     base.command = transport.command;
     base.args = (transport.args ?? []).join(", ");
@@ -515,7 +523,7 @@ function HostForm({
                   { label: "http POST", value: "http" },
                   { label: "Wake-on-LAN", value: "wol" },
                   { label: "Custom command", value: "command" },
-                  { label: "Microlink (Cyril)", value: "microlink" },
+                  { label: "Microlink (ESP32 authority)", value: "microlink" },
                 ]}
               />
             </HostFormRow>
@@ -551,8 +559,8 @@ function HostForm({
             ) : null}
             {draft.type === "microlink" ? (
               <>
-                <HostFormRow label="Host" description="The Cyril wake authority on the device (hostname or IP).">
-                  <HostTextInput value={draft.microlinkHost} onChangeText={(text) => setField(index, "microlinkHost", text)} placeholder="cyril.tailnet" autoCapitalize="none" />
+                <HostFormRow label="Host" description="The wake authority on the device (hostname or IP).">
+                  <HostTextInput value={draft.microlinkHost} onChangeText={(text) => setField(index, "microlinkHost", text)} placeholder="wake.tailnet.net" autoCapitalize="none" />
                 </HostFormRow>
                 <HostFormRow label="Port" description="Optional. Default 48320.">
                   <HostTextInput value={draft.microlinkPort} onChangeText={(text) => setField(index, "microlinkPort", text)} placeholder="48320" keyboardType="number-pad" />
@@ -568,7 +576,13 @@ function HostForm({
                   />
                 </HostFormRow>
                 <HostFormRow label="Secret ref" description="Names the hex wake secret in the plugin state dir; never stored here.">
-                  <HostTextInput value={draft.microlinkSecretRef} onChangeText={(text) => setField(index, "microlinkSecretRef", text)} placeholder="cyril-wake" autoCapitalize="none" />
+                  <HostTextInput value={draft.microlinkSecretRef} onChangeText={(text) => setField(index, "microlinkSecretRef", text)} placeholder="wake-secret" autoCapitalize="none" />
+                </HostFormRow>
+                <HostFormRow label="Scheme" description="Authorization scheme token. Default Microlink-HMAC; match your authority's configuration.">
+                  <HostTextInput value={draft.microlinkScheme} onChangeText={(text) => setField(index, "microlinkScheme", text)} placeholder="Microlink-HMAC" autoCapitalize="none" />
+                </HostFormRow>
+                <HostFormRow label="Header prefix" description="Prefix for the Timestamp/Nonce/Content-SHA256 headers. Default X-Wake-; match your authority's configuration.">
+                  <HostTextInput value={draft.microlinkHeaderPrefix} onChangeText={(text) => setField(index, "microlinkHeaderPrefix", text)} placeholder="X-Wake-" autoCapitalize="none" />
                 </HostFormRow>
               </>
             ) : null}

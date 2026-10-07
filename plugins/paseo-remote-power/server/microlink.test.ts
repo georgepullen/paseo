@@ -14,7 +14,7 @@ import {
 } from "./microlink.ts";
 
 /**
- * The Cyril wake authority is deployed firmware: its wire protocol is pinned
+ * The reference wake authority is deployed firmware: its wire protocol is pinned
  * byte-for-byte here. The transcript, the four header names, the UDP datagram
  * text, and the observer parse are compatibility surfaces — a change here is
  * a breaking change to every deployed device. No test touches a real network:
@@ -61,16 +61,47 @@ test("signWake pins the deployed transcript and HMAC byte-for-byte", () => {
   assert.equal(sig.nonce.length, 32, "the nonce is 32 hex chars");
   assert.equal(sig.digest, digest);
   assert.equal(sig.digest, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855", "sha256 of the empty body");
-  assert.equal(sig.authorization, `Cyril-HMAC ${expectedSignature(transcript)}`);
-  assert.match(sig.authorization, /^Cyril-HMAC [0-9a-f]{64}$/);
+  assert.equal(sig.authorization, `Microlink-HMAC ${expectedSignature(transcript)}`);
+  assert.match(sig.authorization, /^Microlink-HMAC [0-9a-f]{64}$/);
   assert.equal(sig.authorization.includes(SECRET_HEX), false, "the signature never carries the raw secret");
+});
+
+test("signWake honors legacy authority wire names for deployed authorities", async () => {
+  const body = "";
+  const digest = createHash("sha256").update(body, "utf8").digest("hex");
+  const transcript = `POST\n/v1/wake\n${FIXED_TS}\n${FIXED_NONCE}\n${digest}`;
+  // pinned legacy authority names
+  const legacy = { scheme: "Cyril-HMAC", headerPrefix: "X-Cyril-", ...fixedClock(() => FIXED_TS) };
+
+  const sig = signWake(SECRET_HEX, "POST", "/v1/wake", body, legacy);
+  assert.equal(sig.authorization, `Cyril-HMAC ${expectedSignature(transcript)}`, "the transcript is unchanged; only the label differs");
+
+  const seen: { url: string; init: RequestInit }[] = [];
+  const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
+    seen.push({ url: String(url), init: init ?? {} });
+    return new Response(null, { status: 200 });
+  }) as typeof fetch;
+  const http = sendWakeHttp("192.0.2.5", 48320, SECRET_HEX, { fetchImpl, ...legacy }).then((accepted) => {
+    assert.equal(accepted, true);
+    assert.deepEqual(seen[0].init.headers, {
+      "X-Cyril-Timestamp": sig.ts,
+      "X-Cyril-Nonce": sig.nonce,
+      "X-Cyril-Content-SHA256": sig.digest,
+      Authorization: sig.authorization,
+    });
+  });
+  const udp = sendWakeUdp("192.0.2.5", 48320, SECRET_HEX, {
+    socketFactory: () => scriptedSocket([Buffer.from('{"accepted":true}\n', "utf8")]).socket,
+    ...legacy,
+  }).then((accepted) => assert.equal(accepted, true, "the datagram carries the legacy scheme token"));
+  await Promise.all([http, udp]);
 });
 
 test("a live nonce and clock still produce a well-formed signature", () => {
   const sig = signWake(SECRET_HEX);
   assert.match(sig.ts, /^\d+$/);
   assert.match(sig.nonce, /^[0-9a-f]{32}$/);
-  assert.match(sig.authorization, /^Cyril-HMAC [0-9a-f]{64}$/);
+  assert.match(sig.authorization, /^Microlink-HMAC [0-9a-f]{64}$/);
   const digest = createHash("sha256").update("").digest("hex");
   assert.notEqual(sig.ts, String(FIXED_TS), "the default clock is real time, not the test fixture");
 });
@@ -92,9 +123,9 @@ test("sendWakeHttp speaks the four headers exactly and accepts only 2xx", async 
   assert.equal(seen[0].init.method, "POST");
   const sig = signWake(SECRET_HEX, "POST", "/v1/wake", "", fixedClock(() => FIXED_TS));
   assert.deepEqual(seen[0].init.headers, {
-    "X-Cyril-Timestamp": sig.ts,
-    "X-Cyril-Nonce": sig.nonce,
-    "X-Cyril-Content-SHA256": sig.digest,
+    "X-Wake-Timestamp": sig.ts,
+    "X-Wake-Nonce": sig.nonce,
+    "X-Wake-Content-SHA256": sig.digest,
     Authorization: sig.authorization,
   });
 
@@ -116,7 +147,7 @@ test("sendWakeUdp puts the exact datagram on the wire and reads the reply line",
   assert.equal(buildWakeDatagram(sig), expectedDatagram, "the datagram template is pinned");
 
   const ok = scriptedSocket([Buffer.from('{"accepted":true}\n', "utf8")]);
-  const accepted = await sendWakeUdp("cyril.tailnet", 48320, SECRET_HEX, {
+  const accepted = await sendWakeUdp("wake.tailnet.net", 48320, SECRET_HEX, {
     socketFactory: () => ok.socket,
     ...fixedClock(() => FIXED_TS),
   });
@@ -124,20 +155,20 @@ test("sendWakeUdp puts the exact datagram on the wire and reads the reply line",
   assert.equal(ok.sent.length, 1);
   assert.equal(ok.sent[0].packet.toString("utf8"), expectedDatagram, "the datagram left byte-for-byte");
   assert.equal(ok.sent[0].port, 48320);
-  assert.equal(ok.sent[0].address, "cyril.tailnet");
+  assert.equal(ok.sent[0].address, "wake.tailnet.net");
 
   const refused = scriptedSocket([Buffer.from('{"accepted":false}', "utf8")]);
-  assert.equal(await sendWakeUdp("cyril.tailnet", 48320, SECRET_HEX, { socketFactory: () => refused.socket }), false);
+  assert.equal(await sendWakeUdp("wake.tailnet.net", 48320, SECRET_HEX, { socketFactory: () => refused.socket }), false);
 
   const silent = scriptedSocket([null]);
   assert.equal(
-    await sendWakeUdp("cyril.tailnet", 48320, SECRET_HEX, { socketFactory: () => silent.socket, replyTimeoutMs: 1 }),
+    await sendWakeUdp("wake.tailnet.net", 48320, SECRET_HEX, { socketFactory: () => silent.socket, replyTimeoutMs: 1 }),
     false,
     "no reply before the timeout is not an accept",
   );
 
   const broken = scriptedSocket([Buffer.from("garbage log line {\"accepted\":true} trailing", "utf8")]);
-  assert.equal(await sendWakeUdp("cyril.tailnet", 48320, SECRET_HEX, { socketFactory: () => broken.socket }), true, "the reply parse tolerates noise around the accepted line");
+  assert.equal(await sendWakeUdp("wake.tailnet.net", 48320, SECRET_HEX, { socketFactory: () => broken.socket }), true, "the reply parse tolerates noise around the accepted line");
 });
 
 test("replyAccepted parses the reply line tolerantly", () => {
@@ -153,12 +184,12 @@ test("observeHttp exposes targetAwake and answers null when the observer is sile
   const jsonResponse = (body: string, status = 200) => new Response(body, { status, headers: { "content-type": "application/json" } });
 
   const up = await observeHttp("192.0.2.5", 48320, {
-    fetchImpl: (async () => jsonResponse('{"target_awake":true,"schema":"cyril-wake-observer-v1"}')) as typeof fetch,
+    fetchImpl: (async () => jsonResponse('{"target_awake":true,"schema":"microlink-wake-observer-v1"}')) as typeof fetch,
   });
   assert.deepEqual(up, { targetAwake: true });
 
   const down = await observeHttp("192.0.2.5", 48320, {
-    fetchImpl: (async () => jsonResponse('{"target_awake":false,"schema":"cyril-wake-observer-v1"}')) as typeof fetch,
+    fetchImpl: (async () => jsonResponse('{"target_awake":false,"schema":"microlink-wake-observer-v1"}')) as typeof fetch,
   });
   assert.deepEqual(down, { targetAwake: false });
 
@@ -168,7 +199,7 @@ test("observeHttp exposes targetAwake and answers null when the observer is sile
   assert.equal(malformed, null, "an unparseable body is no answer");
 
   const missingField = await observeHttp("192.0.2.5", 48320, {
-    fetchImpl: (async () => jsonResponse('{"schema":"cyril-wake-observer-v1"}')) as typeof fetch,
+    fetchImpl: (async () => jsonResponse('{"schema":"microlink-wake-observer-v1"}')) as typeof fetch,
   });
   assert.equal(missingField, null, "no target_awake boolean is no answer");
 

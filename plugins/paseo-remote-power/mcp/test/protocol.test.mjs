@@ -120,15 +120,20 @@ test("the mirrored validators agree with the zod schemas on good and bad shapes"
   assert.equal(validateWakeTransport({ type: "http", url: "http://192.0.2.10/wake", tokenRef: "tok" }), null);
   assert.equal(validateWakeTransport({ type: "wol", mac: "00:11:22:33:44:55" }), null);
   assert.equal(validateWakeTransport({ type: "command", command: "wake", args: ["--port", "9"] }), null);
-  assert.equal(validateWakeTransport({ type: "microlink", host: "cyril.tailnet" }), null);
-  assert.equal(validateWakeTransport({ type: "microlink", host: "192.0.2.5", mode: "udp", secretRef: "cyril-wake", port: 48320 }), null);
+  assert.equal(validateWakeTransport({ type: "microlink", host: "wake.tailnet.net" }), null);
+  assert.equal(validateWakeTransport({ type: "microlink", host: "192.0.2.5", mode: "udp", secretRef: "wake-secret", port: 48320 }), null);
+  assert.equal(validateWakeTransport({ type: "microlink", host: "192.0.2.5", scheme: "Legacy-HMAC", headerPrefix: "X-Legacy-" }), null);
   assert.match(validateWakeTransport({ type: "carrier-pigeon" }), /type must be/);
   assert.match(validateWakeTransport({ type: "wol", mac: "nope" }), /MAC/);
   assert.match(validateWakeTransport({ type: "microlink" }), /needs a host/);
   assert.match(validateWakeTransport({ type: "microlink", host: "h", mode: "carrier-pigeon" }), /http or udp/);
   assert.match(validateWakeTransport({ type: "microlink", host: "h", port: 70000 }), /between 1 and 65535/);
+  assert.match(validateWakeTransport({ type: "microlink", host: "h", scheme: "" }), /scheme/);
+  assert.match(validateWakeTransport({ type: "microlink", host: "h", scheme: "x".repeat(65) }), /scheme/);
+  assert.match(validateWakeTransport({ type: "microlink", host: "h", headerPrefix: "" }), /headerPrefix/);
+  assert.match(validateWakeTransport({ type: "microlink", host: "h", headerPrefix: "x".repeat(65) }), /headerPrefix/);
   assert.equal(validateHostRecord(hermeticHost()), null);
-  assert.equal(validateHostRecord({ ...hermeticHost(), wakeTransports: [{ type: "microlink", host: "cyril.tailnet" }] }), null);
+  assert.equal(validateHostRecord({ ...hermeticHost(), wakeTransports: [{ type: "microlink", host: "wake.tailnet.net" }] }), null);
   assert.match(validateHostRecord({ ...hermeticHost(), wakeWindowSeconds: 1 }), /between 10 and 3600/);
   assert.match(validateHostRecord({ ...hermeticHost(), wakeTransports: [{ type: "nope" }] }), /transport type/);
 });
@@ -150,7 +155,7 @@ test("signWake matches the plugin server's golden transcript byte for byte", () 
   const FIXED_NONCE = "0f1e2d3c4b5a69788796a5b4c3d2e1f0";
   const digest = createHash("sha256").update("", "utf8").digest("hex");
   const transcript = `POST\n/v1/wake\n${FIXED_TS}\n${FIXED_NONCE}\n${digest}`;
-  const expectedAuthorization = `Cyril-HMAC ${createHmac("sha256", Buffer.from(SECRET_HEX, "hex")).update(transcript, "utf8").digest("hex")}`;
+  const expectedAuthorization = `Microlink-HMAC ${createHmac("sha256", Buffer.from(SECRET_HEX, "hex")).update(transcript, "utf8").digest("hex")}`;
 
   const sig = signWake(SECRET_HEX, "POST", "/v1/wake", "", {
     now: () => FIXED_TS,
@@ -163,6 +168,15 @@ test("signWake matches the plugin server's golden transcript byte for byte", () 
   assert.equal(sig.digest, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
   assert.equal(sig.authorization, expectedAuthorization);
   assert.equal(sig.authorization.includes(SECRET_HEX), false, "the signature never carries the raw secret");
+
+  // pinned legacy authority names
+  const legacySig = signWake(SECRET_HEX, "POST", "/v1/wake", "", {
+    now: () => FIXED_TS,
+    nonce: () => FIXED_NONCE,
+    scheme: "Cyril-HMAC",
+    headerPrefix: "X-Cyril-",
+  });
+  assert.equal(legacySig.authorization, `Cyril-HMAC ${createHmac("sha256", Buffer.from(SECRET_HEX, "hex")).update(transcript, "utf8").digest("hex")}`);
 });
 
 test("the wake datagram and reply parse match the plugin server byte for byte", () => {
@@ -182,8 +196,9 @@ test("the wake datagram and reply parse match the plugin server byte for byte", 
 });
 
 test("describeTransport renders microlink like the plugin server", () => {
-  assert.equal(describeTransport({ type: "microlink", host: "cyril.tailnet" }), "microlink(cyril.tailnet:48320 http)");
-  assert.equal(describeTransport({ type: "microlink", host: "192.0.2.5", port: 49152, mode: "udp" }), "microlink(192.0.2.5:49152 udp)");
+  assert.equal(describeTransport({ type: "microlink", host: "wake.tailnet.net" }), "microlink(wake.tailnet.net:48320 http Microlink-HMAC)");
+  assert.equal(describeTransport({ type: "microlink", host: "192.0.2.5", port: 49152, mode: "udp" }), "microlink(192.0.2.5:49152 udp Microlink-HMAC)");
+  assert.equal(describeTransport({ type: "microlink", host: "wake.tailnet.net", scheme: "Legacy-HMAC" }), "microlink(wake.tailnet.net:48320 http Legacy-HMAC)");
   assert.equal(MICROLINK_DEFAULT_PORT, 48320);
 });
 
@@ -194,10 +209,10 @@ test("probeHost consults a microlink host's observer before ssh, like the plugin
     return { code: 0 };
   };
   const host = {
-    id: "host-cyril",
-    name: "cyril",
+    id: "host-wake",
+    name: "wake-box",
     sshTarget: "build.example.net",
-    wakeTransports: [{ type: "microlink", host: "cyril.tailnet", port: 49152 }],
+    wakeTransports: [{ type: "microlink", host: "wake.tailnet.net", port: 49152 }],
     createdAt: 0,
     updatedAt: 0,
   };
@@ -240,7 +255,7 @@ test("a microlink host wakes through the engine ladder with its secretRef resolv
         return true;
       },
     },
-    resolveTokenRef: (ref) => (ref === "ref-cyril" ? "aabbccddeeff0011" : null),
+    resolveTokenRef: (ref) => (ref === "ref-wake" ? "aabbccddeeff0011" : null),
     probe: async () => {
       clock += 4_000;
       return seen.length > 0;
@@ -254,9 +269,9 @@ test("a microlink host wakes through the engine ladder with its secretRef resolv
     log: () => {},
   });
   const started = await engine.startWake({
-    id: "host-cyril",
-    name: "cyril",
-    wakeTransports: [{ type: "microlink", host: "cyril.tailnet", secretRef: "ref-cyril" }],
+    id: "host-wake",
+    name: "wake-box",
+    wakeTransports: [{ type: "microlink", host: "wake.tailnet.net", secretRef: "ref-wake" }],
     createdAt: 0,
     updatedAt: 0,
   });
@@ -264,7 +279,7 @@ test("a microlink host wakes through the engine ladder with its secretRef resolv
   for (let spin = 0; spin < 200 && jobs.at(-1)?.status !== "up"; spin++) {
     await new Promise((resolveTick) => setImmediate(resolveTick));
   }
-  assert.deepEqual(seen, [{ type: "microlink", host: "cyril.tailnet", secret: "aabbccddeeff0011" }]);
+  assert.deepEqual(seen, [{ type: "microlink", host: "wake.tailnet.net", secret: "aabbccddeeff0011" }]);
   const job = jobs.at(-1);
   assert.equal(job.status, "up");
   assert.equal(JSON.stringify(job).includes("aabbccddeeff0011"), false, "the job record never quotes the secret");

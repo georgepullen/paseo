@@ -16,7 +16,7 @@ import { z } from "zod";
  *    specific relay/subnet-directed address instead of broadcast.
  *  - command: run a local command on the daemon host (e.g. a vendor wake CLI).
  *    Config is trusted: it runs arbitrary shell.
- *  - microlink: the deployed Cyril wake authority on an ESP32-S3 — an
+ *  - microlink: a wake authority on an ESP32-S3 — an
  *    HMAC-signed POST /v1/wake over HTTP, or the same request as one signed
  *    UDP datagram on the tailnet. `secretRef` names the hex secret in the
  *    plugin state dir (tokens.json); the secret never appears in a host
@@ -48,6 +48,10 @@ export const MicrolinkTransportSchema = z.object({
   mode: z.enum(["http", "udp"]).optional(),
   secretRef: z.string().min(1).max(128).optional(),
   port: z.number().int().min(1).max(65535).optional(),
+  /** Authorization scheme token; defaults to "Microlink-HMAC". */
+  scheme: z.string().min(1).max(64).optional(),
+  /** Wire header prefix, e.g. "X-Wake-"; defaults to "X-Wake-". */
+  headerPrefix: z.string().min(1).max(64).optional(),
 });
 
 export const WakeTransportSchema = z.discriminatedUnion("type", [

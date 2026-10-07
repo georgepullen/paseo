@@ -43,7 +43,7 @@ Transports:
 | `http` | `url`, `tokenRef?` | `POST` to the endpoint; when `tokenRef` is set, the matching bearer token from the plugin state dir is sent as `Authorization: Bearer …`. |
 | `wol` | `mac`, `host?` | Standard 102-byte magic packet over UDP (port 9). `host` targets a subnet-directed or relay address; default is broadcast. |
 | `command` | `command`, `args?` | Runs a local command on the daemon host; exit 0 = accepted. |
-| `microlink` | `host`, `mode?`, `secretRef?`, `port?` | HMAC-signed wake to a Cyril wake authority on an ESP32-S3: a signed `POST /v1/wake` over HTTP, or one signed UDP datagram on the tailnet (`mode: "udp"`). Defaults: `mode` `http`, `port` 48320. `secretRef` names the hex secret in the plugin state dir; the secret never appears in a host record. |
+| `microlink` | `host`, `mode?`, `secretRef?`, `port?`, `scheme?`, `headerPrefix?` | HMAC-signed wake to a wake authority on an ESP32-S3: a signed `POST /v1/wake` over HTTP, or one signed UDP datagram on the tailnet (`mode: "udp"`). Defaults: `mode` `http`, `port` 48320. `secretRef` names the hex secret in the plugin state dir; the secret never appears in a host record. The authorization scheme and header names are configurable per host (defaults `Microlink-HMAC` / `X-Wake-`; older authorities may override scheme and header names per host). |
 
 ### Example configuration
 
@@ -61,7 +61,7 @@ repository. Placeholder shapes:
       "wakeWindowSeconds": 110,
       "wakeTransports": [
         { "type": "http", "url": "http://192.0.2.10:8080/wake", "tokenRef": "lab-gpu-wake" },
-        { "type": "microlink", "host": "cyril.tailnet", "mode": "udp", "secretRef": "cyril-wake" },
+        { "type": "microlink", "host": "wake.tailnet.net", "mode": "udp", "secretRef": "wake-secret" },
         { "type": "wol", "mac": "00:11:22:33:44:55", "host": "192.0.2.255" },
         { "type": "command", "command": "/usr/local/bin/wake-lab-gpu", "args": ["--port", "9"] }
       ],

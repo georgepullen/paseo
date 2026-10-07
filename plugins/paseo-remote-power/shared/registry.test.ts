@@ -50,19 +50,29 @@ test("the transport union discriminates on type and validates each shape", () =>
   assert.equal(WakeTransportSchema.parse({ type: "wol", mac: "00:11:22:33:44:55" }).type, "wol");
   assert.equal(WakeTransportSchema.parse({ type: "wol", mac: "00-11-22-33-44-55", host: "192.0.2.255" }).type, "wol");
   assert.equal(WakeTransportSchema.parse({ type: "command", command: "/usr/local/bin/wake", args: ["--port", "9"] }).type, "command");
-  assert.equal(WakeTransportSchema.parse({ type: "microlink", host: "cyril.tailnet" }).type, "microlink");
+  assert.equal(WakeTransportSchema.parse({ type: "microlink", host: "wake.tailnet.net" }).type, "microlink");
   const microlink = WakeTransportSchema.parse({
     type: "microlink",
     host: "192.0.2.5",
     mode: "udp",
-    secretRef: "cyril-wake",
+    secretRef: "wake-secret",
     port: 48320,
+    scheme: "Legacy-HMAC",
+    headerPrefix: "X-Legacy-",
   });
-  assert.deepEqual(microlink, { type: "microlink", host: "192.0.2.5", mode: "udp", secretRef: "cyril-wake", port: 48320 });
+  assert.deepEqual(microlink, {
+    type: "microlink",
+    host: "192.0.2.5",
+    mode: "udp",
+    secretRef: "wake-secret",
+    port: 48320,
+    scheme: "Legacy-HMAC",
+    headerPrefix: "X-Legacy-",
+  });
   assert.equal(
     WakeTransportSchema.safeParse({ type: "microlink", host: "192.0.2.5" }).success,
     true,
-    "mode, secretRef, and port are optional (defaults: http, none, 48320)",
+    "mode, secretRef, port, scheme, and headerPrefix are optional (defaults: http, none, 48320, Microlink-HMAC, X-Wake-)",
   );
 
   for (const bad of [
@@ -74,6 +84,10 @@ test("the transport union discriminates on type and validates each shape", () =>
     { type: "microlink", host: "192.0.2.5", mode: "carrier-pigeon" },
     { type: "microlink", host: "192.0.2.5", port: 0 },
     { type: "microlink", host: "192.0.2.5", port: 70000 },
+    { type: "microlink", host: "192.0.2.5", scheme: "" },
+    { type: "microlink", host: "192.0.2.5", scheme: "x".repeat(65) },
+    { type: "microlink", host: "192.0.2.5", headerPrefix: "" },
+    { type: "microlink", host: "192.0.2.5", headerPrefix: "x".repeat(65) },
   ]) {
     assert.equal(WakeTransportSchema.safeParse(bad).success, false, `${JSON.stringify(bad)} must not parse`);
   }

@@ -11,7 +11,12 @@ import {
 } from "../shared/registry.ts";
 import { probeReachable, realSpawn } from "./probe.ts";
 import { sendMagicPacket } from "./wol.ts";
-import { MICROLINK_DEFAULT_PORT, sendWakeHttp, sendWakeUdp } from "./microlink.ts";
+import {
+  MICROLINK_DEFAULT_PORT,
+  MICROLINK_DEFAULT_SCHEME,
+  sendWakeHttp,
+  sendWakeUdp,
+} from "./microlink.ts";
 import { resolveToken } from "./registry.ts";
 
 /**
@@ -107,8 +112,11 @@ const defaultRunners: TransportRunners = {
   async microlink(transport, secret) {
     if (transport.type !== "microlink" || secret === null) return false;
     const port = transport.port ?? MICROLINK_DEFAULT_PORT;
+    const wire = { scheme: transport.scheme, headerPrefix: transport.headerPrefix };
     // sendWakeHttp/sendWakeUdp never throw; mode defaults to http.
-    return transport.mode === "udp" ? sendWakeUdp(transport.host, port, secret) : sendWakeHttp(transport.host, port, secret);
+    return transport.mode === "udp"
+      ? sendWakeUdp(transport.host, port, secret, wire)
+      : sendWakeHttp(transport.host, port, secret, wire);
   },
 };
 
@@ -151,7 +159,7 @@ export function describeTransport(transport: WakeTransport): string {
     case "command":
       return [transport.command, ...(transport.args ?? [])].join(" ");
     case "microlink":
-      return `microlink(${transport.host}:${transport.port ?? MICROLINK_DEFAULT_PORT} ${transport.mode ?? "http"})`;
+      return `microlink(${transport.host}:${transport.port ?? MICROLINK_DEFAULT_PORT} ${transport.mode ?? "http"} ${transport.scheme ?? MICROLINK_DEFAULT_SCHEME})`;
   }
 }
 

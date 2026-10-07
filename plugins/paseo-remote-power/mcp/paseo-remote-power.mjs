@@ -98,6 +98,8 @@ export function validateWakeTransport(transport) {
       ) {
         return "microlink port must be an integer between 1 and 65535";
       }
+      if (transport.scheme !== undefined && !optionalString(transport.scheme, 64)) return "microlink scheme must be a short string";
+      if (transport.headerPrefix !== undefined && !optionalString(transport.headerPrefix, 64)) return "microlink headerPrefix must be a short string";
       return null;
     default:
       return "transport type must be http, wol, command, or microlink";
@@ -228,19 +230,25 @@ export function sendMagicPacket(transport, options = {}) {
 }
 
 // ---------------------------------------------------------------------------
-// Microlink: the deployed Cyril wake-authority wire protocol (ESP32-S3),
-// mirrored byte-for-byte from server/microlink.ts.
+// Microlink: the wake-authority wire protocol (ESP32-S3), mirrored
+// byte-for-byte from server/microlink.ts.
 //
 //   transcript  = `POST\n/v1/wake\n<unix-seconds>\n<nonce-32hex>\n<sha256hex-of-body>`
 //   signature   = HMAC-SHA256(secret, transcript) hex   (secret = raw bytes from hex)
-//   auth header = `Cyril-HMAC <signature>`
+//   auth header = `<scheme> <signature>` (default scheme `Microlink-HMAC`)
 //
-// HTTP wake: POST with the four X-Cyril-*/Authorization headers; 2xx accepted.
-// UDP wake: one datagram `POST /v1/wake\n<ts>\n<nonce>\n<digest>\nCyril-HMAC <sig>`;
+// HTTP wake: POST with the four `<headerPrefix>*` headers plus Authorization; 2xx
+// accepted. UDP wake: one datagram
+// `POST /v1/wake\n<ts>\n<nonce>\n<digest>\n<scheme> <sig>`;
 // the one-line JSON reply's `accepted` decides. Observer (unsigned): GET
-// /v1/observer → JSON with `target_awake`. The hex secret comes from
+// /v1/observer → JSON with `target_awake`. Scheme/header names are
+// configurable per host (defaults `Microlink-HMAC` / `X-Wake-`; older
+// authorities override both). The hex secret comes from
 // tokens.json via secretRef and never appears in a log, error, or RPC output.
 // ---------------------------------------------------------------------------
+
+export const MICROLINK_DEFAULT_SCHEME = "Microlink-HMAC";
+export const MICROLINK_DEFAULT_HEADER_PREFIX = "X-Wake-";
 
 export function signWake(secretHex, method = "POST", target = "/v1/wake", body = "", options = {}) {
   const ts = String(Math.floor((options.now ?? (() => Date.now() / 1000))()));
@@ -248,10 +256,10 @@ export function signWake(secretHex, method = "POST", target = "/v1/wake", body =
   const digest = createHash("sha256").update(body, "utf8").digest("hex");
   const transcript = `${method}\n${target}\n${ts}\n${nonce}\n${digest}`;
   const signature = createHmac("sha256", Buffer.from(secretHex, "hex")).update(transcript, "utf8").digest("hex");
-  return { ts, nonce, digest, authorization: `Cyril-HMAC ${signature}` };
+  return { ts, nonce, digest, authorization: `${options.scheme ?? MICROLINK_DEFAULT_SCHEME} ${signature}` };
 }
 
-/** The wire datagram: `POST /v1/wake\n<ts>\n<nonce>\n<digest>\nCyril-HMAC <sig>`. */
+/** The wire datagram: `POST /v1/wake\n<ts>\n<nonce>\n<digest>\n<scheme> <sig>`. */
 export function buildWakeDatagram(signature) {
   return `POST /v1/wake\n${signature.ts}\n${signature.nonce}\n${signature.digest}\n${signature.authorization}`;
 }
@@ -315,13 +323,14 @@ export function createMicrolinkSocket() {
 /** Signed HTTP wake. True iff the authority answered 2xx. Never throws. */
 export async function sendWakeHttp(host, port, secretHex, options = {}) {
   const { ts, nonce, digest, authorization } = signWake(secretHex, "POST", "/v1/wake", "", options);
+  const prefix = options.headerPrefix ?? MICROLINK_DEFAULT_HEADER_PREFIX;
   try {
     const response = await (options.fetchImpl ?? fetch)(`http://${host}:${port}/v1/wake`, {
       method: "POST",
       headers: {
-        "X-Cyril-Timestamp": ts,
-        "X-Cyril-Nonce": nonce,
-        "X-Cyril-Content-SHA256": digest,
+        [`${prefix}Timestamp`]: ts,
+        [`${prefix}Nonce`]: nonce,
+        [`${prefix}Content-SHA256`]: digest,
         Authorization: authorization,
       },
       signal: AbortSignal.timeout(MICROLINK_TRANSPORT_TIMEOUT_MS),
@@ -424,7 +433,7 @@ export function describeTransport(transport) {
     case "command":
       return [transport.command, ...(transport.args ?? [])].join(" ");
     case "microlink":
-      return `microlink(${transport.host}:${transport.port ?? MICROLINK_DEFAULT_PORT} ${transport.mode ?? "http"})`;
+      return `microlink(${transport.host}:${transport.port ?? MICROLINK_DEFAULT_PORT} ${transport.mode ?? "http"} ${transport.scheme ?? MICROLINK_DEFAULT_SCHEME})`;
     default:
       return "unknown transport";
   }
@@ -465,8 +474,11 @@ const defaultRunners = {
   async microlink(transport, secret) {
     if (secret === null) return false;
     const port = transport.port ?? MICROLINK_DEFAULT_PORT;
+    const wire = { scheme: transport.scheme, headerPrefix: transport.headerPrefix };
     // sendWakeHttp/sendWakeUdp never throw; mode defaults to http.
-    return transport.mode === "udp" ? sendWakeUdp(transport.host, port, secret) : sendWakeHttp(transport.host, port, secret);
+    return transport.mode === "udp"
+      ? sendWakeUdp(transport.host, port, secret, wire)
+      : sendWakeHttp(transport.host, port, secret, wire);
   },
 };
 
@@ -750,7 +762,7 @@ export const TOOL_DEFINITIONS = [
     name: "power_wake",
     title: "Power wake",
     description:
-      "Start waking a host (ordered transports: http POST, signed microlink to a Cyril wake authority, Wake-on-LAN, custom command; idempotent when already up) and return the wake job id immediately. Poll power_job_status until it reports up or failed.",
+      "Start waking a host (ordered transports: http POST, signed microlink to a wake authority, Wake-on-LAN, custom command; idempotent when already up) and return the wake job id immediately. Poll power_job_status until it reports up or failed.",
     inputSchema: TOOL_SCHEMAS.powerWake,
   },
   {

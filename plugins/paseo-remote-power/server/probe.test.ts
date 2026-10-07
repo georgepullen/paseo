@@ -96,7 +96,7 @@ test("a host with no probe configured is unknown, not down", async () => {
   assert.equal(result.probedVia, "none");
 });
 
-const MICROLINK = { type: "microlink" as const, host: "cyril.tailnet", port: 49152 };
+const MICROLINK = { type: "microlink" as const, host: "wake.tailnet.net", port: 49152 };
 
 test("the observer answers a microlink host before ssh is consulted", async () => {
   const spawnFn = fakeSpawn((command) => (command === "ssh" ? 0 : 1));
@@ -108,7 +108,7 @@ test("the observer answers a microlink host before ssh is consulted", async () =
   });
   assert.equal(up.state, "up");
   assert.equal(up.probedVia, "observer");
-  assert.deepEqual(observer.calls, [{ host: "cyril.tailnet", port: 49152 }]);
+  assert.deepEqual(observer.calls, [{ host: "wake.tailnet.net", port: 49152 }]);
   assert.equal(spawnFn.calls.length, 0, "a definitive observer answer means ssh never runs");
 
   const down = await probeHost(host({ sshTarget: "build.example.net", wakeTransports: [MICROLINK] }), {
@@ -120,7 +120,7 @@ test("the observer answers a microlink host before ssh is consulted", async () =
   assert.equal(down.probedVia, "observer");
 
   const portless = await probeHost(
-    host({ sshTarget: "build.example.net", wakeTransports: [{ type: "microlink", host: "cyril.tailnet" }] }),
+    host({ sshTarget: "build.example.net", wakeTransports: [{ type: "microlink", host: "wake.tailnet.net" }] }),
     { spawnImpl: spawnFn, observeImpl: fakeObserver([{ targetAwake: true }]), timeoutSeconds: 2 },
   );
   assert.equal(portless.probedVia, "observer");
@@ -136,7 +136,7 @@ test("no observer answer falls through to ssh; ssh-only hosts never ask the obse
   });
   assert.equal(fallenThrough.state, "up", "ssh answers after the observer stays silent");
   assert.equal(fallenThrough.probedVia, "ssh");
-  assert.deepEqual(observer.calls, [{ host: "cyril.tailnet", port: 49152 }]);
+  assert.deepEqual(observer.calls, [{ host: "wake.tailnet.net", port: 49152 }]);
 
   const sshOnly = fakeObserver([{ targetAwake: true }]);
   const untouched = await probeHost(host({ sshTarget: "build.example.net", wakeTransports: [{ type: "wol", mac: "00:11:22:33:44:55" }] }), {

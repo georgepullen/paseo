@@ -3,19 +3,22 @@ import { createSocket, type Socket } from "node:dgram";
 import { z } from "zod";
 
 /**
- * The deployed Cyril wake-authority wire protocol (ESP32-S3 firmware), spoken
+ * The microlink wake-authority wire protocol (ESP32-S3 firmware), spoken
  * byte-exactly:
  *
  *   transcript  = `POST\n/v1/wake\n<unix-seconds>\n<nonce-32hex>\n<sha256hex-of-body>`
  *   signature   = HMAC-SHA256(secret, transcript) hex   (secret = raw bytes from hex)
- *   auth header = `Cyril-HMAC <signature>`
+ *   auth header = `<scheme> <signature>` (default scheme `Microlink-HMAC`)
  *
  * HTTP wake: POST to `http://<host>:<port>/v1/wake` with the four
- * X-Cyril- headers plus Authorization and an empty body; any 2xx is accepted.
- * UDP wake (tailnet): a single datagram
- * `POST /v1/wake\n<ts>\n<nonce>\n<digest>\nCyril-HMAC <sig>`; the one-line
+ * `<headerPrefix>*` headers plus Authorization and an empty body; any 2xx is
+ * accepted. UDP wake (tailnet): a single datagram
+ * `POST /v1/wake\n<ts>\n<nonce>\n<digest>\n<scheme> <sig>`; the one-line
  * JSON reply's `accepted` decides. Observer (unsigned): GET /v1/observer
  * returns one-line JSON with `target_awake`.
+ *
+ * Scheme and header names are configurable per host (defaults
+ * `Microlink-HMAC` / `X-Wake-`); legacy authorities override both.
  *
  * The hex secret arrives through the same tokens.json mechanism the http
  * transport uses (`secretRef` → resolveToken). It is key material only: no
@@ -36,7 +39,7 @@ const OBSERVER_TARGET = "/v1/observer";
 /** One-line JSON reply to a UDP wake: `{"accepted":true|false, …}`. */
 const WakeReplySchema = z.object({ accepted: z.boolean() });
 
-/** Observer payload: firmware contract `cyril-wake-observer-v1`; only `target_awake` is consumed. */
+/** Wake-authority observer payload (schema string not consumed); only `target_awake` is used. */
 const ObserverPayloadSchema = z.object({ target_awake: z.boolean() });
 
 export interface WakeSignature {
@@ -51,12 +54,20 @@ export interface SignWakeOptions {
   now?: () => number;
   /** 32-hex nonce seam, so tests pin exact transcripts. */
   nonce?: () => string;
+  /** Authorization scheme token; defaults to "Microlink-HMAC". */
+  scheme?: string;
+  /** Wire header prefix; defaults to "X-Wake-". */
+  headerPrefix?: string;
 }
+
+/** Neutral wire names; legacy authorities override both per host. */
+export const MICROLINK_DEFAULT_SCHEME = "Microlink-HMAC";
+export const MICROLINK_DEFAULT_HEADER_PREFIX = "X-Wake-";
 
 /**
  * Build the four signed wake fields for a transcript over `method`+`target`
- * and `body`. Header names and the `Cyril-HMAC` scheme are firmware
- * compatibility constants — do not rename.
+ * and `body`. The scheme token and header names default to the neutral
+ * `Microlink-HMAC` / `X-Wake-` values; set them per host for older firmware.
  */
 export function signWake(
   secretHex: string,
@@ -70,7 +81,7 @@ export function signWake(
   const digest = createHash("sha256").update(body, "utf8").digest("hex");
   const transcript = `${method}\n${target}\n${ts}\n${nonce}\n${digest}`;
   const signature = createHmac("sha256", Buffer.from(secretHex, "hex")).update(transcript, "utf8").digest("hex");
-  return { ts, nonce, digest, authorization: `Cyril-HMAC ${signature}` };
+  return { ts, nonce, digest, authorization: `${options.scheme ?? MICROLINK_DEFAULT_SCHEME} ${signature}` };
 }
 
 /** Minimal UDP surface for the wake datagram, so tests capture bytes and forge replies. */
@@ -140,13 +151,14 @@ export async function sendWakeHttp(
   options: SendWakeOptions = {},
 ): Promise<boolean> {
   const { ts, nonce, digest, authorization } = signWake(secretHex, "POST", WAKE_TARGET, "", options);
+  const prefix = options.headerPrefix ?? MICROLINK_DEFAULT_HEADER_PREFIX;
   try {
     const response = await (options.fetchImpl ?? fetch)(`http://${host}:${port}${WAKE_TARGET}`, {
       method: "POST",
       headers: {
-        "X-Cyril-Timestamp": ts,
-        "X-Cyril-Nonce": nonce,
-        "X-Cyril-Content-SHA256": digest,
+        [`${prefix}Timestamp`]: ts,
+        [`${prefix}Nonce`]: nonce,
+        [`${prefix}Content-SHA256`]: digest,
         Authorization: authorization,
       },
       signal: AbortSignal.timeout(MICROLINK_TRANSPORT_TIMEOUT_MS),
@@ -157,7 +169,7 @@ export async function sendWakeHttp(
   }
 }
 
-/** The wire datagram: `POST /v1/wake\n<ts>\n<nonce>\n<digest>\nCyril-HMAC <sig>`. */
+/** The wire datagram: `POST /v1/wake\n<ts>\n<nonce>\n<digest>\n<scheme> <sig>`. */
 export function buildWakeDatagram(signature: WakeSignature): string {
   return `POST ${WAKE_TARGET}\n${signature.ts}\n${signature.nonce}\n${signature.digest}\n${signature.authorization}`;
 }
