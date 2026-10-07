@@ -11,6 +11,7 @@ import {
 } from "../shared/registry.ts";
 import { probeReachable, realSpawn } from "./probe.ts";
 import { sendMagicPacket } from "./wol.ts";
+import { MICROLINK_DEFAULT_PORT, sendWakeHttp, sendWakeUdp } from "./microlink.ts";
 import { resolveToken } from "./registry.ts";
 
 /**
@@ -77,6 +78,7 @@ export interface TransportRunners {
   http: TransportRunner;
   wol: TransportRunner;
   command: TransportRunner;
+  microlink: TransportRunner;
 }
 
 const defaultRunners: TransportRunners = {
@@ -101,6 +103,12 @@ const defaultRunners: TransportRunners = {
     if (transport.type !== "command") return false;
     const result = await realSpawn(transport.command, transport.args ?? [], TRANSPORT_TIMEOUT_MS);
     return result.code === 0;
+  },
+  async microlink(transport, secret) {
+    if (transport.type !== "microlink" || secret === null) return false;
+    const port = transport.port ?? MICROLINK_DEFAULT_PORT;
+    // sendWakeHttp/sendWakeUdp never throw; mode defaults to http.
+    return transport.mode === "udp" ? sendWakeUdp(transport.host, port, secret) : sendWakeHttp(transport.host, port, secret);
   },
 };
 
@@ -142,6 +150,8 @@ export function describeTransport(transport: WakeTransport): string {
       return transport.host !== undefined ? `${transport.mac} via ${transport.host}` : transport.mac;
     case "command":
       return [transport.command, ...(transport.args ?? [])].join(" ");
+    case "microlink":
+      return `microlink(${transport.host}:${transport.port ?? MICROLINK_DEFAULT_PORT} ${transport.mode ?? "http"})`;
   }
 }
 
@@ -239,7 +249,12 @@ export function createWakeEngine(deps: WakeEngineDeps = {}): WakeEngine {
       withTransition(jobId, (entry) => ({ ...entry, log: [...entry.log, `trying ${transport.type} (${label})`] }));
       let ok = false;
       try {
-        const token = transport.type === "http" ? resolveTokenRef(transport.tokenRef ?? "") : null;
+        const token =
+          transport.type === "http"
+            ? resolveTokenRef(transport.tokenRef ?? "")
+            : transport.type === "microlink"
+              ? resolveTokenRef(transport.secretRef ?? "")
+              : null;
         ok = await runners[transport.type](transport, token);
       } catch (cause) {
         log(`host '${host.id}': ${transport.type} wake threw: ${cause instanceof Error ? cause.message : String(cause)}`);

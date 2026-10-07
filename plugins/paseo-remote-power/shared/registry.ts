@@ -16,6 +16,11 @@ import { z } from "zod";
  *    specific relay/subnet-directed address instead of broadcast.
  *  - command: run a local command on the daemon host (e.g. a vendor wake CLI).
  *    Config is trusted: it runs arbitrary shell.
+ *  - microlink: the deployed Cyril wake authority on an ESP32-S3 — an
+ *    HMAC-signed POST /v1/wake over HTTP, or the same request as one signed
+ *    UDP datagram on the tailnet. `secretRef` names the hex secret in the
+ *    plugin state dir (tokens.json); the secret never appears in a host
+ *    record. Defaults: port 48320, mode "http".
  */
 export const HttpTransportSchema = z.object({
   type: z.literal("http"),
@@ -37,10 +42,19 @@ export const CommandTransportSchema = z.object({
   args: z.array(z.string().max(1024)).max(64).optional(),
 });
 
+export const MicrolinkTransportSchema = z.object({
+  type: z.literal("microlink"),
+  host: z.string().min(1).max(253),
+  mode: z.enum(["http", "udp"]).optional(),
+  secretRef: z.string().min(1).max(128).optional(),
+  port: z.number().int().min(1).max(65535).optional(),
+});
+
 export const WakeTransportSchema = z.discriminatedUnion("type", [
   HttpTransportSchema,
   WolTransportSchema,
   CommandTransportSchema,
+  MicrolinkTransportSchema,
 ]);
 
 /** Reachability probe: a custom command wins over ssh when both are set. */
@@ -66,6 +80,7 @@ export type WakeTransport = z.infer<typeof WakeTransportSchema>;
 export type HttpTransport = z.infer<typeof HttpTransportSchema>;
 export type WolTransport = z.infer<typeof WolTransportSchema>;
 export type CommandTransport = z.infer<typeof CommandTransportSchema>;
+export type MicrolinkTransport = z.infer<typeof MicrolinkTransportSchema>;
 export type StatusCommand = z.infer<typeof StatusCommandSchema>;
 
 /** Canonical failure modes, ported from the wake script this plugin generalizes. */
@@ -170,7 +185,7 @@ export const hostStatusRpc = defineRpc({
   output: z.object({
     id: z.string(),
     state: z.enum(HOST_STATES),
-    probedVia: z.enum(["statusCommand", "ssh", "none"]),
+    probedVia: z.enum(["statusCommand", "observer", "ssh", "none"]),
     error: z.string().nullable(),
     checkedAt: z.number().int().nonnegative(),
   }),

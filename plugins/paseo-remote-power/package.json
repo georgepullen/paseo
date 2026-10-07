@@ -10,7 +10,7 @@
   "scripts": {
     "stamp": "node -e \"import('../../packages/paseo-plugin-helper/src/server/version.ts').then(m => m.stampVersion({ targetFile: 'shared/version.ts' }))\"",
     "typecheck": "tsc --noEmit",
-    "test": "npm run typecheck && NODE_ENV=test node --import ./tests/register-ts-hooks.mjs --test shared/registry.test.ts server/wol.test.ts server/probe.test.ts server/wake-engine.test.ts server/registry.test.ts index.server.test.ts mcp/test/protocol.test.mjs"
+    "test": "npm run typecheck && NODE_ENV=test node --import ./tests/register-ts-hooks.mjs --test shared/registry.test.ts server/microlink.test.ts server/wol.test.ts server/probe.test.ts server/wake-engine.test.ts server/registry.test.ts index.server.test.ts mcp/test/protocol.test.mjs"
   },
   "keywords": [
     "paseo",

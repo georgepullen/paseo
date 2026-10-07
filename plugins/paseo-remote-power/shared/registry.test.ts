@@ -50,12 +50,30 @@ test("the transport union discriminates on type and validates each shape", () =>
   assert.equal(WakeTransportSchema.parse({ type: "wol", mac: "00:11:22:33:44:55" }).type, "wol");
   assert.equal(WakeTransportSchema.parse({ type: "wol", mac: "00-11-22-33-44-55", host: "192.0.2.255" }).type, "wol");
   assert.equal(WakeTransportSchema.parse({ type: "command", command: "/usr/local/bin/wake", args: ["--port", "9"] }).type, "command");
+  assert.equal(WakeTransportSchema.parse({ type: "microlink", host: "cyril.tailnet" }).type, "microlink");
+  const microlink = WakeTransportSchema.parse({
+    type: "microlink",
+    host: "192.0.2.5",
+    mode: "udp",
+    secretRef: "cyril-wake",
+    port: 48320,
+  });
+  assert.deepEqual(microlink, { type: "microlink", host: "192.0.2.5", mode: "udp", secretRef: "cyril-wake", port: 48320 });
+  assert.equal(
+    WakeTransportSchema.safeParse({ type: "microlink", host: "192.0.2.5" }).success,
+    true,
+    "mode, secretRef, and port are optional (defaults: http, none, 48320)",
+  );
 
   for (const bad of [
     { type: "carrier-pigeon" },
     { type: "wol", mac: "nope" },
     { type: "http" },
     { type: "command" },
+    { type: "microlink" },
+    { type: "microlink", host: "192.0.2.5", mode: "carrier-pigeon" },
+    { type: "microlink", host: "192.0.2.5", port: 0 },
+    { type: "microlink", host: "192.0.2.5", port: 70000 },
   ]) {
     assert.equal(WakeTransportSchema.safeParse(bad).success, false, `${JSON.stringify(bad)} must not parse`);
   }
@@ -80,6 +98,7 @@ test("host records round-trip through the schema", () => {
 test("host.status output vocabulary is up/down/unknown", () => {
   const output = hostStatusRpc.output.parse({ id: "host-abcd1234", state: "up", probedVia: "ssh", error: null, checkedAt: 1 });
   assert.equal(output.state, "up");
+  assert.equal(hostStatusRpc.output.parse({ id: "x", state: "down", probedVia: "observer", error: null, checkedAt: 1 }).probedVia, "observer");
   assert.equal(hostStatusRpc.output.safeParse({ id: "x", state: "woo", probedVia: "ssh", error: null, checkedAt: 1 }).success, false);
 });
 

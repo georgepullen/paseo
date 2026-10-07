@@ -26,7 +26,7 @@ import { homedir, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawn } from "node:child_process";
 import { createSocket } from "node:dgram";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash, createHmac, randomBytes } from "node:crypto";
 import { pathToFileURL } from "node:url";
 
 export const SERVER_NAME = "paseo-remote-power";
@@ -40,6 +40,10 @@ export const DEFAULT_WAKE_WINDOW_SECONDS = 110;
 export const TRANSPORT_TIMEOUT_MS = 30_000;
 export const DEFAULT_PROBE_TIMEOUT_SECONDS = 8;
 export const DEFAULT_MAX_CONCURRENT_WAKES = 2;
+export const MICROLINK_DEFAULT_PORT = 48320;
+export const MICROLINK_UDP_REPLY_TIMEOUT_MS = 6_000;
+export const MICROLINK_OBSERVER_TIMEOUT_MS = 6_000;
+export const MICROLINK_TRANSPORT_TIMEOUT_MS = 30_000;
 export const JOB_STATUSES = ["starting", "waking", "verifying", "up", "failed"];
 export const ACTIVE_JOB_STATUSES = ["starting", "waking", "verifying"];
 export const FAILURE_MODES = ["no-transport", "never-reachable", "saturated", "unknown-host"];
@@ -61,7 +65,7 @@ function optionalString(value, max) {
   return typeof value === "string" && value.length >= 1 && value.length <= max;
 }
 
-/** Wake transport: {type:"http",url,tokenRef?} | {type:"wol",mac,host?} | {type:"command",command,args?}. */
+/** Wake transport: {type:"http",url,tokenRef?} | {type:"wol",mac,host?} | {type:"command",command,args?} | {type:"microlink",host,mode?,secretRef?,port?}. */
 export function validateWakeTransport(transport) {
   if (!isPlainObject(transport)) return "transport must be an object";
   switch (transport.type) {
@@ -82,8 +86,21 @@ export function validateWakeTransport(transport) {
         }
       }
       return null;
+    case "microlink":
+      if (!optionalString(transport.host, 253)) return "microlink transport needs a host";
+      if (transport.mode !== undefined && transport.mode !== "http" && transport.mode !== "udp") {
+        return "microlink mode must be http or udp";
+      }
+      if (transport.secretRef !== undefined && !optionalString(transport.secretRef, 128)) return "secretRef must be a short string";
+      if (
+        transport.port !== undefined &&
+        (!Number.isInteger(transport.port) || transport.port < 1 || transport.port > 65535)
+      ) {
+        return "microlink port must be an integer between 1 and 65535";
+      }
+      return null;
     default:
-      return "transport type must be http, wol, or command";
+      return "transport type must be http, wol, command, or microlink";
   }
 }
 
@@ -211,6 +228,144 @@ export function sendMagicPacket(transport, options = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// Microlink: the deployed Cyril wake-authority wire protocol (ESP32-S3),
+// mirrored byte-for-byte from server/microlink.ts.
+//
+//   transcript  = `POST\n/v1/wake\n<unix-seconds>\n<nonce-32hex>\n<sha256hex-of-body>`
+//   signature   = HMAC-SHA256(secret, transcript) hex   (secret = raw bytes from hex)
+//   auth header = `Cyril-HMAC <signature>`
+//
+// HTTP wake: POST with the four X-Cyril-*/Authorization headers; 2xx accepted.
+// UDP wake: one datagram `POST /v1/wake\n<ts>\n<nonce>\n<digest>\nCyril-HMAC <sig>`;
+// the one-line JSON reply's `accepted` decides. Observer (unsigned): GET
+// /v1/observer → JSON with `target_awake`. The hex secret comes from
+// tokens.json via secretRef and never appears in a log, error, or RPC output.
+// ---------------------------------------------------------------------------
+
+export function signWake(secretHex, method = "POST", target = "/v1/wake", body = "", options = {}) {
+  const ts = String(Math.floor((options.now ?? (() => Date.now() / 1000))()));
+  const nonce = (options.nonce ?? (() => randomBytes(16).toString("hex")))();
+  const digest = createHash("sha256").update(body, "utf8").digest("hex");
+  const transcript = `${method}\n${target}\n${ts}\n${nonce}\n${digest}`;
+  const signature = createHmac("sha256", Buffer.from(secretHex, "hex")).update(transcript, "utf8").digest("hex");
+  return { ts, nonce, digest, authorization: `Cyril-HMAC ${signature}` };
+}
+
+/** The wire datagram: `POST /v1/wake\n<ts>\n<nonce>\n<digest>\nCyril-HMAC <sig>`. */
+export function buildWakeDatagram(signature) {
+  return `POST /v1/wake\n${signature.ts}\n${signature.nonce}\n${signature.digest}\n${signature.authorization}`;
+}
+
+/** `accepted` from the reply line: real JSON first, then a tolerant text scan. */
+export function replyAccepted(reply) {
+  if (reply === null) return false;
+  const text = reply.toString("utf8");
+  try {
+    const parsed = JSON.parse(text);
+    if (isPlainObject(parsed) && parsed.accepted === true) return true;
+  } catch {
+    // Not JSON — the firmware may append a newline or log noise; scan the text.
+  }
+  return /"accepted"\s*:\s*true/.test(text);
+}
+
+/** Minimal UDP surface mirroring server/microlink.ts's MicrolinkSocket. */
+export function createMicrolinkSocket() {
+  const socket = createSocket({ type: "udp4", reuseAddr: true });
+  let deliver = null;
+  socket.on("message", (packet) => {
+    const waiting = deliver;
+    deliver = null;
+    if (waiting) waiting(packet);
+  });
+  // An ICMP unreachable surfaces as a socket 'error' event, not a send-callback
+  // failure; drain a pending receive and never crash on the event.
+  socket.on("error", () => {
+    const waiting = deliver;
+    deliver = null;
+    if (waiting) waiting(Buffer.alloc(0));
+  });
+  socket.bind(() => {});
+  return {
+    send: (packet, port, address) =>
+      new Promise((resolveSend, rejectSend) => {
+        socket.send(packet, port, address, (cause) => (cause ? rejectSend(cause) : resolveSend()));
+      }),
+    receive: (timeoutMs) =>
+      new Promise((resolveReceive) => {
+        const guard = setTimeout(() => {
+          deliver = null;
+          resolveReceive(null);
+        }, timeoutMs);
+        deliver = (packet) => {
+          clearTimeout(guard);
+          resolveReceive(packet);
+        };
+      }),
+    close: () => {
+      try {
+        socket.close();
+      } catch {
+        // already closed
+      }
+    },
+  };
+}
+
+/** Signed HTTP wake. True iff the authority answered 2xx. Never throws. */
+export async function sendWakeHttp(host, port, secretHex, options = {}) {
+  const { ts, nonce, digest, authorization } = signWake(secretHex, "POST", "/v1/wake", "", options);
+  try {
+    const response = await (options.fetchImpl ?? fetch)(`http://${host}:${port}/v1/wake`, {
+      method: "POST",
+      headers: {
+        "X-Cyril-Timestamp": ts,
+        "X-Cyril-Nonce": nonce,
+        "X-Cyril-Content-SHA256": digest,
+        Authorization: authorization,
+      },
+      signal: AbortSignal.timeout(MICROLINK_TRANSPORT_TIMEOUT_MS),
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+/** Signed UDP wake: one datagram, one reply line. Never throws. */
+export async function sendWakeUdp(host, port, secretHex, options = {}) {
+  try {
+    const datagram = buildWakeDatagram(signWake(secretHex, "POST", "/v1/wake", "", options));
+    const socket = (options.socketFactory ?? createMicrolinkSocket)();
+    try {
+      await socket.send(Buffer.from(datagram, "utf8"), port, host);
+      const reply = await socket.receive(options.replyTimeoutMs ?? MICROLINK_UDP_REPLY_TIMEOUT_MS);
+      return replyAccepted(reply);
+    } finally {
+      socket.close();
+    }
+  } catch {
+    return false;
+  }
+}
+
+/** Unsigned observer read. Null means "no answer": fetch failure, non-2xx, or unparseable body. */
+export async function observeHttp(host, port, options = {}) {
+  try {
+    const response = await (options.fetchImpl ?? fetch)(`http://${host}:${port}/v1/observer`, {
+      method: "GET",
+      signal: AbortSignal.timeout(options.timeoutMs ?? MICROLINK_OBSERVER_TIMEOUT_MS),
+    });
+    if (!response.ok) return null;
+    const parsed = await response.json();
+    if (!isPlainObject(parsed) || typeof parsed.target_awake !== "boolean") return null;
+    return { targetAwake: parsed.target_awake };
+  } catch {
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Reachability probe: custom status command wins over ssh BatchMode/ConnectTimeout.
 // ---------------------------------------------------------------------------
 
@@ -226,11 +381,27 @@ export function makeSpawnFn() {
 export async function probeHost(host, options = {}) {
   const timeoutSeconds = options.timeoutSeconds ?? DEFAULT_PROBE_TIMEOUT_SECONDS;
   const spawnImpl = options.spawnImpl ?? makeSpawnFn();
+  const observeImpl = options.observeImpl ?? null;
   const timeoutMs = timeoutSeconds * 1000 + 2_000;
   const run = async (command, args) => (await spawnImpl(command, args, timeoutMs)).code === 0;
   if (host.statusCommand) {
     const up = await run(host.statusCommand.command, host.statusCommand.args ?? []);
     return { state: up ? "up" : "down", probedVia: "statusCommand" };
+  }
+  // A microlink host's observer is the fast, unsigned channel: the device's
+  // own word on `target_awake`, so an answer is authoritative (up iff true).
+  // No answer at all (unreachable, non-2xx, malformed) falls through to ssh.
+  const microlink = host.wakeTransports?.find((transport) => transport.type === "microlink");
+  if (microlink) {
+    const observe =
+      observeImpl ??
+      ((obsHost, obsPort) => observeHttp(obsHost, obsPort, { timeoutMs: timeoutSeconds * 1000 }));
+    try {
+      const report = await observe(microlink.host, microlink.port ?? MICROLINK_DEFAULT_PORT);
+      if (report !== null) return { state: report.targetAwake ? "up" : "down", probedVia: "observer" };
+    } catch {
+      // Observer trouble is not a probe crash: fall through to the next channel.
+    }
   }
   if (host.sshTarget) {
     const up = await run("ssh", ["-o", "BatchMode=yes", "-o", `ConnectTimeout=${timeoutSeconds}`, host.sshTarget, "true"]);
@@ -252,6 +423,8 @@ export function describeTransport(transport) {
       return transport.host !== undefined ? `${transport.mac} via ${transport.host}` : transport.mac;
     case "command":
       return [transport.command, ...(transport.args ?? [])].join(" ");
+    case "microlink":
+      return `microlink(${transport.host}:${transport.port ?? MICROLINK_DEFAULT_PORT} ${transport.mode ?? "http"})`;
     default:
       return "unknown transport";
   }
@@ -288,6 +461,12 @@ const defaultRunners = {
     const runner = makeSpawnFn();
     const result = await runner(transport.command, transport.args ?? [], TRANSPORT_TIMEOUT_MS);
     return result.code === 0;
+  },
+  async microlink(transport, secret) {
+    if (secret === null) return false;
+    const port = transport.port ?? MICROLINK_DEFAULT_PORT;
+    // sendWakeHttp/sendWakeUdp never throw; mode defaults to http.
+    return transport.mode === "udp" ? sendWakeUdp(transport.host, port, secret) : sendWakeHttp(transport.host, port, secret);
   },
 };
 
@@ -335,7 +514,12 @@ export function createWakeEngine(deps = {}) {
       withTransition(jobId, (entry) => ({ ...entry, log: [...entry.log, `trying ${transport.type} (${label})`] }));
       let ok = false;
       try {
-        const token = transport.type === "http" ? resolveTokenRef(transport.tokenRef ?? "") : null;
+        const token =
+          transport.type === "http"
+            ? resolveTokenRef(transport.tokenRef ?? "")
+            : transport.type === "microlink"
+              ? resolveTokenRef(transport.secretRef ?? "")
+              : null;
         ok = await runners[transport.type](transport, token);
       } catch (cause) {
         log(`host '${host.id}': ${transport.type} wake threw: ${cause instanceof Error ? cause.message : String(cause)}`);
@@ -566,7 +750,7 @@ export const TOOL_DEFINITIONS = [
     name: "power_wake",
     title: "Power wake",
     description:
-      "Start waking a host (ordered transports: http POST, Wake-on-LAN, custom command; idempotent when already up) and return the wake job id immediately. Poll power_job_status until it reports up or failed.",
+      "Start waking a host (ordered transports: http POST, signed microlink to a Cyril wake authority, Wake-on-LAN, custom command; idempotent when already up) and return the wake job id immediately. Poll power_job_status until it reports up or failed.",
     inputSchema: TOOL_SCHEMAS.powerWake,
   },
   {

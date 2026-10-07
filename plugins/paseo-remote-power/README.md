@@ -43,6 +43,7 @@ Transports:
 | `http` | `url`, `tokenRef?` | `POST` to the endpoint; when `tokenRef` is set, the matching bearer token from the plugin state dir is sent as `Authorization: Bearer …`. |
 | `wol` | `mac`, `host?` | Standard 102-byte magic packet over UDP (port 9). `host` targets a subnet-directed or relay address; default is broadcast. |
 | `command` | `command`, `args?` | Runs a local command on the daemon host; exit 0 = accepted. |
+| `microlink` | `host`, `mode?`, `secretRef?`, `port?` | HMAC-signed wake to a Cyril wake authority on an ESP32-S3: a signed `POST /v1/wake` over HTTP, or one signed UDP datagram on the tailnet (`mode: "udp"`). Defaults: `mode` `http`, `port` 48320. `secretRef` names the hex secret in the plugin state dir; the secret never appears in a host record. |
 
 ### Example configuration
 
@@ -60,6 +61,7 @@ repository. Placeholder shapes:
       "wakeWindowSeconds": 110,
       "wakeTransports": [
         { "type": "http", "url": "http://192.0.2.10:8080/wake", "tokenRef": "lab-gpu-wake" },
+        { "type": "microlink", "host": "cyril.tailnet", "mode": "udp", "secretRef": "cyril-wake" },
         { "type": "wol", "mac": "00:11:22:33:44:55", "host": "192.0.2.255" },
         { "type": "command", "command": "/usr/local/bin/wake-lab-gpu", "args": ["--port", "9"] }
       ],
@@ -73,7 +75,17 @@ repository. Placeholder shapes:
 Bearer tokens are stored **only** in `tokens.json` in the same state dir,
 keyed by `tokenRef`. The roster form's write-only "token" field stores one for
 the host and wires it to every `http` transport without an explicit ref;
-`hosts.json` itself never contains secrets.
+`hosts.json` itself never contains secrets. Microlink hex wake secrets work
+the same way: `secretRef` names a key in `tokens.json`, resolved only when a
+wake runs, and never logged or echoed.
+
+### Reachability probe
+
+`statusCommand` wins over the microlink observer, which wins over ssh: a host
+with a `microlink` transport is asked first via its unsigned
+`GET /v1/observer` (`target_awake: true` = up; no answer falls through to
+ssh), so the device's own wake authority settles the question without an ssh
+round-trip.
 
 ## Wake semantics (ported from a battle-tested wake script)
 

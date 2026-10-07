@@ -47,17 +47,33 @@ const STATUS_POLL_MS = 15_000;
 const JOBS_POLL_MS = 2_000;
 
 interface TransportDraft {
-  type: "http" | "wol" | "command";
+  type: "http" | "wol" | "command" | "microlink";
   url: string;
   tokenRef: string;
   mac: string;
   host: string;
   command: string;
   args: string;
+  microlinkHost: string;
+  microlinkPort: string;
+  microlinkMode: string;
+  microlinkSecretRef: string;
 }
 
 function emptyDraft(): TransportDraft {
-  return { type: "http", url: "", tokenRef: "", mac: "", host: "", command: "", args: "" };
+  return {
+    type: "http",
+    url: "",
+    tokenRef: "",
+    mac: "",
+    host: "",
+    command: "",
+    args: "",
+    microlinkHost: "",
+    microlinkPort: "",
+    microlinkMode: "http",
+    microlinkSecretRef: "",
+  };
 }
 
 function draftToTransport(draft: TransportDraft): WakeTransport | null {
@@ -78,6 +94,17 @@ function draftToTransport(draft: TransportDraft): WakeTransport | null {
           ? { args: draft.args.split(",").map((arg) => arg.trim()).filter((arg) => arg.length > 0) }
           : {}),
       };
+    case "microlink": {
+      if (draft.microlinkHost.trim().length === 0) return null;
+      const parsedPort = Number.parseInt(draft.microlinkPort, 10);
+      return {
+        type: "microlink",
+        host: draft.microlinkHost.trim(),
+        ...(draft.microlinkMode === "udp" ? { mode: "udp" as const } : {}),
+        ...(draft.microlinkSecretRef.trim().length > 0 ? { secretRef: draft.microlinkSecretRef.trim() } : {}),
+        ...(Number.isInteger(parsedPort) && parsedPort >= 1 && parsedPort <= 65535 ? { port: parsedPort } : {}),
+      };
+    }
   }
 }
 
@@ -90,6 +117,11 @@ function transportToDraft(transport: WakeTransport): TransportDraft {
   } else if (transport.type === "wol") {
     base.mac = transport.mac;
     base.host = transport.host ?? "";
+  } else if (transport.type === "microlink") {
+    base.microlinkHost = transport.host;
+    base.microlinkMode = transport.mode ?? "http";
+    base.microlinkPort = transport.port !== undefined ? String(transport.port) : "";
+    base.microlinkSecretRef = transport.secretRef ?? "";
   } else {
     base.command = transport.command;
     base.args = (transport.args ?? []).join(", ");
@@ -98,7 +130,7 @@ function transportToDraft(transport: WakeTransport): TransportDraft {
 }
 
 function toTransportType(value: string): TransportDraft["type"] {
-  return value === "wol" || value === "command" || value === "http" ? value : "http";
+  return value === "wol" || value === "command" || value === "http" || value === "microlink" ? value : "http";
 }
 
 function stateVariant(state: HostState, waking: boolean): StatusVariant {
@@ -483,6 +515,7 @@ function HostForm({
                   { label: "http POST", value: "http" },
                   { label: "Wake-on-LAN", value: "wol" },
                   { label: "Custom command", value: "command" },
+                  { label: "Microlink (Cyril)", value: "microlink" },
                 ]}
               />
             </HostFormRow>
@@ -513,6 +546,29 @@ function HostForm({
                 </HostFormRow>
                 <HostFormRow label="Arguments" description="Comma-separated.">
                   <HostTextInput value={draft.args} onChangeText={(text) => setField(index, "args", text)} placeholder="--port 9" autoCapitalize="none" />
+                </HostFormRow>
+              </>
+            ) : null}
+            {draft.type === "microlink" ? (
+              <>
+                <HostFormRow label="Host" description="The Cyril wake authority on the device (hostname or IP).">
+                  <HostTextInput value={draft.microlinkHost} onChangeText={(text) => setField(index, "microlinkHost", text)} placeholder="cyril.tailnet" autoCapitalize="none" />
+                </HostFormRow>
+                <HostFormRow label="Port" description="Optional. Default 48320.">
+                  <HostTextInput value={draft.microlinkPort} onChangeText={(text) => setField(index, "microlinkPort", text)} placeholder="48320" keyboardType="number-pad" />
+                </HostFormRow>
+                <HostFormRow label="Mode" description="http POST, or one signed UDP datagram (tailnet). Default http.">
+                  <HostSelect
+                    value={draft.microlinkMode}
+                    onValueChange={(value) => setField(index, "microlinkMode", value === "udp" ? "udp" : "http")}
+                    options={[
+                      { label: "http", value: "http" },
+                      { label: "udp", value: "udp" },
+                    ]}
+                  />
+                </HostFormRow>
+                <HostFormRow label="Secret ref" description="Names the hex wake secret in the plugin state dir; never stored here.">
+                  <HostTextInput value={draft.microlinkSecretRef} onChangeText={(text) => setField(index, "microlinkSecretRef", text)} placeholder="cyril-wake" autoCapitalize="none" />
                 </HostFormRow>
               </>
             ) : null}

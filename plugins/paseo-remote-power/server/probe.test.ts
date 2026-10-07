@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { probeHost, realSpawn, type SpawnFn } from "./probe.ts";
+import { probeHost, realSpawn, type ObserveFn, type SpawnFn } from "./probe.ts";
 import type { HostRecord } from "../shared/registry.ts";
 
 /**
@@ -41,6 +41,16 @@ function fakeSpawn(codes: number[] | ((command: string, args: string[]) => numbe
     return { code: pick(command, args) };
   };
   return Object.assign(spawnFn, { calls });
+}
+
+/** An observer seam that answers from a script; records the host:port it was asked about. */
+function fakeObserver(answers: ({ targetAwake: boolean } | null)[]): ObserveFn & { calls: { host: string; port: number }[] } {
+  const calls: { host: string; port: number }[] = [];
+  const observe: ObserveFn = async (obsHost, obsPort) => {
+    calls.push({ host: obsHost, port: obsPort });
+    return answers.shift() ?? null;
+  };
+  return Object.assign(observe, { calls });
 }
 
 test("ssh probe runs BatchMode with a bounded ConnectTimeout and a bare true", async () => {
@@ -84,6 +94,73 @@ test("a host with no probe configured is unknown, not down", async () => {
   const result = await probeHost(host(), { spawnImpl: fakeSpawn([0]), timeoutSeconds: 2 });
   assert.equal(result.state, "unknown");
   assert.equal(result.probedVia, "none");
+});
+
+const MICROLINK = { type: "microlink" as const, host: "cyril.tailnet", port: 49152 };
+
+test("the observer answers a microlink host before ssh is consulted", async () => {
+  const spawnFn = fakeSpawn((command) => (command === "ssh" ? 0 : 1));
+  const observer = fakeObserver([{ targetAwake: true }]);
+  const up = await probeHost(host({ sshTarget: "build.example.net", wakeTransports: [MICROLINK] }), {
+    spawnImpl: spawnFn,
+    observeImpl: observer,
+    timeoutSeconds: 2,
+  });
+  assert.equal(up.state, "up");
+  assert.equal(up.probedVia, "observer");
+  assert.deepEqual(observer.calls, [{ host: "cyril.tailnet", port: 49152 }]);
+  assert.equal(spawnFn.calls.length, 0, "a definitive observer answer means ssh never runs");
+
+  const down = await probeHost(host({ sshTarget: "build.example.net", wakeTransports: [MICROLINK] }), {
+    spawnImpl: spawnFn,
+    observeImpl: fakeObserver([{ targetAwake: false }]),
+    timeoutSeconds: 2,
+  });
+  assert.equal(down.state, "down", "the device's own target_awake=false is an answer, not a fall-through");
+  assert.equal(down.probedVia, "observer");
+
+  const portless = await probeHost(
+    host({ sshTarget: "build.example.net", wakeTransports: [{ type: "microlink", host: "cyril.tailnet" }] }),
+    { spawnImpl: spawnFn, observeImpl: fakeObserver([{ targetAwake: true }]), timeoutSeconds: 2 },
+  );
+  assert.equal(portless.probedVia, "observer");
+});
+
+test("no observer answer falls through to ssh; ssh-only hosts never ask the observer", async () => {
+  const spawnFn = fakeSpawn((command) => (command === "ssh" ? 0 : 1));
+  const observer = fakeObserver([null]);
+  const fallenThrough = await probeHost(host({ sshTarget: "build.example.net", wakeTransports: [MICROLINK] }), {
+    spawnImpl: spawnFn,
+    observeImpl: observer,
+    timeoutSeconds: 2,
+  });
+  assert.equal(fallenThrough.state, "up", "ssh answers after the observer stays silent");
+  assert.equal(fallenThrough.probedVia, "ssh");
+  assert.deepEqual(observer.calls, [{ host: "cyril.tailnet", port: 49152 }]);
+
+  const sshOnly = fakeObserver([{ targetAwake: true }]);
+  const untouched = await probeHost(host({ sshTarget: "build.example.net", wakeTransports: [{ type: "wol", mac: "00:11:22:33:44:55" }] }), {
+    spawnImpl: fakeSpawn([0]),
+    observeImpl: sshOnly,
+    timeoutSeconds: 2,
+  });
+  assert.equal(untouched.state, "up");
+  assert.equal(untouched.probedVia, "ssh", "a host without a microlink transport keeps the ssh channel");
+  assert.equal(sshOnly.calls.length, 0);
+});
+
+test("statusCommand still outranks the observer", async () => {
+  const observer = fakeObserver([{ targetAwake: false }]);
+  const result = await probeHost(
+    host({
+      statusCommand: { command: "systemctl", args: ["is-active", "sshd"] },
+      wakeTransports: [MICROLINK],
+    }),
+    { spawnImpl: fakeSpawn([0]), observeImpl: observer, timeoutSeconds: 2 },
+  );
+  assert.equal(result.state, "up");
+  assert.equal(result.probedVia, "statusCommand");
+  assert.equal(observer.calls.length, 0, "the custom command wins and the observer is not asked");
 });
 
 test("the real spawner reports exit codes for actual children", async () => {

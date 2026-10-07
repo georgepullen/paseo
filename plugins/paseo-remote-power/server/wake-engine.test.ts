@@ -10,6 +10,7 @@ import {
   type WakeEngine,
   type WakeEngineDeps,
 } from "./wake-engine.ts";
+import { sendWakeHttp, sendWakeUdp } from "./microlink.ts";
 import type { HostRecord, JobRecord, WakeTransport } from "../shared/registry.ts";
 
 /**
@@ -64,6 +65,10 @@ function makeEngine(options: { probeAnswers?: boolean[]; maxConcurrentWakes?: nu
       },
       command: async () => {
         calls.push("command:run");
+        return true;
+      },
+      microlink: async () => {
+        calls.push("microlink:run");
         return true;
       },
     },
@@ -345,4 +350,154 @@ test("transport descriptions are log-safe: no userinfo survives redaction", () =
   assert.equal(describeTransport({ type: "wol", mac: "00:11:22:33:44:55" }), "00:11:22:33:44:55");
   assert.equal(describeTransport({ type: "wol", mac: "00:11:22:33:44:55", host: "192.0.2.255" }), "00:11:22:33:44:55 via 192.0.2.255");
   assert.equal(describeTransport({ type: "command", command: "wake", args: ["--port", "9"] }), "wake --port 9");
+  assert.equal(describeTransport({ type: "microlink", host: "cyril.tailnet" }), "microlink(cyril.tailnet:48320 http)");
+  assert.equal(describeTransport({ type: "microlink", host: "192.0.2.5", port: 49152, mode: "udp" }), "microlink(192.0.2.5:49152 udp)");
+});
+
+test("microlink transports receive the resolved hex secret through secretRef", async () => {
+  const jobs: JobRecord[] = [];
+  const seenSecrets: (string | null)[] = [];
+  const probeAnswers = [false, true, false, true];
+  let clock = 1_000_000;
+  const engine = createWakeEngine({
+    settings: () => SETTINGS,
+    runners: {
+      http: async () => false,
+      wol: async () => false,
+      command: async () => false,
+      microlink: async (_transport, secret) => {
+        seenSecrets.push(secret);
+        return true;
+      },
+    },
+    probe: async () => {
+      clock += 4_000;
+      return probeAnswers.shift() ?? false;
+    },
+    sleep: async () => {
+      clock += WAKE_POLL_INTERVAL_MS;
+    },
+    now: () => clock,
+    resolveTokenRef: (ref) => (ref === "ref-cyril" ? "aabbccddeeff0011" : null),
+    loadJobs: () => jobs.map((job) => structuredClone(job)),
+    saveJobs: (next) => jobs.splice(0, jobs.length, ...next),
+    log: () => {},
+  });
+
+  await engine.startWake(host({}, [{ type: "microlink", host: "cyril.tailnet", secretRef: "ref-cyril" }]));
+  await settle(jobs);
+  await engine.startWake(host({}, [{ type: "microlink", host: "cyril.tailnet" }]));
+  await settle(jobs);
+  assert.deepEqual(seenSecrets, ["aabbccddeeff0011", null], "the secret rides secretRef like http's tokenRef");
+});
+
+test("microlink runs its slot in the transport ladder and falls through on failure", async () => {
+  const jobs: JobRecord[] = [];
+  let clock = 1_000_000;
+  const calls: string[] = [];
+  const engine = createWakeEngine({
+    settings: () => SETTINGS,
+    runners: {
+      http: async () => {
+        calls.push("http:run");
+        return false;
+      },
+      wol: async () => {
+        calls.push("wol:run");
+        return false;
+      },
+      command: async () => {
+        calls.push("command:run");
+        return false;
+      },
+      microlink: async () => {
+        calls.push("microlink:run");
+        return true;
+      },
+    },
+    probe: async () => {
+      calls.push("probe:up");
+      clock += 4_000;
+      return calls.includes("microlink:run");
+    },
+    sleep: async () => {
+      clock += WAKE_POLL_INTERVAL_MS;
+    },
+    now: () => clock,
+    loadJobs: () => jobs.map((job) => structuredClone(job)),
+    saveJobs: (next) => jobs.splice(0, jobs.length, ...next),
+    log: () => {},
+  });
+  const started = await engine.startWake(
+    host({}, [
+      { type: "http", url: "http://192.0.2.10/wake" },
+      { type: "microlink", host: "cyril.tailnet", mode: "udp" },
+    ]),
+  );
+  assert.equal(started.accepted, true);
+  await settle(jobs);
+  assert.deepEqual(calls.filter((entry) => entry.endsWith(":run")), ["http:run", "microlink:run"]);
+  const job = jobs[0];
+  assert.equal(job.status, "up");
+  assert.ok(job.log.some((line) => line.includes("trying microlink (microlink(cyril.tailnet:48320 udp))")));
+  assert.ok(job.log.some((line) => line.includes("microlink accepted")));
+});
+
+test("a failing microlink transport never surfaces the resolved secret", async () => {
+  const secret = "0123456789abcdef0123456789abcdef";
+  // The wire functions report failure as false and never throw, even when the
+  // socket or fetch explodes underneath them — so no cause message that could
+  // carry secret material ever reaches the engine's throw logger.
+  const httpOk = await sendWakeHttp("192.0.2.1", 1, secret, {
+    fetchImpl: (async () => {
+      throw new Error("connect ECONNREFUSED 192.0.2.1:1");
+    }) as typeof fetch,
+  });
+  assert.equal(httpOk, false);
+  const udpOk = await sendWakeUdp("192.0.2.1", 1, secret, {
+    socketFactory: () => {
+      throw new Error("no such socket");
+    },
+    replyTimeoutMs: 1,
+  });
+  assert.equal(udpOk, false);
+
+  // End-to-end: the engine drives the real wire function over a failing socket
+  // seam while the secret sits in the token store; nothing it persists or logs
+  // may quote it.
+  const jobs: JobRecord[] = [];
+  let clock = 1_000_000;
+  const logLines: string[] = [];
+  const engine = createWakeEngine({
+    settings: () => SETTINGS,
+    runners: {
+      microlink: (transport, secret) => {
+        if (transport.type !== "microlink") return Promise.resolve(false);
+        return sendWakeUdp(transport.host, transport.port ?? 1, secret ?? "", {
+          socketFactory: () => {
+            throw new Error("socket unavailable");
+          },
+          replyTimeoutMs: 1,
+        });
+      },
+    },
+    probe: async () => {
+      clock += 4_000;
+      return false;
+    },
+    sleep: async () => {
+      clock += WAKE_POLL_INTERVAL_MS;
+    },
+    now: () => clock,
+    resolveTokenRef: (ref) => (ref === "ref-cyril" ? secret : null),
+    loadJobs: () => jobs.map((job) => structuredClone(job)),
+    saveJobs: (next) => jobs.splice(0, jobs.length, ...next),
+    log: (line) => logLines.push(line),
+  });
+  await engine.startWake(host({}, [{ type: "microlink", host: "127.0.0.1", port: 1, secretRef: "ref-cyril" }]));
+  await settle(jobs, "failed");
+  const job = jobs[0];
+  assert.equal(job.status, "failed", "a refused wake is a failed transport, not a crash");
+  assert.equal(JSON.stringify(job).includes(secret), false, "the job record never quotes the secret");
+  assert.equal(logLines.join("\n").includes(secret), false, "the engine log never quotes the secret");
 });

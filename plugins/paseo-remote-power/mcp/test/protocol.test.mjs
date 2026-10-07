@@ -9,6 +9,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHash, createHmac } from "node:crypto";
 import { createInterface } from "node:readline";
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -26,14 +27,20 @@ import {
   HOST_STATES,
   WAKE_POLL_INTERVAL_MS,
   TRANSPORT_TIMEOUT_MS,
+  MICROLINK_DEFAULT_PORT,
   SERVER_NAME,
   SERVER_VERSION,
   buildMagicPacket,
+  buildWakeDatagram,
   createMethodHandler,
   createPowerTools,
   createWakeEngine,
+  describeTransport,
   handleLine,
+  probeHost,
+  replyAccepted,
   saveJobs,
+  signWake,
   stateDir,
   validateHostRecord,
   validateWakeTransport,
@@ -113,9 +120,15 @@ test("the mirrored validators agree with the zod schemas on good and bad shapes"
   assert.equal(validateWakeTransport({ type: "http", url: "http://192.0.2.10/wake", tokenRef: "tok" }), null);
   assert.equal(validateWakeTransport({ type: "wol", mac: "00:11:22:33:44:55" }), null);
   assert.equal(validateWakeTransport({ type: "command", command: "wake", args: ["--port", "9"] }), null);
+  assert.equal(validateWakeTransport({ type: "microlink", host: "cyril.tailnet" }), null);
+  assert.equal(validateWakeTransport({ type: "microlink", host: "192.0.2.5", mode: "udp", secretRef: "cyril-wake", port: 48320 }), null);
   assert.match(validateWakeTransport({ type: "carrier-pigeon" }), /type must be/);
   assert.match(validateWakeTransport({ type: "wol", mac: "nope" }), /MAC/);
+  assert.match(validateWakeTransport({ type: "microlink" }), /needs a host/);
+  assert.match(validateWakeTransport({ type: "microlink", host: "h", mode: "carrier-pigeon" }), /http or udp/);
+  assert.match(validateWakeTransport({ type: "microlink", host: "h", port: 70000 }), /between 1 and 65535/);
   assert.equal(validateHostRecord(hermeticHost()), null);
+  assert.equal(validateHostRecord({ ...hermeticHost(), wakeTransports: [{ type: "microlink", host: "cyril.tailnet" }] }), null);
   assert.match(validateHostRecord({ ...hermeticHost(), wakeWindowSeconds: 1 }), /between 10 and 3600/);
   assert.match(validateHostRecord({ ...hermeticHost(), wakeTransports: [{ type: "nope" }] }), /transport type/);
 });
@@ -128,6 +141,133 @@ test("the magic packet builder matches the plugin server byte for byte", () => {
     assert.equal(packet.subarray(6 + repeat * 6, 12 + repeat * 6).toString("hex"), "001122334455");
   }
   assert.equal(buildMagicPacket("zz"), null);
+});
+
+test("signWake matches the plugin server's golden transcript byte for byte", () => {
+  // The same fixed transcript/key the TS suite pins in server/microlink.test.ts.
+  const SECRET_HEX = "00112233445566778899aabbccddeeff";
+  const FIXED_TS = 1_700_000_000;
+  const FIXED_NONCE = "0f1e2d3c4b5a69788796a5b4c3d2e1f0";
+  const digest = createHash("sha256").update("", "utf8").digest("hex");
+  const transcript = `POST\n/v1/wake\n${FIXED_TS}\n${FIXED_NONCE}\n${digest}`;
+  const expectedAuthorization = `Cyril-HMAC ${createHmac("sha256", Buffer.from(SECRET_HEX, "hex")).update(transcript, "utf8").digest("hex")}`;
+
+  const sig = signWake(SECRET_HEX, "POST", "/v1/wake", "", {
+    now: () => FIXED_TS,
+    nonce: () => FIXED_NONCE,
+  });
+  assert.equal(sig.ts, "1700000000");
+  assert.equal(sig.nonce, FIXED_NONCE);
+  assert.equal(sig.nonce.length, 32);
+  assert.equal(sig.digest, digest);
+  assert.equal(sig.digest, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
+  assert.equal(sig.authorization, expectedAuthorization);
+  assert.equal(sig.authorization.includes(SECRET_HEX), false, "the signature never carries the raw secret");
+});
+
+test("the wake datagram and reply parse match the plugin server byte for byte", () => {
+  const sig = signWake("00112233445566778899aabbccddeeff", "POST", "/v1/wake", "", {
+    now: () => 1_700_000_000,
+    nonce: () => "0f1e2d3c4b5a69788796a5b4c3d2e1f0",
+  });
+  const expected = `POST /v1/wake\n${sig.ts}\n${sig.nonce}\n${sig.digest}\n${sig.authorization}`;
+  assert.equal(buildWakeDatagram(sig), expected);
+
+  assert.equal(replyAccepted(Buffer.from('{"accepted":true}\n', "utf8")), true);
+  assert.equal(replyAccepted(Buffer.from('{"accepted":false}\n', "utf8")), false);
+  assert.equal(replyAccepted(Buffer.from('{"accepted": "true"}', "utf8")), false);
+  assert.equal(replyAccepted(Buffer.from("noise {\"accepted\":true} noise", "utf8")), true);
+  assert.equal(replyAccepted(Buffer.from("total garbage", "utf8")), false);
+  assert.equal(replyAccepted(null), false);
+});
+
+test("describeTransport renders microlink like the plugin server", () => {
+  assert.equal(describeTransport({ type: "microlink", host: "cyril.tailnet" }), "microlink(cyril.tailnet:48320 http)");
+  assert.equal(describeTransport({ type: "microlink", host: "192.0.2.5", port: 49152, mode: "udp" }), "microlink(192.0.2.5:49152 udp)");
+  assert.equal(MICROLINK_DEFAULT_PORT, 48320);
+});
+
+test("probeHost consults a microlink host's observer before ssh, like the plugin server", async () => {
+  const spawnCalls = [];
+  const spawnImpl = async (command) => {
+    spawnCalls.push(command);
+    return { code: 0 };
+  };
+  const host = {
+    id: "host-cyril",
+    name: "cyril",
+    sshTarget: "build.example.net",
+    wakeTransports: [{ type: "microlink", host: "cyril.tailnet", port: 49152 }],
+    createdAt: 0,
+    updatedAt: 0,
+  };
+
+  const up = await probeHost(host, { spawnImpl, observeImpl: async () => ({ targetAwake: true }) });
+  assert.deepEqual(up, { state: "up", probedVia: "observer" });
+  assert.deepEqual(spawnCalls, [], "a definitive observer answer means ssh never runs");
+
+  const down = await probeHost(host, { spawnImpl, observeImpl: async () => ({ targetAwake: false }) });
+  assert.deepEqual(down, { state: "down", probedVia: "observer" });
+
+  const fallthrough = await probeHost(host, { spawnImpl, observeImpl: async () => null });
+  assert.deepEqual(fallthrough, { state: "up", probedVia: "ssh" }, "ssh answers after the observer stays silent");
+  assert.deepEqual(spawnCalls, ["ssh"]);
+
+  const sshOnly = await probeHost(
+    { ...host, wakeTransports: [{ type: "wol", mac: "00:11:22:33:44:55" }] },
+    { spawnImpl, observeImpl: async () => ({ targetAwake: true }) },
+  );
+  assert.equal(sshOnly.probedVia, "ssh", "a host without a microlink transport keeps the ssh channel");
+
+  const statusWins = await probeHost(
+    { ...host, statusCommand: { command: "true" } },
+    { spawnImpl, observeImpl: async () => ({ targetAwake: true }) },
+  );
+  assert.equal(statusWins.probedVia, "statusCommand");
+});
+
+test("a microlink host wakes through the engine ladder with its secretRef resolved", async () => {
+  const seen = [];
+  const jobs = [];
+  let clock = 1_000_000;
+  const engine = createWakeEngine({
+    runners: {
+      http: async () => false,
+      wol: async () => false,
+      command: async () => false,
+      microlink: async (transport, secret) => {
+        seen.push({ type: transport.type, host: transport.host, secret });
+        return true;
+      },
+    },
+    resolveTokenRef: (ref) => (ref === "ref-cyril" ? "aabbccddeeff0011" : null),
+    probe: async () => {
+      clock += 4_000;
+      return seen.length > 0;
+    },
+    sleep: async () => {
+      clock += WAKE_POLL_INTERVAL_MS;
+    },
+    now: () => clock,
+    loadJobs: () => jobs.map((job) => structuredClone(job)),
+    saveJobs: (next) => jobs.splice(0, jobs.length, ...next),
+    log: () => {},
+  });
+  const started = await engine.startWake({
+    id: "host-cyril",
+    name: "cyril",
+    wakeTransports: [{ type: "microlink", host: "cyril.tailnet", secretRef: "ref-cyril" }],
+    createdAt: 0,
+    updatedAt: 0,
+  });
+  assert.equal(started.accepted, true);
+  for (let spin = 0; spin < 200 && jobs.at(-1)?.status !== "up"; spin++) {
+    await new Promise((resolveTick) => setImmediate(resolveTick));
+  }
+  assert.deepEqual(seen, [{ type: "microlink", host: "cyril.tailnet", secret: "aabbccddeeff0011" }]);
+  const job = jobs.at(-1);
+  assert.equal(job.status, "up");
+  assert.equal(JSON.stringify(job).includes("aabbccddeeff0011"), false, "the job record never quotes the secret");
 });
 
 test("JSON-RPC framing: notifications get no reply, garbage gets a parse error", async () => {
