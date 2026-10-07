@@ -95,8 +95,24 @@ const updateNotificationSchema = z.object({
 
 const DEFAULT_TIMEOUT_MS = 300_000;
 
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+  reject: (reason: unknown) => void;
+}
+
+function createDeferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  let reject!: (reason: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 interface PendingRequest {
-  resolvers: PromiseWithResolvers<unknown>;
+  resolvers: Deferred<unknown>;
 }
 
 /** Run one turn against a native ACP agent and return its final text. */
@@ -129,7 +145,7 @@ export function runAgent(options: AgentRunOptions): Promise<AgentRunResult> {
   const request = (method: string, params: unknown): Promise<unknown> => {
     const id = nextId++;
     send({ jsonrpc: "2.0", id, method, params });
-    const entry = Promise.withResolvers<unknown>();
+    const entry = createDeferred<unknown>();
     pending.set(id, { resolvers: entry });
     return entry.promise;
   };
@@ -172,6 +188,9 @@ export function runAgent(options: AgentRunOptions): Promise<AgentRunResult> {
 
   function handleAgentRequest(message: RpcMessage): void {
     const { id, method } = message;
+    // JSON-RPC requests always carry an id; a missing id is not a request we
+    // can answer, so drop it (notifications are handled separately).
+    if (id === undefined) return;
     try {
       if (method === "session/request_permission") {
         if (!autoApprove) {
@@ -220,7 +239,7 @@ export function runAgent(options: AgentRunOptions): Promise<AgentRunResult> {
     }
   }
 
-  const completion = Promise.withResolvers<AgentRunResult>();
+  const completion = createDeferred<AgentRunResult>();
   const timer = setTimeout(() => {
     child.kill("SIGKILL");
     completion.reject(new Error("ACP_TIMEOUT: handshake/turn wedged"));

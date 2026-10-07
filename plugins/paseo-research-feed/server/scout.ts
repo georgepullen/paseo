@@ -86,9 +86,9 @@ export async function rankAndCard(
       source: candidate.source,
       candidate,
       card: {
-        hook: draft.card?.hook ?? candidate.paper.title,
-        whyItMatters: draft.card?.whyItMatters ?? "",
-        tags: (draft.card?.tags ?? []).slice(0, 6),
+        hook: draft.card.hook ?? candidate.paper.title,
+        whyItMatters: draft.card.whyItMatters ?? "",
+        tags: (draft.card.tags ?? []).slice(0, 6),
       },
       relevance: draft.relevance ?? fallbackRelevance(candidate),
     });
@@ -120,7 +120,14 @@ async function askRankedCards(settings: ResearchFeedSettings, candidates: Candid
   });
   if (!("data" in result)) throw new Error("SCOUT_EXPECTED_JSON");
   const parsed = cardListSchema.safeParse(result.data);
-  return parsed.success ? parsed.data : [];
+  if (!parsed.success) return [];
+  // Drop malformed model output: entries without a card cannot be stitched.
+  const drafts: CardDraft[] = [];
+  for (const entry of parsed.data) {
+    if (entry.card === undefined) continue;
+    drafts.push({ id: entry.id, card: entry.card, relevance: entry.relevance });
+  }
+  return drafts;
 }
 
 function fallbackRelevance(candidate: Candidate): number {

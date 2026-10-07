@@ -1,5 +1,9 @@
 import { createPluginLogger, createSettingsHandlers, PluginStorage } from "paseo-plugin-helper/server";
-import { researchFeedSettings, type ResearchFeedSettings } from "../shared/settings.ts";
+import {
+  researchFeedSettings,
+  researchFeedSettingsSchema,
+  type ResearchFeedSettings,
+} from "../shared/settings.ts";
 
 /**
  * Settings persistence: the researchFeedSettings contract (get/update/reset
