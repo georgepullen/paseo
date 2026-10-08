@@ -1,5 +1,5 @@
 {
-  "name": "@georgepullen/paseo-remote-power",
+  "name": "paseo-remote-power",
   "version": "0.1.0",
   "description": "Wake and status control for remote machines — homelab boxes, GPU workstations — from the Paseo daemon: roster UI plus embedded MCP tools (power_status, power_wake, power_job_status) so agents can wake a host before running work on it.",
   "type": "module",
@@ -22,6 +22,7 @@
     "homelab"
   ],
   "license": "MIT",
+  "publishConfig": { "access": "public" },
   "dependencies": {
     "@getpaseo/plugin": "^0.9.0",
     "zod": "^4.4.3"
