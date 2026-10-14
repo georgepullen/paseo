@@ -321,7 +321,7 @@ export const ForgeContextOutputSchema = z.object({
 export type ForgeContextOutput = z.infer<typeof ForgeContextOutputSchema>;
 
 export const forgeContextContract = defineContract({
-  name: "forge.forge-context",
+  name: "forge.context",
   description: "Git-origin forge coordinates for a workspace, independent of issue queries",
   input: ForgeContextInputSchema,
   output: ForgeContextOutputSchema,
@@ -931,25 +931,51 @@ export function displayNameForDirectory(
 // sends "add", never "remove".
 // ---------------------------------------------------------------------------
 
+// Canonical taxonomy is numberless (platform#247). Readers accept the legacy
+// numeric spellings too (dual-read) while the board migrates; `LEGACY_*` arrays
+// and `LABEL_ALIASES` keep the two spellings interchangeable.
 export const STATE_ORDER = [
+  "state/triage",
+  "state/wip",
+  "state/review",
+  "state/verify",
+  "state/done",
+] as const;
+export type StateLabel = (typeof STATE_ORDER)[number];
+
+export const LEGACY_STATE_ORDER = [
   "state/0-triage",
   "state/1-wip",
   "state/2-review",
   "state/3-verify",
   "state/4-done",
 ] as const;
-export type StateLabel = (typeof STATE_ORDER)[number];
 
 export const PRIORITY_ORDER = [
+  "priority/sos",
+  "priority/high",
+  "priority/normal",
+  "priority/low",
+  "priority/backburner",
+] as const;
+export type PriorityLabel = (typeof PRIORITY_ORDER)[number];
+
+export const LEGACY_PRIORITY_ORDER = [
   "priority/0-SOS",
   "priority/1-high",
   "priority/2-normal",
   "priority/3-low",
   "priority/4-backburner",
 ] as const;
-export type PriorityLabel = (typeof PRIORITY_ORDER)[number];
 
 export const ATTENTION_LABELS = [
+  "attention/orchestrator",
+  "attention/agent",
+  "attention/user",
+  "attention/ignore",
+] as const;
+
+export const LEGACY_ATTENTION_LABELS = [
   "attention/0-orchestrator",
   "attention/1-agent",
   "attention/2-user",
@@ -957,36 +983,85 @@ export const ATTENTION_LABELS = [
 ] as const;
 
 export const SPEC_LABELS = [
+  "spec/needed",
+  "spec/checklist",
+  "spec/approved",
+] as const;
+
+export const LEGACY_SPEC_LABELS = [
   "spec/0-needed",
   "spec/1-checklist",
   "spec/2-approved",
 ] as const;
 
-const STATE_SHORT: Record<string, string> = {
-  "state/0-triage": "Triage",
-  "state/1-wip": "WIP",
-  "state/2-review": "Review",
-  "state/3-verify": "Verify",
-  "state/4-done": "Done",
+function aliasPairs(
+  canonical: readonly string[],
+  legacy: readonly string[],
+): Record<string, string> {
+  const map: Record<string, string> = {};
+  canonical.forEach((name, i) => {
+    const legacyName = legacy[i];
+    if (legacyName) map[legacyName] = name;
+  });
+  return map;
+}
+
+/** Legacy numeric label -> canonical numberless label (all scopes). */
+export const LABEL_ALIASES: Record<string, string> = {
+  ...aliasPairs(STATE_ORDER, LEGACY_STATE_ORDER),
+  ...aliasPairs(PRIORITY_ORDER, LEGACY_PRIORITY_ORDER),
+  ...aliasPairs(ATTENTION_LABELS, LEGACY_ATTENTION_LABELS),
+  ...aliasPairs(SPEC_LABELS, LEGACY_SPEC_LABELS),
+  "review/0-needed": "review/needed",
+  "review/1-changes-requested": "review/changes-requested",
+  "review/2-approved": "review/approved",
+  "format/0-needed": "format/needed",
+  "format/1-ok": "format/ok",
+  "size/0-cheap": "size/cheap",
+  "size/1-medium": "size/medium",
+  "size/2-expensive": "size/expensive",
+  "size/3-chunk": "size/chunk",
+  "linked/0-needs-split": "linked/needs-split",
+  "linked/1-peer": "linked/peer",
+  "linked/2-done": "linked/done",
+  "upstream/0-explore": "upstream/explore",
+  "upstream/1-blocked": "upstream/blocked",
+  "upstream/2-aligned": "upstream/aligned",
 };
 
-const PRIORITY_SHORT: Record<string, string> = {
-  "priority/0-SOS": "SOS",
-  "priority/1-high": "High",
-  "priority/2-normal": "Normal",
-  "priority/3-low": "Low",
-  "priority/4-backburner": "Parked",
+/** Canonical numberless spelling of a label; unknown labels pass through. */
+export function canonicalLabel(label: string): string {
+  return LABEL_ALIASES[label] ?? label;
+}
+
+/** True when two spellings name the same scoped label under the alias map. */
+export function sameLabel(a: string, b: string): boolean {
+  return canonicalLabel(a) === canonicalLabel(b);
+}
+
+const CANONICAL_SHORT: Record<string, string> = {
+  "state/triage": "Triage",
+  "state/wip": "WIP",
+  "state/review": "Review",
+  "state/verify": "Verify",
+  "state/done": "Done",
+  "priority/sos": "SOS",
+  "priority/high": "High",
+  "priority/normal": "Normal",
+  "priority/low": "Low",
+  "priority/backburner": "Parked",
 };
 
 /** Compact display alias for a scoped label ("state/1-wip" -> "WIP"). */
 export function shortLabelName(label: string): string {
-  return STATE_SHORT[label] ?? PRIORITY_SHORT[label] ?? label;
+  return CANONICAL_SHORT[canonicalLabel(label)] ?? label;
 }
 
-/** The issue's current `state/*` label, or null when it carries none. */
+/** The issue's current `state/*` label (canonical), or null when it carries none. */
 export function currentStateLabel(labels: string[]): string | null {
   for (const label of labels) {
-    if ((STATE_ORDER as readonly string[]).includes(label)) return label;
+    const canonical = canonicalLabel(label);
+    if ((STATE_ORDER as readonly string[]).includes(canonical)) return canonical;
   }
   return null;
 }
@@ -994,15 +1069,16 @@ export function currentStateLabel(labels: string[]): string | null {
 /** The issue's current `priority/*` label, defaulting to normal per spec §4.2. */
 export function currentPriorityLabel(labels: string[]): string {
   for (const label of labels) {
-    if ((PRIORITY_ORDER as readonly string[]).includes(label)) return label;
+    const canonical = canonicalLabel(label);
+    if ((PRIORITY_ORDER as readonly string[]).includes(canonical)) return canonical;
   }
-  return "priority/2-normal";
+  return "priority/normal";
 }
 
 /** Next `state/*` promotion step, or null when already done. */
 export function nextStateLabel(labels: string[]): string | null {
   const current = currentStateLabel(labels);
-  if (!current) return "state/1-wip";
+  if (!current) return "state/wip";
   const idx = (STATE_ORDER as readonly string[]).indexOf(current);
   if (idx < 0 || idx + 1 >= STATE_ORDER.length) return null;
   return STATE_ORDER[idx + 1];
@@ -1102,11 +1178,23 @@ const LABEL_DEFS: LabelDefinition[] = [
     exclusive: true,
     description: `Workflow state ${i}`,
   })),
+  ...LEGACY_STATE_ORDER.map((name, i): LabelDefinition => ({
+    name,
+    color: STATE_COLORS[i] ?? "#59636e",
+    exclusive: true,
+    description: `Workflow state ${i} (legacy numeric)`,
+  })),
   ...PRIORITY_ORDER.map((name, i): LabelDefinition => ({
     name,
     color: PRIORITY_COLORS[i] ?? "#59636e",
     exclusive: true,
     description: `Priority ${i}`,
+  })),
+  ...LEGACY_PRIORITY_ORDER.map((name, i): LabelDefinition => ({
+    name,
+    color: PRIORITY_COLORS[i] ?? "#59636e",
+    exclusive: true,
+    description: `Priority ${i} (legacy numeric)`,
   })),
   ...ATTENTION_LABELS.map((name): LabelDefinition => ({
     name,
@@ -1114,11 +1202,23 @@ const LABEL_DEFS: LabelDefinition[] = [
     exclusive: true,
     description: "Who acts next",
   })),
+  ...LEGACY_ATTENTION_LABELS.map((name): LabelDefinition => ({
+    name,
+    color: "#8250df",
+    exclusive: true,
+    description: "Who acts next (legacy numeric)",
+  })),
   ...SPEC_LABELS.map((name): LabelDefinition => ({
     name,
     color: "#0e7c6b",
     exclusive: true,
     description: "Spec readiness",
+  })),
+  ...LEGACY_SPEC_LABELS.map((name): LabelDefinition => ({
+    name,
+    color: "#0e7c6b",
+    exclusive: true,
+    description: "Spec readiness (legacy numeric)",
   })),
 ];
 
@@ -1228,8 +1328,15 @@ export const AgentEnvelopeSchema = z.object({
   branch: z.string().nullable().default(null),
   postedAt: z.string().nullable().default(null),
   commitShas: z.array(z.string().regex(/^[0-9a-f]{7,40}$/)).default([]),
+  /** Client-agnostic agent session deep-links (`paseo://`, `happier://`, dashboard URLs). */
+  agentLinks: z.array(z.string()).default([]),
+  /** @deprecated Alias of `agentLinks`; kept so historical `paseo://` payloads keep parsing. */
   paseoLinks: z.array(z.string()).default([]),
   serverId: z.string().nullable().default(null),
+}).transform((value) => {
+  const agentLinks = value.agentLinks.length > 0 ? value.agentLinks : value.paseoLinks;
+  const paseoLinks = value.paseoLinks.length > 0 ? value.paseoLinks : value.agentLinks;
+  return { ...value, agentLinks, paseoLinks };
 });
 export type AgentEnvelope = z.infer<typeof AgentEnvelopeSchema>;
 
@@ -1270,8 +1377,101 @@ export function stripAgentEnvelopeFooter(body: string | undefined | null): strin
 }
 
 const SHA_PATTERN = /\b[0-9a-f]{7,40}\b/g;
+/**
+ * @deprecated Use {@link AGENT_LINK_PATTERN}. Kept so historical `paseo://`
+ * envelopes in comments keep parsing.
+ */
 const PASEO_LINK_PATTERN = /paseo:\/\/[^\s)>\]]+/g;
+/** @deprecated Use {@link AGENT_SERVER_PATTERN}. Kept for backwards compatibility. */
 const PASEO_SERVER_PATTERN = /paseo:\/\/h\/([^/\s]+)\/agent\//;
+
+/**
+ * Client-agnostic agent deep-link matcher: historical `paseo://` links plus
+ * `happier://` links and `https://` dashboard `/agents/` URLs.
+ */
+export const AGENT_LINK_PATTERN =
+  /(?:paseo|happier):\/\/[^\s)>\]]+|https?:\/\/[^\s)>\]]*\/agents\/[^\s)>\]]+/g;
+/** Extracts the server id from hosted `paseo://` / `happier://` agent links. */
+export const AGENT_SERVER_PATTERN = /(?:paseo|happier):\/\/h\/([^/\s]+)\/agent\//;
+
+/** Target coordinates for building one agent session deep-link. */
+export interface AgentLinkTarget {
+  agentId: string;
+  workspaceId?: string | null;
+  serverId?: string | null;
+  dashboardHost?: string | null;
+}
+
+/** Builds an agent session deep-link for the given target coordinates. */
+export type AgentLinkResolver = (target: AgentLinkTarget) => string;
+
+/** `paseo://agent/{agentId}?workspace={workspaceId}` */
+export function buildPaseoAgentLink(target: AgentLinkTarget): string {
+  const base = target.serverId
+    ? `paseo://h/${target.serverId}/agent/${target.agentId}`
+    : `paseo://agent/${target.agentId}`;
+  return target.workspaceId
+    ? `${base}?workspace=${encodeURIComponent(target.workspaceId)}`
+    : base;
+}
+
+/** `happier://agent/{agentId}` */
+export function buildHappierAgentLink(target: AgentLinkTarget): string {
+  return `happier://agent/${target.agentId}`;
+}
+
+/** `https://{dashboardHost}/agents/{agentId}` */
+export function buildDashboardAgentLink(target: AgentLinkTarget): string {
+  const host = (target.dashboardHost ?? "").trim().replace(/^https?:\/\//, "").replace(/\/+$/, "");
+  if (!host) return buildPaseoAgentLink(target);
+  return `https://${host}/agents/${target.agentId}`;
+}
+
+export interface AgentLinkResolverConfig {
+  /** Link scheme to generate. Defaults to `"paseo"` (historical behavior). */
+  scheme?: "paseo" | "happier" | "https";
+  /** Required when `scheme` is `"https"`. */
+  dashboardHost?: string | null;
+  /** Default server id baked into generated `paseo://` links. */
+  serverId?: string | null;
+  /** Default workspace id appended as `?workspace=` to generated links. */
+  workspaceId?: string | null;
+}
+
+/**
+ * Create a configured agent deep-link generator so each host client supplies
+ * its own URI scheme / URL template while envelopes stay client-agnostic.
+ */
+export function createAgentLinkResolver(config?: AgentLinkResolverConfig): AgentLinkResolver {
+  const scheme = config?.scheme ?? "paseo";
+  return (target: AgentLinkTarget) => {
+    const merged: AgentLinkTarget = {
+      agentId: target.agentId,
+      workspaceId: target.workspaceId ?? config?.workspaceId ?? null,
+      serverId: target.serverId ?? config?.serverId ?? null,
+      dashboardHost: target.dashboardHost ?? config?.dashboardHost ?? null,
+    };
+    if (scheme === "happier") return buildHappierAgentLink(merged);
+    if (scheme === "https") return buildDashboardAgentLink(merged);
+    return buildPaseoAgentLink(merged);
+  };
+}
+
+/**
+ * Primary deep-link for an envelope: the first `agentLinks` entry, falling
+ * back to the historical `paseoLinks` entry.
+ */
+export function primaryAgentLink(
+  envelope: { agentLinks?: string[]; paseoLinks?: string[] } | null | undefined,
+): string | null {
+  if (!envelope) return null;
+  return envelope.agentLinks?.[0] ?? envelope.paseoLinks?.[0] ?? null;
+}
+
+export interface ParseAgentEnvelopeOptions {
+  /** Custom link matcher for host-specific URL templates. Defaults to {@link AGENT_LINK_PATTERN}. */
+  linkPattern?: RegExp;
+}
 
 /**
  * Parse the agent envelope footer of one comment body into structured
@@ -1281,6 +1481,7 @@ const PASEO_SERVER_PATTERN = /paseo:\/\/h\/([^/\s]+)\/agent\//;
 export function parseAgentEnvelope(
   commentId: number,
   body: string | undefined | null,
+  options?: ParseAgentEnvelopeOptions,
 ): AgentEnvelope | null {
   if (!body || typeof body !== "string") return null;
   const match = ENVELOPE_FOOTER_PATTERN.exec(body);
@@ -1309,9 +1510,11 @@ export function parseAgentEnvelope(
       ),
     ),
   );
-  const paseoLinks = Array.from(new Set(body.match(PASEO_LINK_PATTERN) ?? []));
-  const serverMatch = PASEO_SERVER_PATTERN.exec(paseoLinks[0] ?? "");
-  return {
+  const agentLinks = Array.from(
+    new Set(body.match(normalizeLinkMatcher(options?.linkPattern ?? AGENT_LINK_PATTERN)) ?? []),
+  );
+  const serverMatch = AGENT_SERVER_PATTERN.exec(agentLinks[0] ?? "");
+  const parsed = AgentEnvelopeSchema.safeParse({
     commentId,
     sessionTitle,
     agentShortId,
@@ -1320,9 +1523,22 @@ export function parseAgentEnvelope(
     branch,
     postedAt,
     commitShas,
-    paseoLinks,
+    agentLinks,
+    // Deprecated alias: historical readers expect `paseoLinks`.
+    paseoLinks: agentLinks,
     serverId: serverMatch ? serverMatch[1] : null,
-  };
+  });
+  return parsed.success ? parsed.data : null;
+}
+
+/**
+ * Normalize a link matcher to a fresh global regex so custom (non-global)
+ * patterns cannot infinite-loop `String.match` and shared patterns keep no
+ * exec state.
+ */
+function normalizeLinkMatcher(pattern: RegExp): RegExp {
+  const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
+  return new RegExp(pattern.source, flags);
 }
 
 // ---------------------------------------------------------------------------

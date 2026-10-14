@@ -16,11 +16,14 @@ import {
   HostStack,
   HostTabs,
   HostTextInput,
+  HostThemeProvider,
   HostToggle,
   spacing,
+  useHostTheme,
   type HostTabItem,
+  type PluginTheme,
 } from "./host-ui";
-import { usePluginSettings, useRpcMutation, useRpcQuery } from "paseo-plugin-helper/core";
+import { usePluginSettings, useRpcMutation, useRpcQuery } from "./vendor/paseo-plugin-helper/core";
 import {
   COMMAND_NAME_HINT,
   SUGGESTED_PREFIX,
@@ -89,7 +92,7 @@ function CommandRow({ prefix, command, shipped, onToggle, onEdit, onRemove }: Co
         title={label}
         subtitle={command.description || command.title}
         badge={
-          <HostRow gap="xs" align="center">
+          <HostRow gap={spacing.xs} align="center">
             <HostBadge
               size="sm"
               label={actionSummary(command.action)}
@@ -99,7 +102,7 @@ function CommandRow({ prefix, command, shipped, onToggle, onEdit, onRemove }: Co
           </HostRow>
         }
         action={
-          <HostRow gap="xs" align="center">
+          <HostRow gap={spacing.xs} align="center">
             <HostToggle value={command.enabled} onValueChange={onToggle} />
             <HostButton
               size="sm"
@@ -133,12 +136,18 @@ interface CommandFormProps {
 
 function CommandForm({ draft, errors, warnings, catalog, onChange }: CommandFormProps) {
   const rpcOptions = catalog.rpc ?? [];
+  const rpcDescriptions = catalog.descriptions ?? {};
   const openOptions = catalog.open ?? [];
-  const rpcChoices = rpcOptions.map((operation) => ({ label: operation, value: operation }));
+  const rpcChoices = rpcOptions.map((operation) => ({
+    label: operation,
+    value: operation,
+    description: rpcDescriptions[operation],
+  }));
   const openChoices = openOptions.map((target) => ({ label: target, value: target }));
+  const selectedRpcDesc = rpcDescriptions[draft.operation];
 
   return (
-    <HostStack gap="sm">
+    <HostStack gap={spacing.sm}>
       <HostFormRow label="Name" description={COMMAND_NAME_HINT}>
         <HostTextInput
           value={draft.name}
@@ -185,7 +194,7 @@ function CommandForm({ draft, errors, warnings, catalog, onChange }: CommandForm
         </HostFormRow>
       ) : draft.verb === "open" ? (
         <HostFormRow label="Target surface">
-          <HostStack gap="xs">
+          <HostStack gap={spacing.xs}>
             {openOptions.length > 0 ? (
               <HostSelect
                 value={draft.target}
@@ -205,7 +214,7 @@ function CommandForm({ draft, errors, warnings, catalog, onChange }: CommandForm
         </HostFormRow>
       ) : (
         <HostFormRow label="RPC operation">
-          <HostStack gap="xs">
+          <HostStack gap={spacing.xs}>
             {rpcOptions.length > 0 ? (
               <HostSelect
                 value={draft.operation}
@@ -217,7 +226,7 @@ function CommandForm({ draft, errors, warnings, catalog, onChange }: CommandForm
             <HostTextInput
               value={draft.operation}
               errorText={errors.action}
-              helperText={warnings.action}
+              helperText={selectedRpcDesc || warnings.action}
               placeholder="slash.ping"
               mono
               onChangeText={(operation) => onChange({ operation })}
@@ -232,7 +241,20 @@ function CommandForm({ draft, errors, warnings, catalog, onChange }: CommandForm
   );
 }
 
-export function SlashConsole() {
+export interface SlashConsoleProps {
+  theme?: PluginTheme;
+}
+
+export function SlashConsole(props: SlashConsoleProps = {}) {
+  const content = <SlashConsoleInner />;
+  if (props.theme) {
+    return <HostThemeProvider theme={props.theme}>{content}</HostThemeProvider>;
+  }
+  return content;
+}
+
+function SlashConsoleInner() {
+  const { colors } = useHostTheme();
   const { settings, updateSettings, resetSettings } = usePluginSettings(slashSettingsContract);
   const catalog = useRpcQuery(catalogRpc, {});
   const operations = useRpcQuery(operationsListRpc, {});
@@ -288,8 +310,15 @@ export function SlashConsole() {
   }
 
   return (
-    <View style={{ flex: 1, minHeight: 0, width: "100%" }}>
-      <HostScroll>
+    <View style={{ flex: 1, minHeight: 0, width: "100%", backgroundColor: colors.surface0 }}>
+      <HostScroll
+        contentContainerStyle={{
+          paddingHorizontal: spacing.lg,
+          paddingTop: 14,
+          paddingBottom: 20,
+          gap: spacing.md,
+        }}
+      >
         <HostCard variant="tinted">
           <HostFormRow label="Command prefix">
             <HostTextInput
@@ -348,7 +377,7 @@ export function SlashConsole() {
             description="Add one above or pick a shipped command from the catalog."
           />
         ) : (
-          <HostStack gap="xs">
+          <HostStack gap={spacing.xs}>
             {commands.map((command) => (
               <CommandRow
                 key={command.name}
@@ -390,7 +419,7 @@ export function SlashConsole() {
               description="The bundled command list could not be loaded."
             />
           ) : (
-            <HostStack gap="xs">
+            <HostStack gap={spacing.xs}>
               {catalogCommands.map((command) => {
                 const added = presentNames.has(command.name);
                 return (

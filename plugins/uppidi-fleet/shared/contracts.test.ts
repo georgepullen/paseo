@@ -12,6 +12,8 @@ import {
   UppidiAgentsOutputSchema,
   getDeterministicStateConfig,
   getAgentCategoryIcon,
+  isCodingAgentCategory,
+  UppidiAgentCategorySchema,
   getPendingPermissionAction,
   getPermissionAdjudicationCommand,
   getAgentAttentionReason,
@@ -40,7 +42,7 @@ import {
   uppidiReplaceFrontDeskContract,
   uppidiAddOrchestratorContract,
   uppidiReplaceOrchestratorContract,
-  uppidiToggleRepoMuteContract,
+  uppidiToggleRepoPauseContract,
   UppidiCreateFrontDeskInputSchema,
   UppidiCreateFrontDeskOutputSchema,
   UppidiReplaceFrontDeskInputSchema,
@@ -49,8 +51,8 @@ import {
   UppidiAddOrchestratorOutputSchema,
   UppidiReplaceOrchestratorInputSchema,
   UppidiReplaceOrchestratorOutputSchema,
-  UppidiToggleRepoMuteInputSchema,
-  UppidiToggleRepoMuteOutputSchema,
+  UppidiToggleRepoPauseInputSchema,
+  UppidiToggleRepoPauseOutputSchema,
   uppidiReposContract,
   UppidiRepoSchema,
   UppidiReposInputSchema,
@@ -66,6 +68,12 @@ import {
   FleetResetStateInputSchema,
   FleetResetStateOutputSchema,
   uppidiFleetResetStateContract,
+  FleetHaltInputSchema,
+  FleetHaltOutputSchema,
+  uppidiFleetHaltContract,
+  FleetResumeInputSchema,
+  FleetResumeOutputSchema,
+  uppidiFleetResumeContract,
   uppidiFrontDeskActivityContract,
   UppidiFrontDeskActivityInputSchema,
   UppidiFrontDeskActivityOutputSchema,
@@ -78,6 +86,14 @@ import {
   UppidiTransitionIssueInputSchema,
   UppidiTransitionIssueOutputSchema,
   uppidiTransitionIssueContract,
+  UppidiFleetAuditReceiptSchema,
+  UppidiAuditRecordInputSchema,
+  UppidiAuditRecordOutputSchema,
+  uppidiAuditRecordContract,
+  UppidiAuditCheckOutputSchema,
+  uppidiAuditCheckContract,
+  UppidiAuditSummaryOutputSchema,
+  uppidiAuditSummaryContract,
 } from "./contracts.js";
 
 
@@ -304,8 +320,22 @@ describe("uppidi-fleet shared contracts", () => {
   it("resolves agent category icons accurately", () => {
     assert.equal(getAgentCategoryIcon("front-desk"), "Inbox");
     assert.equal(getAgentCategoryIcon("orchestrator"), "Network");
+    assert.equal(getAgentCategoryIcon("coding-agent"), "Terminal");
     assert.equal(getAgentCategoryIcon("worker"), "Terminal");
     assert.equal(getAgentCategoryIcon(undefined), "Bot");
+  });
+
+  it("treats `coding-agent` as canonical and `worker` as a legacy alias (#1126)", () => {
+    assert.equal(UppidiAgentCategorySchema.parse("coding-agent"), "coding-agent");
+    assert.equal(UppidiAgentCategorySchema.parse("worker"), "worker");
+    assert.equal(UppidiAgentCategorySchema.safeParse("sidecar").success, false);
+
+    assert.equal(isCodingAgentCategory("coding-agent"), true);
+    assert.equal(isCodingAgentCategory("worker"), true);
+    assert.equal(isCodingAgentCategory("WORKER"), true);
+    assert.equal(isCodingAgentCategory("orchestrator"), false);
+    assert.equal(isCodingAgentCategory("front-desk"), false);
+    assert.equal(isCodingAgentCategory(undefined), false);
   });
 
   it("maps blocked permission and attention states to prominent warning configs (#534)", () => {
@@ -645,18 +675,18 @@ describe("uppidi-fleet shared contracts", () => {
     assert.equal(replaceOrchOutput.ok, true);
     assert.equal(replaceOrchOutput.agentId, "agent-orch-new");
 
-    // 5. Toggle Repo Mute
-    assert.equal(uppidiToggleRepoMuteContract.name, "uppidi-fleet.toggle-repo-mute");
-    const muteInput = UppidiToggleRepoMuteInputSchema.parse({ repo: "xpufx-org/paseo", muted: true });
-    assert.equal(muteInput.repo, "xpufx-org/paseo");
-    assert.equal(muteInput.muted, true);
-    const muteOutput = UppidiToggleRepoMuteOutputSchema.parse({
+    // 5. Toggle Repo Pause
+    assert.equal(uppidiToggleRepoPauseContract.name, "uppidi-fleet.toggle-repo-pause");
+    const pauseInput = UppidiToggleRepoPauseInputSchema.parse({ repo: "xpufx-org/paseo", paused: true });
+    assert.equal(pauseInput.repo, "xpufx-org/paseo");
+    assert.equal(pauseInput.paused, true);
+    const pauseOutput = UppidiToggleRepoPauseOutputSchema.parse({
       ok: true,
       repo: "xpufx-org/paseo",
-      isMuted: true,
-      mutedRepos: ["xpufx-org/paseo"],
+      isPaused: true,
+      pausedRepos: ["xpufx-org/paseo"],
     });
-    assert.equal(muteOutput.ok, true);
+    assert.equal(pauseOutput.ok, true);
     // 5b. Repo Enrollment Contracts (#867)
     assert.equal(uppidiReposContract.name, "uppidi-fleet.repos");
     const reposInput = UppidiReposInputSchema.parse({ query: "paseo" });
@@ -673,7 +703,7 @@ describe("uppidi-fleet shared contracts", () => {
           url: "https://forge.mrs.uppidi.com/xpufx-org/paseo",
           private: false,
           enrolled: true,
-          muted: false,
+          paused: false,
           hasOrchestrator: true,
           queueDepth: 2,
         },
@@ -715,7 +745,7 @@ describe("uppidi-fleet shared contracts", () => {
       category: "worker",
       status: "running",
       isEnrolled: true,
-      isMuted: false,
+      isPaused: false,
       hasOrchestrator: true,
       queuedHooksCount: 3,
       isDetached: false,
@@ -740,11 +770,11 @@ describe("uppidi-fleet shared contracts", () => {
       workers: [],
       tree: [treeNode],
       enrolledRepos: ["xpufx-org/paseo"],
-      mutedRepos: ["xpufx-org/other"],
+      pausedRepos: ["xpufx-org/other"],
       repoQueuedHooks: { "xpufx-org/paseo": 3 },
     });
     assert.deepEqual(fleetOutput.enrolledRepos, ["xpufx-org/paseo"]);
-    assert.deepEqual(fleetOutput.mutedRepos, ["xpufx-org/other"]);
+    assert.deepEqual(fleetOutput.pausedRepos, ["xpufx-org/other"]);
     assert.equal(fleetOutput.repoQueuedHooks?.["xpufx-org/paseo"], 3);
   });
 
@@ -754,18 +784,28 @@ describe("uppidi-fleet shared contracts", () => {
     assert.equal(defaults.hookHost, "127.0.0.1");
     assert.equal(defaults.hookPort, 8099);
     assert.deepEqual(defaults.enrolledRepos, []);
-    assert.deepEqual(defaults.mutedRepos, []);
+    assert.deepEqual(defaults.pausedRepos, []);
+    assert.equal(defaults.mutedRepos, undefined);
 
     const customized = uppidiFleetSettingsSchema.parse({
       hookHost: "0.0.0.0",
       hookPort: 9000,
       enrolledRepos: ["xpufx-org/paseo"],
-      mutedRepos: ["xpufx-org/other"],
+      pausedRepos: ["xpufx-org/other"],
     });
     assert.equal(customized.hookHost, "0.0.0.0");
     assert.equal(customized.hookPort, 9000);
     assert.deepEqual(customized.enrolledRepos, ["xpufx-org/paseo"]);
-    assert.deepEqual(customized.mutedRepos, ["xpufx-org/other"]);
+    assert.deepEqual(customized.pausedRepos, ["xpufx-org/other"]);
+
+    // Pre-#984 installs persisted the paused set under the legacy key; the
+    // schema must still parse it so loadRouterConfig can migrate it.
+    const legacy = uppidiFleetSettingsSchema.parse({
+      enrolledRepos: ["xpufx-org/paseo"],
+      mutedRepos: ["xpufx-org/legacy"],
+    });
+    assert.deepEqual(legacy.mutedRepos, ["xpufx-org/legacy"]);
+    assert.deepEqual(legacy.pausedRepos, []);
   });
 });
 
@@ -936,6 +976,24 @@ describe("subagent lifecycle contract & structured block detail (#537)", () => {
     assert.equal(output.cleared.queueFiles, 2);
     assert.equal(output.cleared.cacheFiles, 5);
     assert.equal(output.notifiedOrchestrators, 1);
+  });
+
+  it("validates the fleet HALT / RESUME contracts and schemas (#1013)", () => {
+    assert.equal(uppidiFleetHaltContract.name, "uppidi-fleet.fleet-halt");
+    assert.equal(uppidiFleetResumeContract.name, "uppidi-fleet.fleet-resume");
+
+    assert.equal(FleetHaltInputSchema.parse({ confirm: true }).confirm, true);
+    assert.throws(() => FleetHaltInputSchema.parse({}));
+    assert.equal(FleetResumeInputSchema.parse({ confirm: true }).confirm, true);
+
+    const halt = FleetHaltOutputSchema.parse({ ok: true });
+    assert.equal(halt.halted, false);
+    assert.equal(halt.alreadyHalted, false);
+    assert.equal(halt.teardownInProgress, false);
+
+    const resume = FleetResumeOutputSchema.parse({ ok: true });
+    assert.equal(resume.halted, false);
+    assert.equal(resume.teardownInProgress, false);
   });
 
   describe("Front Desk Watch & Console Drawer (#710)", () => {
@@ -1112,7 +1170,7 @@ describe("subagent lifecycle contract & structured block detail (#537)", () => {
 [User] please sweep the fleet and check #710
 [Shell] cat /tmp/test.txt
 [Thought] Analyzing the situation...
-[Shell] paseo send --steer --no-wait agent-orch-1 "run tests"
+[Shell] paseo send --no-wait agent-orch-1 "run tests"
 [Heartbeat] Scheduled tick
 [Assistant] Dispatched the test command to orchestrator.
 [Error] Temporary connection drop
@@ -1209,6 +1267,171 @@ describe("subagent lifecycle contract & structured block detail (#537)", () => {
         "Transition a Forgejo issue between Kanban states",
       );
     });
+  });
+});
+
+describe("audit receipts & quality RPC contracts (#1172)", () => {
+  it("accepts a full audit receipt", () => {
+    const parsed = UppidiFleetAuditReceiptSchema.parse({
+      v: 1,
+      auditId: "aud_1",
+      timestamp: "2026-10-09T00:00:00.000Z",
+      repo: "forge.mrs.uppidi.com/xpufx-org/paseo",
+      pr: 1172,
+      issue: 1172,
+      headCommit: "abc123",
+      iteration: 1,
+      actors: {
+        auditor: { agentId: "aud-g", role: "orchestrator", model: "gemini-3.8-pro" },
+        author: { agentId: "wrk-1", role: "worker", model: "gemini-3.8-flash" },
+      },
+      verdict: "approved",
+      taxonomy: ["runtime_boundary_leak"],
+      verification: {
+        workerClaimed: "passed",
+        auditorVerified: "passed",
+        checksRun: ["typecheck"],
+        isolatedEnv: true,
+      },
+      summary: "clean",
+    });
+    assert.equal(parsed.v, 1);
+    assert.equal(parsed.iteration, 1);
+    assert.deepEqual(parsed.taxonomy, ["runtime_boundary_leak"]);
+  });
+
+  it("defaults iteration and taxonomy on the receipt schema", () => {
+    const parsed = UppidiFleetAuditReceiptSchema.parse({
+      v: 1,
+      auditId: "aud_1",
+      timestamp: "2026-10-09T00:00:00.000Z",
+      repo: "xpufx-org/paseo",
+      pr: 1,
+      headCommit: "deadbeef",
+      actors: {
+        auditor: { agentId: "aud-1", role: "operator", model: "Opus-4.1" },
+        author: { agentId: "wrk-1", role: "worker", model: "gemini-3.8-flash" },
+      },
+      verdict: "changes_requested",
+      verification: {
+        workerClaimed: "failed",
+        auditorVerified: "skipped",
+        checksRun: [],
+        isolatedEnv: true,
+      },
+      summary: "rework requested",
+    });
+    assert.equal(parsed.iteration, 1);
+    assert.deepEqual(parsed.taxonomy, []);
+    assert.equal(parsed.issue, undefined);
+  });
+
+  it("rejects an unknown verdict or taxonomy member", () => {
+    assert.throws(() =>
+      UppidiFleetAuditReceiptSchema.parse({
+        v: 1,
+        auditId: "aud_1",
+        timestamp: "2026-10-09T00:00:00.000Z",
+        repo: "xpufx-org/paseo",
+        pr: 1,
+        headCommit: "deadbeef",
+        actors: {
+          auditor: { agentId: "aud-1", role: "operator", model: "Opus-4.1" },
+          author: {},
+        },
+        verdict: "not-a-verdict",
+        verification: {
+          workerClaimed: "passed",
+          auditorVerified: "skipped",
+          checksRun: [],
+          isolatedEnv: true,
+        },
+        summary: "nope",
+      }),
+    );
+  });
+
+  it("omits the envelope fields from the record contract input", () => {
+    const input = UppidiAuditRecordInputSchema.parse({
+      repo: "xpufx-org/paseo",
+      pr: 42,
+      headCommit: "abc1234",
+      actors: {
+        auditor: { agentId: "aud-1", role: "reviewer", model: "gemini" },
+        author: { agentId: "wrk-2", role: "worker", model: "gemini-flash" },
+      },
+      verdict: "approved",
+      verification: {
+        workerClaimed: "passed",
+        auditorVerified: "passed",
+        checksRun: [],
+        isolatedEnv: false,
+      },
+      summary: "ok",
+    });
+    assert.equal(input.iteration, 1);
+    // The envelope fields are not part of the record contract input.
+    assert.ok(!("v" in input));
+    assert.ok(!("auditId" in input));
+    assert.ok(!("timestamp" in input));
+    assert.equal(uppidiAuditRecordContract.name, "uppidi-fleet.record-audit");
+  });
+
+  it("validates record output against the schema", () => {
+    UppidiAuditRecordOutputSchema.parse({
+      ok: true,
+      auditId: "aud_1",
+      recordedAt: "2026-10-09T00:00:00.000Z",
+    });
+    UppidiAuditRecordOutputSchema.parse({
+      ok: false,
+      auditId: "",
+      recordedAt: "",
+      error: "boom",
+    });
+  });
+
+  it("validates the check output shape", () => {
+    const audited = UppidiAuditCheckOutputSchema.parse({
+      ok: true,
+      audited: true,
+      repo: "xpufx-org/paseo",
+      pr: 7,
+      commit: "abc",
+      audit: { auditId: "aud_1", verdict: "approved", timestamp: "2026-10-09T00:00:00.000Z", iteration: 1 },
+    });
+    assert.ok(audited.audit);
+    assert.equal(audited.audit.verdict, "approved");
+    const bare = UppidiAuditCheckOutputSchema.parse({
+      ok: true,
+      audited: false,
+      repo: "xpufx-org/paseo",
+      pr: 8,
+      commit: "def",
+    });
+    assert.equal(bare.audit, null);
+    assert.equal(uppidiAuditCheckContract.name, "uppidi-fleet.audit-check");
+  });
+
+  it("validates the summary projection shape", () => {
+    const out = UppidiAuditSummaryOutputSchema.parse({
+      ok: true,
+      totalAudits: 2,
+      auditedMerges: 1,
+      unauditedMerges: 1,
+      complianceRate: 50,
+      firstPassSuccessRate: 100,
+      defectTaxonomyCounts: { spec_mismatch: 1 },
+      modelScorecard: [
+        { model: "gemini", reviewsReceived: 2, firstPassApproved: 2, changesRequested: 0 },
+      ],
+    });
+    assert.equal(out.defectTaxonomyCounts.spec_mismatch, 1);
+    assert.equal(uppidiAuditSummaryContract.name, "uppidi-fleet.audit-summary");
+    assert.equal(
+      uppidiAuditSummaryContract.description,
+      "Query server-projected PR audit telemetry and quality metrics",
+    );
   });
 });
 

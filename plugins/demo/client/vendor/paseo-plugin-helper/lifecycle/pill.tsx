@@ -423,7 +423,11 @@ export function registerComposerPill<TPayload = any>(
                     onStartShouldSetResponder={() => true}
                     onTouchEnd={stopBubbling}
                     {...(eventBoundaryProps as any)}
-                    style={{ flex: 1, minHeight: 0 }}
+                    style={
+                      resolvePillModalScrollable(options.hostScroll)
+                        ? { width: "100%" }
+                        : { flex: 1, minHeight: 0, width: "100%" }
+                    }
                   >
                     <RegistrarThemeScope theme={theme} layout={layout} flair={options.flair}>
                       <ModalBodyScrollOwnerContext.Provider
@@ -470,11 +474,14 @@ export function registerComposerPill<TPayload = any>(
       !props.layout.compact && options.popoverWidth
         ? Math.max(0, Math.min(options.popoverWidth, windowWidth - 24))
         : undefined;
-    // The host remains the scroll owner, but it needs a finite child extent to
-    // establish the popover viewport. Do not add overflow clipping or an inner
-    // ScrollView here: either would compete with the host's popover/sheet
-    // scroller.
-    const frameMaxHeight = Math.max(1, Math.min(560, windowHeight * 0.8));
+    // The host remains the scroll owner, but desktop needs a finite child extent to
+    // establish the popover viewport. Compact mobile presents a full-bleed sheet
+    // whose BottomSheetScrollView dynamically sizes and scrolls, so capping height
+    // here would clip long content instead of scrolling it.
+    const isMobile = props.layout.platform === "ios" || props.layout.platform === "android";
+    const frameMaxHeight = props.layout.compact && isMobile
+      ? undefined
+      : Math.max(1, Math.min(560, windowHeight * 0.8));
     // Layout effect, not effect: the flag must be set in the same commit the
     // popover mounts, before any label timer can interleave. An effect runs
     // after paint, leaving a window where one tick can still publish and
@@ -632,6 +639,8 @@ export function registerComposerPill<TPayload = any>(
     syncSharedLabelTimer();
   }
 
+  const lifetime = new AbortController();
+
   const unsubscribe = client.paseo.agents.subscribe((update) => {
     if (disposed) return;
     if ("agentId" in update && update.kind === "remove") {
@@ -645,14 +654,37 @@ export function registerComposerPill<TPayload = any>(
   });
 
   client.paseo.agents
-    .list()
+    .list({ subscribe: {}, signal: lifetime.signal })
     .then((result) => {
       if (disposed) return;
-      for (const { agent } of result.entries) {
-        if (agent.workspaceId) addPill(agent.id, agent.workspaceId);
+      if (result.entries) {
+        for (const { agent } of result.entries) {
+          if (agent.workspaceId) addPill(agent.id, agent.workspaceId);
+        }
+      }
+      if (result.subscription) {
+        result.subscription.subscribe({
+          snapshot: ({ entries }: { entries: Array<{ agent: { id: string; workspaceId?: string | null } }> }) => {
+            if (disposed) return;
+            for (const { agent } of entries) {
+              if (agent.workspaceId) addPill(agent.id, agent.workspaceId);
+            }
+          },
+          update: (message: any) => {
+            if (disposed) return;
+            if (message?.type !== "agent_update") return;
+            const update = message.payload;
+            if ("agentId" in update && update.kind === "remove") {
+              removePill(update.agentId);
+            } else if ("agent" in update && update.agent?.workspaceId) {
+              addPill(update.agent.id, update.agent.workspaceId);
+            }
+          },
+        });
       }
     })
     .catch((error) => {
+      if (lifetime.signal.aborted || disposed) return;
       // Silently dropping this leaves a plugin with zero pills and no clue why.
       reportSuppressed(console, "registerComposerPill agents.list() failed", error, "warn");
     });
@@ -660,6 +692,7 @@ export function registerComposerPill<TPayload = any>(
   return () => {
     if (disposed) return;
     disposed = true;
+    lifetime.abort();
     unsubscribe();
     if (sharedLabelTimer) {
       clearInterval(sharedLabelTimer);

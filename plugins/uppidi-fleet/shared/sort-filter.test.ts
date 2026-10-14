@@ -19,11 +19,7 @@ import {
   selectPrimaryFrontDeskNode,
   filterAgentTree,
   isRepoMatching,
-  getStatusLightColor,
-  STATUS_LIGHT_GREEN,
-  STATUS_LIGHT_ORANGE,
-  STATUS_LIGHT_RED,
-  STATUS_LIGHT_COLORS,
+  getStatusLightTone,
   deriveHealthGauge,
   DEFAULT_HEALTH_GAUGE_THRESHOLDS,
   sortProjectGroups,
@@ -828,6 +824,46 @@ describe("Uppidi Fleet sort & filter predicates", () => {
       assert.equal(result.frontDeskNodes.length, 1);
     });
 
+    it("never promotes a name-only Front Desk when the registry is authoritative (#1078)", () => {
+      const phantom: UppidiAgentTreeNode = {
+        agent: {
+          id: "phantom-desk",
+          shortId: "phantom",
+          name: "Front Desk",
+          category: "front-desk",
+          nameCategory: "front-desk",
+          roleSource: "registry",
+          roleDivergent: true,
+          status: "running",
+          deterministicState: "running",
+        },
+        depth: 0,
+        children: [],
+      };
+
+      // Registry authoritative and naming no desk: the name-only session is not canonical.
+      const result = buildProjectGroups([phantom], {
+        registryAuthoritative: true,
+        registeredFrontDeskAgentId: null,
+      });
+      assert.equal(result.frontDeskNodes.length, 0);
+      assert.deepEqual(
+        result.staleFrontDeskNodes.map((n) => n.agent.id),
+        ["phantom-desk"]
+      );
+
+      // The direct selector agrees: no registration, no primary.
+      assert.equal(
+        selectPrimaryFrontDeskNode([phantom], null, true).primary,
+        null
+      );
+
+      // Without registry authority the name heuristic may elevate it display-only.
+      const legacy = buildProjectGroups([phantom], { registeredFrontDeskAgentId: null });
+      assert.equal(legacy.frontDeskNodes.length, 1);
+      assert.equal(legacy.frontDeskNodes[0].agent.id, "phantom-desk");
+    });
+
     it("selects a single active front desk when none is registered (#470)", () => {
       const makeFd = (
         id: string,
@@ -930,151 +966,54 @@ describe("Uppidi Fleet sort & filter predicates", () => {
   });
 
   describe("agent status lights (#410)", () => {
-    it("exports standard light colors matching taxonomy", () => {
-      assert.equal(STATUS_LIGHT_GREEN, "#10b981");
-      assert.equal(STATUS_LIGHT_ORANGE, "#f59e0b");
-      assert.equal(STATUS_LIGHT_RED, "#ef4444");
-      assert.equal(STATUS_LIGHT_COLORS.GREEN, "#10b981");
-      assert.equal(STATUS_LIGHT_COLORS.ORANGE, "#f59e0b");
-      assert.equal(STATUS_LIGHT_COLORS.RED, "#ef4444");
+    it("maps every taxonomy state to a theme tone (no raw color)", () => {
+      assert.equal(getStatusLightTone({ deterministicState: "working", status: "running" }), "success");
+      assert.equal(getStatusLightTone({ deterministicState: "running", status: "running" }), "success");
+      assert.equal(getStatusLightTone({ status: "working" }), "success");
+      assert.equal(getStatusLightTone({ status: "executing" }), "success");
+      assert.equal(getStatusLightTone({ status: "busy" }), "success");
+
+      assert.equal(getStatusLightTone({ deterministicState: "idle:waiting", status: "idle" }), "warning");
+      assert.equal(getStatusLightTone({ deterministicState: "sleeping", status: "idle" }), "warning");
+      assert.equal(getStatusLightTone({ deterministicState: "idle:quota-exhausted", status: "idle" }), "warning");
+      assert.equal(getStatusLightTone({ status: "idle" }), "warning");
+      assert.equal(getStatusLightTone({ status: "waiting" }), "warning");
+      assert.equal(getStatusLightTone({ status: "paused" }), "warning");
+      assert.equal(getStatusLightTone({ status: "ready" }), "warning");
+      assert.equal(getStatusLightTone({ status: "standby" }), "warning");
+      // Non-failure generic/closed/completed/unknown states default to warning.
+      assert.equal(getStatusLightTone({ status: "completed" }), "warning");
+      assert.equal(getStatusLightTone({ status: "closed" }), "warning");
+      assert.equal(getStatusLightTone({ deterministicState: "unknown" }), "warning");
+
+      assert.equal(getStatusLightTone({ deterministicState: "failed:error", status: "error" }), "danger");
+      assert.equal(getStatusLightTone({ deterministicState: "failed:timeout", status: "running" }), "danger");
+      assert.equal(getStatusLightTone({ deterministicState: "failed:spawn", status: "error" }), "danger");
+      assert.equal(getStatusLightTone({ deterministicState: "failed:quota-exhausted", status: "error" }), "danger");
+      assert.equal(getStatusLightTone({ status: "error" }), "danger");
+      assert.equal(getStatusLightTone({ status: "failed" }), "danger");
+      assert.equal(getStatusLightTone({ status: "failure" }), "danger");
+      assert.equal(getStatusLightTone({ status: "timeout" }), "danger");
     });
 
-    it("returns Green (#10b981) for working, running, executing, and busy states", () => {
-      assert.equal(
-        getStatusLightColor({ deterministicState: "working", status: "running" }),
-        STATUS_LIGHT_GREEN
-      );
-      assert.equal(
-        getStatusLightColor({ deterministicState: "running", status: "running" }),
-        STATUS_LIGHT_GREEN
-      );
-      assert.equal(
-        getStatusLightColor({ status: "working" }),
-        STATUS_LIGHT_GREEN
-      );
-      assert.equal(
-        getStatusLightColor({ status: "executing" }),
-        STATUS_LIGHT_GREEN
-      );
-      assert.equal(
-        getStatusLightColor({ status: "busy" }),
-        STATUS_LIGHT_GREEN
-      );
-    });
-
-    it("returns Orange / Amber (#f59e0b) for idle, waiting, paused, ready, sleeping, and non-failure modes", () => {
-      assert.equal(
-        getStatusLightColor({ deterministicState: "idle:waiting", status: "idle" }),
-        STATUS_LIGHT_ORANGE
-      );
-      assert.equal(
-        getStatusLightColor({ deterministicState: "sleeping", status: "idle" }),
-        STATUS_LIGHT_ORANGE
-      );
-      assert.equal(
-        getStatusLightColor({ deterministicState: "idle:quota-exhausted", status: "idle" }),
-        STATUS_LIGHT_ORANGE
-      );
-      assert.equal(
-        getStatusLightColor({ status: "idle" }),
-        STATUS_LIGHT_ORANGE
-      );
-      assert.equal(
-        getStatusLightColor({ status: "waiting" }),
-        STATUS_LIGHT_ORANGE
-      );
-      assert.equal(
-        getStatusLightColor({ status: "paused" }),
-        STATUS_LIGHT_ORANGE
-      );
-      assert.equal(
-        getStatusLightColor({ status: "ready" }),
-        STATUS_LIGHT_ORANGE
-      );
-      assert.equal(
-        getStatusLightColor({ status: "standby" }),
-        STATUS_LIGHT_ORANGE
-      );
-      // Non-failure generic/closed/completed/unknown states default to Orange
-      assert.equal(
-        getStatusLightColor({ status: "completed" }),
-        STATUS_LIGHT_ORANGE
-      );
-      assert.equal(
-        getStatusLightColor({ status: "closed" }),
-        STATUS_LIGHT_ORANGE
-      );
-      assert.equal(
-        getStatusLightColor({ deterministicState: "unknown" }),
-        STATUS_LIGHT_ORANGE
-      );
-    });
-
-    it("returns Red (#ef4444) for failed, error, and timeout failure modes", () => {
-      assert.equal(
-        getStatusLightColor({ deterministicState: "failed:error", status: "error" }),
-        STATUS_LIGHT_RED
-      );
-      assert.equal(
-        getStatusLightColor({ deterministicState: "failed:timeout", status: "running" }),
-        STATUS_LIGHT_RED
-      );
-      assert.equal(
-        getStatusLightColor({ deterministicState: "failed:spawn", status: "error" }),
-        STATUS_LIGHT_RED
-      );
-      assert.equal(
-        getStatusLightColor({ deterministicState: "failed:quota-exhausted", status: "error" }),
-        STATUS_LIGHT_RED
-      );
-      assert.equal(
-        getStatusLightColor({ status: "error" }),
-        STATUS_LIGHT_RED
-      );
-      assert.equal(
-        getStatusLightColor({ status: "failed" }),
-        STATUS_LIGHT_RED
-      );
-      assert.equal(
-        getStatusLightColor({ status: "failure" }),
-        STATUS_LIGHT_RED
-      );
-      assert.equal(
-        getStatusLightColor({ status: "timeout" }),
-        STATUS_LIGHT_RED
-      );
-    });
-
-    it("handles null and undefined safely by falling back to Orange", () => {
-      assert.equal(getStatusLightColor(null), STATUS_LIGHT_ORANGE);
-      assert.equal(getStatusLightColor(undefined), STATUS_LIGHT_ORANGE);
-      assert.equal(getStatusLightColor({}), STATUS_LIGHT_ORANGE);
+    it("handles null and undefined safely by falling back to warning", () => {
+      assert.equal(getStatusLightTone(null), "warning");
+      assert.equal(getStatusLightTone(undefined), "warning");
+      assert.equal(getStatusLightTone({}), "warning");
     });
 
     it("prioritizes failure mode over running status", () => {
-      assert.equal(
-        getStatusLightColor({ status: "running", deterministicState: "failed:timeout" }),
-        STATUS_LIGHT_RED
-      );
-      assert.equal(
-        getStatusLightColor({ status: "executing", deterministicState: "failed:error" }),
-        STATUS_LIGHT_RED
-      );
+      assert.equal(getStatusLightTone({ status: "running", deterministicState: "failed:timeout" }), "danger");
+      assert.equal(getStatusLightTone({ status: "executing", deterministicState: "failed:error" }), "danger");
     });
 
     it("prioritizes idle / sleeping over generic running status", () => {
-      assert.equal(
-        getStatusLightColor({ status: "running", deterministicState: "sleeping" }),
-        STATUS_LIGHT_ORANGE
-      );
-      assert.equal(
-        getStatusLightColor({ status: "running", deterministicState: "idle:waiting" }),
-        STATUS_LIGHT_ORANGE
-      );
+      assert.equal(getStatusLightTone({ status: "running", deterministicState: "sleeping" }), "warning");
+      assert.equal(getStatusLightTone({ status: "running", deterministicState: "idle:waiting" }), "warning");
     });
   });
 
-  describe("enrolled fleet roster, unstaffed state, per-repo mute, and detached workspaces (#426)", () => {
+  describe("enrolled fleet roster, unstaffed state, per-repo pause, and detached workspaces (#426)", () => {
     it("matches repository identifiers robustly with isRepoMatching", () => {
       assert.equal(isRepoMatching("xpufx-org/paseo", "xpufx-org/paseo"), true);
       assert.equal(isRepoMatching("https://forgejo.example/xpufx-org/paseo.git", "xpufx-org/paseo"), true);
@@ -1084,7 +1023,7 @@ describe("Uppidi Fleet sort & filter predicates", () => {
       assert.equal(isRepoMatching("xpufx-org/paseo", "xpufx-org/platform"), false);
     });
 
-    it("synthesizes enrolled unstaffed repos, tracks muted states, and handles queued hooks", () => {
+    it("synthesizes enrolled unstaffed repos, tracks paused states, and handles queued hooks", () => {
       // Tree with only one agent in xpufx-org/paseo
       const activeTree: UppidiAgentTreeNode[] = [
         {
@@ -1104,7 +1043,7 @@ describe("Uppidi Fleet sort & filter predicates", () => {
 
       const options = {
         enrolledRepos: ["xpufx-org/paseo", "xpufx-org/unstaffed-repo"],
-        mutedRepos: ["xpufx-org/paseo"],
+        pausedRepos: ["xpufx-org/paseo"],
         repoQueuedHooks: {
           "xpufx-org/paseo": 4,
           "xpufx-org/unstaffed-repo": 7,
@@ -1116,22 +1055,22 @@ describe("Uppidi Fleet sort & filter predicates", () => {
       // 1. Enrolled groups should contain both repos
       assert.equal(result.enrolledGroups.length, 2);
 
-      // Paseo: enrolled, muted, has orchestrator, 4 queued hooks
+      // Paseo: enrolled, paused, has orchestrator, 4 queued hooks
       const paseoGroup = result.enrolledGroups.find((g) => g.projectName === "xpufx-org/paseo");
       assert.ok(paseoGroup);
       assert.equal(paseoGroup.isEnrolled, true);
-      assert.equal(paseoGroup.isMuted, true);
+      assert.equal(paseoGroup.isPaused, true);
       assert.equal(paseoGroup.hasOrchestrator, true);
       assert.equal(paseoGroup.queuedHooksCount, 4);
       assert.equal(paseoGroup.totalCount, 1);
 
-      // Unstaffed: enrolled, not muted, no orchestrator, 7 queued hooks
+      // Unstaffed: enrolled, not paused, no orchestrator, 7 queued hooks
       const unstaffedGroup = result.enrolledGroups.find(
         (g) => g.projectName === "xpufx-org/unstaffed-repo"
       );
       assert.ok(unstaffedGroup);
       assert.equal(unstaffedGroup.isEnrolled, true);
-      assert.equal(unstaffedGroup.isMuted, false);
+      assert.equal(unstaffedGroup.isPaused, false);
       assert.equal(unstaffedGroup.hasOrchestrator, false);
       assert.equal(unstaffedGroup.queuedHooksCount, 7);
       assert.equal(unstaffedGroup.totalCount, 0);

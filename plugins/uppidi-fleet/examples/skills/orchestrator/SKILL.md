@@ -14,6 +14,13 @@ You coordinate the fleet. Default: **delegate unless stopped**. Labels describe 
 
 Everything else (`spec/*`, `attention/*`, `state/*`, missing labels, one-word tickets) is advisory.
 
+> [!IMPORTANT]
+> **Workspace Scratch Isolation (`.tmp/`)**:
+> Orchestrators and workers must **never** create temporary files, run diagnostic scripts, or download temporary artifacts in global `/tmp` or paths outside the workspace checkout. Always use `<workspace>/.tmp/` (gitignored). Mutating global `/tmp` violates isolation boundaries, leaks host state, and triggers tool permission stalls.
+
+> [!NOTE]
+> **Prefer `teax ... -F <file>` and scoped cleanup**: Compose board bodies into `<workspace>/.tmp/<file>` and pass them with `teax ... -F <workspace>/.tmp/<file>` instead of inline heredocs. Clear scratch only under `<workspace>/.tmp/`; never `rm -rf` a global path, a workspace root, or a path containing `..`. Unmatched destructive shapes are escalated for adjudication instead of auto-approved.
+
 ## 2. Hard Role Boundary: Strictly Delegate (Never Implement)
 
 - **Zero Hands-On Code Changes**: The orchestrator is strictly a coordinator, dispatcher, supervisor, and reviewer. The orchestrator must **NEVER** edit source files, write implementation code, or check out feature branches in its own working directory.
@@ -201,6 +208,21 @@ routine webhook or dismiss it because it lacks a conventional command verb.
 
 ## 9. Forgejo labels: comma-splitting and label normalization
 
+> [!IMPORTANT]
+> **Taxonomy migration (dual-read, platform#247 / paseo#1007)**: the board is moving to the
+> numberless label taxonomy. Both spellings mean the same thing during the transition —
+> accept either when reading, and prefer the numberless form when writing.
+> `state/0-triage`=`state/triage`, `state/1-wip`=`state/wip`, `state/2-review`=`state/review`,
+> `state/3-verify`=`state/verify`, `state/4-done`=`state/done`,
+> `attention/0-orchestrator`=`attention/orchestrator`, `attention/1-agent`=`attention/agent`,
+> `attention/2-user`=`attention/user`, `priority/0-SOS`=`priority/sos`,
+> `priority/1-high`=`priority/high`, `priority/2-normal`=`priority/normal`,
+> `priority/3-low`=`priority/low`, `priority/4-backburner`=`priority/backburner`,
+> `spec/0-needed`=`spec/needed`, `spec/1-checklist`=`spec/checklist`,
+> `spec/2-approved`=`spec/approved`, `review/0-needed`=`review/needed`,
+> `review/1-changes-requested`=`review/changes-requested`, `review/2-approved`=`review/approved`.
+> Never delete a numeric label that is still referenced by an in-flight ticket.
+
 - **Comma-separated labels are supported** by `teax`:
   `--add-label 'kind/bug,priority/2-normal'` adds both labels. Repeated flags
   (`--add-label 'a' --add-label 'b'`) work too and remain the safest form.
@@ -237,7 +259,7 @@ routine webhook or dismiss it because it lacks a conventional command verb.
   - **Zero Wire Protocol Envelopes in Comments**: NEVER emit `<x-comms-message>`, `<x-comms>`, raw XML tags, or raw JSON RPC payloads into issue or PR comments. Wire protocols belong strictly on network/socket RPC transports.
   - Metadata envelopes on Forgejo/GitHub are generated automatically by `teax --envelope`, which embeds a hidden HTML comment (`<!-- envelope:v1 ... -->`). Never hand-craft or fake wire envelopes in comment bodies.
 - **Local vs Remote Agent Communication**:
-  - Agents on the local daemon are contacted directly via `paseo send --steer --no-wait <agentId> "<message>"` (plain text) or native MCP `send_agent_prompt`.
+  - Agents on the local daemon are contacted directly via `paseo send --no-wait <agentId> "<message>"` (plain text) or native MCP `send_agent_prompt`.
   - Do NOT use `x_comms_*` tools for local agents residing on the same machine/daemon. `x_comms_*` is strictly for cross-daemon/remote fleet hosts.
 
 ## 11. Composer silence & webhook discipline (keep quiet)
@@ -292,8 +314,8 @@ Board ranking, triage, and dispatch are the Orchestrator's responsibility (worke
 ## 13. Front Desk escalation protocol (attention to user)
 
 > [!IMPORTANT]
-> **Gentle (`--steer`) Escalation Mandatory**:
-> When communicating with Front Desk, orchestrators MUST always include `--steer` (i.e. `paseo send --steer --no-wait ...`). Passing `--steer` queues the escalation message smoothly into the agent's active turn queue without aborting or preempting active user conversations. Omitting `--steer` defaults to `activeTurnBehavior: "interrupt"` which clobbers Front Desk mid-turn.
+> **Gentle Escalation Mandatory**:
+> When communicating with Front Desk, orchestrators MUST use `paseo send --no-wait ...`. Passing `--no-wait` returns immediately without waiting for the target turn to complete, so the escalation lands without blocking on an active user conversation.
 
 
 - **The Front Desk agent is the operator interface**: The human operator works directly through the Front Desk agent. Orchestrators do not talk into their own composer window. Front Desk never spawns workers — it steers orchestrators; orchestrators dispatch workers (two-tier spawn authority, [#172](https://forge.example.com/owner/repo/issues/172)).
@@ -307,7 +329,7 @@ Board ranking, triage, and dispatch are the Orchestrator's responsibility (worke
      Do not inspect `frontdesk.json` or `settings.json` directly on disk.
   2. If a live Front Desk exists (`liveFrontDeskId` is non-null), dispatch the escalation:
      ```bash
-     paseo send --steer --no-wait <liveFrontDeskId> "Issue https://forge.example.com/<repo>/issues/<n> needs operator attention: <concise question/action required>"
+     paseo send --no-wait <liveFrontDeskId> "Issue https://forge.example.com/<repo>/issues/<n> needs operator attention: <concise question/action required>"
      ```
   3. Post the detailed context, pre-flight audit, or options on the Forgejo issue using `teax issue comment --envelope`.
   4. Keep your own composer window quiet.
@@ -319,7 +341,7 @@ Board ranking, triage, and dispatch are the Orchestrator's responsibility (worke
 - **Orchestrator Relay Fallback (Only when Direct Hook Did Not Fire)**:
   - If the operator mentions or petitions Front Desk in an issue comment without the `attention/frontdesk` label or `/frontdesk` prefix, the local repo orchestrator catches it during board sweeps and sends a relay:
     ```bash
-    paseo send --steer --no-wait <frontDeskId> "Heads up: operator requested Front Desk intervention on https://forge.example.com/<repo>/issues/<n>"
+    paseo send --no-wait <frontDeskId> "Heads up: operator requested Front Desk intervention on https://forge.example.com/<repo>/issues/<n>"
     ```
   - **Deduplication guard**: If `attention/frontdesk` was already handled by the hook daemon, the orchestrator MUST NOT fire a redundant relay.
 ## 14. Workspace Tooling
@@ -334,12 +356,12 @@ Tooling configuration is supplied by the active runtime environment. This skill 
 Rotation timing and thresholds are runtime/operator policy, not hardcoded in this skill. The Orchestrator may hand over when directed by the operator, when active runtime signals require it, or when the current session can no longer safely continue.
 
 **Pre‑flight Hand‑over Checklist**
-1. **Persist state** – record the active issue list, pending operator questions, current labels, and timestamp using the supported Paseo/session handover mechanism.
+1. **Persist state** – the router now builds the rotation brief for you from the board, pending attention, queue depth, and the last hook/sweep digests; the replacement re-reads this skill file and the brief. Trigger it with the operator slash-command, the Cockpit action, MCP `fleet_rotate_role`, or `POST /orchestrator-rotate` (`{role:"orchestrator", repo, reason?}`).
 2. **Sync issue board** – ensure every issue the agent touches has an up‑to‑date label reflecting its latest state (`state/*`, `attention/*`).
 3. **Validate worktrees** – confirm no stray git changes in any worktree (`git status --porcelain` empty) and that all workers are either finished or paused.
-4. **Archive old session** – use the supported Paseo/session lifecycle operation so the old session cannot receive new dispatches.
-5. **Register fresh session** – use the normal Front Desk/router registration flow so the new session receives a clean identity.
-6. **Post hand‑over note** – add an envelope comment on each affected issue summarising the rotation and linking to the archived state file.
+4. **Let the router archive the old session** – `rotateRole` spawns and verifies the replacement first, then archives the incumbent, so the repo never has zero orchestrators.
+5. **Register fresh session** – the router re-registers the replacement with role `orchestrator` and its skill path before the incumbent is retired.
+6. **Post hand‑over note** – the replacement receives the rotation brief steered into its session; add an envelope comment on each affected issue if the reason was operator-driven.
 
 **Safe Decommission Procedure**
 - Do not delete agent registry files, worktrees, or branches with raw filesystem or Git commands as part of handover.

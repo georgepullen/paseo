@@ -1,13 +1,16 @@
 import { createServer, type Server as HttpServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createHash } from "node:crypto";
-import { readFileSync, writeFileSync, renameSync, readdirSync, unlinkSync, mkdirSync, existsSync } from "node:fs";
-import { join, dirname } from "node:path";
+import { readFileSync, writeFileSync, appendFileSync, renameSync, readdirSync, unlinkSync, mkdirSync, existsSync } from "node:fs";
+import { join, dirname, resolve } from "node:path";
 import os from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 
-import type { PluginServerContext } from "@getpaseo/plugin/server";
-import type { PaseoApi } from "@getpaseo/client";
+import type { PluginHandlerContext, PluginServerContext } from "@getpaseo/plugin/server";
+
+export type PaseoApi = PluginHandlerContext["paseo"];
+export type PaseoAgentHandle = ReturnType<PaseoApi["agents"]["ref"]>;
+export type PaseoAgentSendOptions = NonNullable<Parameters<PaseoAgentHandle["send"]>[1]>;
 import type {
   HookServiceStatusOutput,
   HookServiceActionOutput,
@@ -15,12 +18,35 @@ import type {
   HookServiceConfigInput,
   HookServiceConfigOutput,
   HookInfoOutput,
+  FleetModelAlert,
+  DroppedModelCandidate,
+  UppidiFleetAlertsOutput,
+  RotationPolicy,
+  RotationRolePolicy,
+  UppidiRotateRoleInput,
+  UppidiRotateRoleOutput,
+  UppidiRotationStatusInput,
+  UppidiRotationStatusOutput,
+  UppidiSetRotationPolicyInput,
+  UppidiSetRotationPolicyOutput,
+  UppidiAuditSummaryInput,
+  MergeEventHook,
+} from "../shared/contracts.js";
+import {
+  UppidiAuditRecordInputSchema,
+  FleetModeSchema,
+  type FleetMode,
+  EventClassSchema,
+  EventClassActionSchema,
+  coerceFleetMode,
+  defaultEventClassPolicyByMode,
 } from "../shared/contracts.js";
 import { extractPermissionScope } from "../shared/contracts.js";
 import {
   candidateRepoKeys,
   canonicalRepoKey,
   normalizeRepoKey,
+  resolveCanonicalRepo,
 } from "../shared/repo-identity.js";
 import { getUppidiFleetSettingsStorage } from "./settings.js";
 import { forgejoApiGet, forgejoApiRequest, forgejoToken, resolveForgejoHost } from "./forgejo-api.js";
@@ -32,10 +58,54 @@ import {
   type IssuesCheckIo,
   type StaleWipResult,
 } from "./issues-check.js";
-import { resolveWorkspaceForRepo, type ResolvedWorkspace } from "./workspace-lookup.js";
+import {
+  resolveWorkspaceForRepo,
+  resolveWorkspaceForRepoViaDaemon,
+  type ResolvedWorkspace,
+  type WorkspaceLookupOptions,
+} from "./workspace-lookup.js";
+import { adjudicatePermission, isFleetAgent } from "./permission-adjudication.js";
+import { isFleetMember as _isFleetMember, type FleetRoster } from "./fleet-membership.js";
 import { isRepoMatching } from "../shared/sort-filter.js";
-import { DEFAULT_ROLE_MODELS, loadSavedRoleModels } from "./role-models.js";
-import { getEffectiveSkillPath } from "./skills.js";
+import type { AutomationTier } from "@xpufx/backend-tickets/shared";
+import {
+  DEFAULT_ROLE_MODELS,
+  listEnabledProviders,
+  loadSavedRoleModels,
+  resolveHostHome,
+  resolveRoleModelKey,
+  type RoleModelKey,
+} from "./role-models.js";
+import { PluginStorage, resolvePaseoHome } from "paseo-plugin-helper/server";
+import type { RoleModelConfig } from "../shared/contracts.js";
+import {
+  getEffectiveSkillContent,
+  getEffectiveSkillPath,
+  renderSkillDirective,
+} from "./skills.js";
+import {
+  DEFAULT_ROTATION_POLICY,
+  RotationLock,
+  buildRotationBrief,
+  evaluateRotationTrigger,
+  isRotationRole,
+  resolveRotationPolicy,
+  ROTATION_ROLES,
+  type RotationBriefInput,
+  type RotationBriefTicket,
+  type RotationObservation,
+  type RotationTriggerReason,
+} from "./rotation.js";
+import { DiskLogger } from "./disk-logger.js";
+import {
+  appendAuditReceipt,
+  appendAuditReconciliation,
+  findAuditReceipt,
+  projectAuditSummary,
+  auditCheck,
+  type AuditMergeReconciliation,
+} from "./audit-receipts.js";
+import { getActiveAgentCountByProvider, normalizeProviderKey } from "./agents.js";
 
 const defaultExecFileAsync = promisify(execFile);
 let execFileAsync = defaultExecFileAsync;
@@ -55,8 +125,16 @@ export function setExecFileAsyncForTest(fn: ExecFileAsyncFn | null): void {
 export interface RouterConfig {
   host?: string;
   port?: number;
-  mutedRepos?: string[];
+  pausedRepos?: string[];
+  /** Repos where autonomous dispatch is barred entirely (#1282). */
+  kanbanOnlyRepos?: string[];
   enrolledRepos?: string[];
+  /** Opt-in repo -> checkout/plugin bindings for the merge-event hook (#1076). */
+  mergeEventHooks?: Record<string, MergeEventHook>;
+  /** Unified fleet lifecycle mode (#1034). */
+  mode?: FleetMode;
+  /** Per-class delivery overrides (#1034). */
+  eventClassPolicy?: Record<string, string>;
 }
 
 export function getAvailableNetworkInterfaces(): string[] {
@@ -87,12 +165,35 @@ export function loadRouterConfig(): RouterConfig {
     return {
       host: settings.hookHost,
       port: settings.hookPort,
-      mutedRepos: settings.mutedRepos,
+      pausedRepos: mergePausedRepos(settings.pausedRepos, settings.mutedRepos),
+      kanbanOnlyRepos: settings.kanbanOnlyRepos,
       enrolledRepos: settings.enrolledRepos,
+      mergeEventHooks: settings.mergeEventHooks,
     };
-  } catch {
-    return {};
+  } catch (err) {
+    const cause = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `uppidi-fleet canonical plugin settings are unavailable; refusing to fall back to the legacy ` +
+        `~/.config/uppidi-fleet/router-config.json mirror. Expected settings at ` +
+        `~/.paseo/plugin-data/xpufx/uppidi-fleet/settings.json. Restore plugin settings storage and ` +
+        `retry. Cause: ${cause}`,
+    );
   }
+}
+
+/**
+ * Unions the current `pausedRepos` with the pre-#984 `mutedRepos` key so an
+ * existing install keeps its circuit-breaker state across the rename.
+ */
+function mergePausedRepos(
+  paused: string[] | undefined,
+  legacyPaused: string[] | undefined,
+): string[] {
+  const out: string[] = [];
+  for (const repo of [...(paused ?? []), ...(legacyPaused ?? [])]) {
+    if (repo && !out.includes(repo)) out.push(repo);
+  }
+  return out;
 }
 
 export function saveRouterConfig(config: RouterConfig): void {
@@ -102,7 +203,23 @@ export function saveRouterConfig(config: RouterConfig): void {
     if (config.host !== undefined) updateData.hookHost = config.host;
     if (config.port !== undefined) updateData.hookPort = config.port;
     if (config.enrolledRepos !== undefined) updateData.enrolledRepos = config.enrolledRepos;
-    if (config.mutedRepos !== undefined) updateData.mutedRepos = config.mutedRepos;
+    if (config.pausedRepos !== undefined) {
+      updateData.pausedRepos = config.pausedRepos;
+      // Clearing the pre-#984 key keeps a stale entry from resurrecting a repo
+      // the operator just unpaused via the merged read above.
+      updateData.mutedRepos = undefined;
+    }
+    if (config.kanbanOnlyRepos !== undefined) {
+      updateData.kanbanOnlyRepos = config.kanbanOnlyRepos;
+    }
+    if (config.mergeEventHooks !== undefined) {
+      updateData.mergeEventHooks = config.mergeEventHooks;
+    }
+    // Unified fleet control mode + policy (#1034)
+    if (config.mode !== undefined) updateData.mode = config.mode;
+    if (config.eventClassPolicy !== undefined) {
+      updateData.eventClassPolicy = config.eventClassPolicy;
+    }
     if (Object.keys(updateData).length > 0) {
       storage.update((prev) => ({ ...prev, ...updateData }));
     }
@@ -123,9 +240,33 @@ export interface HookRouterOptions {
   coalesceDisable?: boolean;
   watchdogIntervalMs?: number;
   watchdogBusyThreshold?: number;
+  /**
+   * Minimum consecutive busy-ms before the watchdog considers an orchestrator
+   * wedged and attempts auto-recovery (#1344). Defaults to
+   * {@link DEFAULT_WATCHDOG_MIN_BUSY_ELAPSED_MS}.
+   */
+  watchdogMinBusyElapsedMs?: number;
   watchdogAlertCooldownMs?: number;
   boardSweepIntervalMs?: number;
+  /**
+   * Interval between forced full-reconciliation board sweeps (#1263). The
+   * reconciliation pass re-emits candidates even when the actionable digest is
+   * unchanged, recovering tickets hidden by the board-state cache. Defaults to
+   * {@link DEFAULT_BOARD_RECONCILIATION_INTERVAL_MS}; `0` disables it.
+   */
+  boardReconciliationIntervalMs?: number;
   frontDeskThrottleMs?: number;
+  /**
+   * Consecutive busy drain checks before queued work is steered into the
+   * active turn. Defaults to {@link DEFAULT_DRAIN_STEER_ATTEMPT_LIMIT}.
+   */
+  drainBusyAttemptLimit?: number;
+  /**
+   * Consecutive busy drain checks before the active turn is interrupted and
+   * canceled (steer never lands if the turn does not yield). Defaults to
+   * {@link DEFAULT_DRAIN_INTERRUPT_ATTEMPT_LIMIT}.
+   */
+  drainInterruptAttemptLimit?: number;
   workspacesData?: any[];
   projectsData?: any[];
   workspacesPath?: string;
@@ -141,6 +282,11 @@ export interface HookRouterOptions {
   ciFailureEnabled?: boolean;
   /** Enable the repository.created onboarding handler (#847). Defaults off in test mode. */
   repoOnboardingEnabled?: boolean;
+  /**
+   * Enable the backward Review → In Progress change-request steering (#1282).
+   * Defaults off in test mode so fixtures never touch the network.
+   */
+  backwardTransitionSteeringEnabled?: boolean;
   /** Enable the in-router stale-WIP sweep (#920). Defaults off in test mode. */
   staleWipSweepEnabled?: boolean;
   /** Hours with no update before a `state/1-wip` ticket returns to triage (#920). */
@@ -154,11 +300,40 @@ export interface HookRouterOptions {
   /** Explicit circuit breaker cache path; defaults to ~/.paseo/model-health.json */
   circuitBreakerPath?: string;
   modelHealthPath?: string;
+  /** Persistent model-alert banner path; defaults to the scoped plugin data dir (#1011). */
+  modelAlertsPath?: string;
+  /** Explicit merge-event log path; defaults to the scoped plugin data dir (#1076). */
+  mergeEventLogPath?: string;
+  /** Explicit audit receipt store path (audits.jsonl, platform#348). */
+  auditsFilePath?: string;
+  /** Explicit audit merge-reconciliation log path (platform#348). */
+  auditReconciliationsFilePath?: string;
+  /** Explicit log directory path for hook router disk logging (#1115). */
+  logDir?: string;
+  /** Explicit hook log file path (#1115). */
+  logFilePath?: string;
+  /** Maximum bytes before rotating the hook log file. Defaults to 5MB (#1115). */
+  logMaxBytes?: number;
+  /** Maximum number of rotated hook log files to retain. Defaults to 3 (#1115). */
+  logMaxFiles?: number;
+  /** Opt-in repo -> checkout/plugin bindings for the merge-event hook (#1076). */
+  mergeEventHooks?: Record<string, MergeEventHook>;
+  /**
+   * Best-effort board notification for total model-chain exhaustion (#1011).
+   * Defaults to a Forgejo issue/comment on the affected repo; tests inject a
+   * stub so no network is touched.
+   */
+  postModelExhaustionAlert?: (repo: string, alert: FleetModelAlert) => Promise<void>;
   /** Ordered model fallback list for orchestrator provision (#890). */
   orchestratorModelFallback?: string[];
   modelFallbackList?: string[];
   /** Overrides provider mode discovery for orchestrator spawns (#894). */
   providerModeResolver?: (provider: string) => Promise<ProviderModeInfo | null>;
+  /**
+   * Enabled host provider ids used to skip disabled providers in the
+   * orchestrator model fallback chain (#973). Omit to probe `paseo provider ls`.
+   */
+  availableProvidersData?: string[];
   spawnAgent?: (opts: {
     title: string;
     prompt: string;
@@ -169,6 +344,30 @@ export interface HookRouterOptions {
     model?: string;
     labels?: Record<string, string>;
   }) => Promise<{ id: string } | null>;
+  /**
+   * Scoped pre-grant applied after a CLI-spawned orchestrator (#974). Defaults
+   * to `agents.autoAllowScopedPermission` (SDK `respondToPermission`, falling
+   * back to `paseo permit allow`); tests inject a stub to observe the declared
+   * workspace scope without touching the daemon.
+   */
+  spawnAutoAllow?: (
+    agentId: string,
+    scopePrefixes: readonly string[],
+  ) => Promise<{ allowed: boolean; permissionId?: string; scope?: string; reason?: string }>;
+  /**
+   * Injected agent archiver used by deduplication, prune, and tests (#973/#993).
+   */
+  archiveAgent?: (agentId: string) => Promise<boolean>;
+  /**
+   * Injected Front Desk spawner for rotation tests (#1019). Production falls
+   * back to `handleUppidiCreateFrontDesk`, the existing Front Desk primitive.
+   */
+  spawnFrontDesk?: (input: { title: string; prompt: string }) => Promise<{ id: string; error?: string } | null>;
+  /**
+   * Enable automatic rotation evaluation during board sweeps (#1019).
+   * Defaults off in test mode, matching the other direct-action guards.
+   */
+  rotationAutoEnabled?: boolean;
 }
 
 export interface EnsureOrchestratorInput {
@@ -177,6 +376,11 @@ export interface EnsureOrchestratorInput {
   model?: string;
   mode?: string;
   force?: boolean;
+  /**
+   * Spawn a replacement without adopting or archiving the incumbent. Used by
+   * the rotation protocol's spawn-before-archive ordering (#1019).
+   */
+  rotation?: boolean;
 }
 
 export interface EnsureOrchestratorResult {
@@ -186,6 +390,21 @@ export interface EnsureOrchestratorResult {
   repo?: string;
   workspaceId?: string;
   cwd?: string;
+  /** Machine-readable failure kind so callers can pick an HTTP status (#973). */
+  errorCode?: "workspace_not_found" | "spawn_failed" | "cli_disabled" | "model_exhausted" | "provider_concurrency_limit";
+  /** Model the spawn resolved to, surfaced so intent and reality can be compared (#1011). */
+  resolvedModelKey?: string;
+  /** Configured entries skipped as dead before the resolved model (#1011). */
+  droppedModels?: DroppedModelCandidate[];
+  /** Banner record raised on total exhaustion (#1011). */
+  modelAlert?: FleetModelAlert;
+  /** Whether the SDK create payload carried `featureValues.auto_accept` (#974). */
+  autoAcceptApplied?: boolean;
+  /**
+   * Best-effort scoped pre-grant result for a CLI-spawned orchestrator (#974).
+   * `undefined` when no workspace root was known or the grant did not run.
+   */
+  autoAllow?: { allowed: boolean; permissionId?: string; scope?: string; reason?: string };
   error?: string;
 }
 
@@ -214,6 +433,53 @@ export interface OrchestratorRecord {
   staleSince?: string | null;
   /** Human-readable reason for the stale marker (#889). */
   staleReason?: string | null;
+  /** Consecutive board sweeps where a complete roster reported the session closed (#1077). */
+  closedSweeps?: number;
+  /** ISO timestamp of the first closed observation in the current streak (#1077). */
+  firstClosedAt?: string | null;
+}
+
+/**
+ * A destructive fleet-state mutation. Every registration unlink and every
+ * front-desk clear appends one of these to a durable JSONL log so the actor
+ * can be identified after the fact (#1077).
+ */
+export type StateMutationAction = "deleteOrchestrator" | "clearAllOrchestrators" | "clearFrontDesk";
+
+export interface StateMutationRecord {
+  version: 1;
+  /** ISO timestamp the mutation was applied. */
+  ts: string;
+  action: StateMutationAction;
+  /** Explicit call-site label supplied by the caller. */
+  source: string;
+  /** Agent id attributed to the mutation when known. */
+  actor: string | null;
+  reason: string | null;
+  /** Repo/key targeted, or null for a bulk clear. */
+  key: string | null;
+  /** Value(s) removed by the mutation, captured before unlink. */
+  priorValue: unknown;
+  /** Captured call stack; identifies the caller when no explicit actor exists. */
+  stack: string | null;
+}
+
+/** Options describing who triggered a destructive state mutation (#1077). */
+export interface StateMutationOptions {
+  source?: string;
+  actor?: string | null;
+  reason?: string;
+}
+
+/**
+ * A bounded call-site stack for the audit log. The first two frames are the
+ * capture helper and the mutation method itself, so they are dropped.
+ */
+function captureMutationStack(): string | null {
+  const raw = new Error("state-mutation").stack;
+  if (!raw) return null;
+  const frames = raw.split("\n").slice(2, 8).join("\n").trim();
+  return frames || null;
 }
 
 export interface FrontDeskRecord {
@@ -302,8 +568,8 @@ export function isFrontDeskEvent(body: any): boolean {
 }
 
 const SLASH_BYPASS_RE = /(?:^|\s)\/(?:orchestrator|hold|rework|approve|verify|done|close|instruction|agent|sos|stop)\b/i;
-const BYPASS_LABELS = new Set(["priority/0-sos", "flag/stop-work", "attention/frontdesk", "ping/req"]);
-const SOS_STATE_LABELS = new Set(["priority/0-sos", "flag/stop-work"]);
+const BYPASS_LABELS = new Set(["priority/sos", "priority/0-sos", "flag/stop-work", "attention/frontdesk", "ping/req"]);
+const SOS_STATE_LABELS = new Set(["priority/sos", "priority/0-sos", "flag/stop-work"]);
 
 export function isBypassEvent(event: string, body: any): boolean {
   if (!body || typeof body !== "object") return false;
@@ -364,14 +630,14 @@ export function sosStateOf(event: string, body: any): string | null {
 /** Shared Forgejo account every autonomous agent acts as. */
 export const SHARED_AGENT_ACTOR = "xpufx";
 
-/** The exclusive orchestrator attention signal. */
-export const ORCHESTRATOR_ATTENTION_LABEL = "attention/0-orchestrator";
+/** The exclusive orchestrator attention signal (canonical numberless, platform#247). */
+export const ORCHESTRATOR_ATTENTION_LABEL = "attention/orchestrator";
 
 /** `flag/stop-work` is a hard circuit breaker, including for SOS. */
 export const LABEL_TRIAGE_STOP_WORK_LABEL = "flag/stop-work";
 
 /** SOS breaks through completed/ignored terminal states. */
-export const SOS_LABEL = "priority/0-SOS";
+export const SOS_LABEL = "priority/sos";
 
 /**
  * Terminal labels that suppress triage: the ticket is done, deliberately
@@ -380,14 +646,20 @@ export const SOS_LABEL = "priority/0-SOS";
  */
 export const LABEL_TRIAGE_TERMINAL_LABELS: readonly string[] = [
   "flag/wont-do",
+  "state/done",
   "state/4-done",
+  "attention/ignore",
   "attention/3-ignore",
   "attention/2-ignore",
   "confirmed-done",
 ];
 
 /** Terminal acceptance labels that permit closure without reopening. */
-export const CLOSE_GUARD_ACCEPTED_LABELS: readonly string[] = ["state/4-done", "confirmed-done"];
+export const CLOSE_GUARD_ACCEPTED_LABELS: readonly string[] = [
+  "state/done",
+  "state/4-done",
+  "confirmed-done",
+];
 
 /** Default close-guard target actor list. */
 export const DEFAULT_CLOSE_GUARD_TARGET_ACTORS: readonly string[] = ["xpufx"];
@@ -405,8 +677,49 @@ export const CLOSE_GUARD_POLICY_COMMENT = [
   "Autonomous agents and orchestrators must **never** close issues directly. Upon completing implementation and local verification, agents must transition tickets to `state/2-review` or `state/3-verify` with an envelope report and await operator verification. Only the human operator closes issues upon final review (`state/4-done` / `confirmed-done`).",
 ].join("\n");
 
+/**
+ * Marker embedded in the backward-transition steering comment so operators and
+ * tooling can recognize the automated directive (#1282).
+ */
+export const BACKWARD_TRANSITION_STEERING_MARKER = "<!-- fleet:backward-transition-steering -->";
+
+/** Review-class state labels; removing one means the ticket was under review. */
+export const REVIEW_STATE_LABELS: readonly string[] = [
+  "state/review",
+  "state/2-review",
+  "state/verify",
+  "state/3-verify",
+];
+
+/** WIP-class state labels; adding one returns a card to active work. */
+export const WIP_STATE_LABELS: readonly string[] = ["state/wip", "state/1-wip"];
+
+/** Steering posted to the ticket when a card walks Review → In Progress (#1282). */
+export const BACKWARD_TRANSITION_STEERING_COMMENT = [
+  "### 🔄 Changes requested: Review → In Progress",
+  "",
+  "This card was moved backward from **Review** to **In Progress**.",
+  "The worker must address the review feedback on the linked pull request, re-run the checks, and return the card to Review when the fix is ready.",
+  "",
+  BACKWARD_TRANSITION_STEERING_MARKER,
+].join("\n");
+
+/**
+ * True when an `issues` webhook removes a Review-class state label while the
+ * ticket's post-change labels carry a WIP-class label (#1282). Forgejo delivers
+ * a label swap as an `unlabeled` event whose `issue.labels` already reflect the
+ * new state, so the backward walk is detectable from a single payload.
+ */
+export function isBackwardStateTransition(body: any): boolean {
+  if (String(body?.action ?? "").toLowerCase() !== "unlabeled") return false;
+  const removed = canonicalLabelName(body?.label?.name);
+  if (!REVIEW_STATE_LABELS.includes(removed)) return false;
+  const labels = labelNamesFromIssue(body?.issue).map((name) => canonicalLabelName(name));
+  return labels.some((name) => WIP_STATE_LABELS.includes(name));
+}
+
 /** Labels applied to auto-created CI failure issues (#865). */
-export const CI_FAILURE_LABELS: readonly string[] = ["kind/bug", "priority/1-high", "attention/0-orchestrator"];
+export const CI_FAILURE_LABELS: readonly string[] = ["kind/bug", "priority/high", "attention/orchestrator"];
 
 export interface DirectActionDecision {
   act: boolean;
@@ -415,6 +728,14 @@ export interface DirectActionDecision {
 
 export function normalizeLabelName(raw: unknown): string {
   return String(raw ?? "").trim().toLowerCase();
+}
+
+import { LABEL_ALIASES } from "@xpufx/backend-tickets/shared";
+
+/** Lowercased canonical spelling; legacy numeric folds into numberless. */
+export function canonicalLabelName(raw: unknown): string {
+  const normalized = normalizeLabelName(raw);
+  return LABEL_ALIASES[normalized] ?? normalized;
 }
 
 /** Label names from an issue/pull_request payload or a fetched issue body. */
@@ -452,17 +773,17 @@ export function labelTriageDecision(input: {
   if (input.isPullRequest) {
     return { act: false, reason: "pull request activity" };
   }
-  const labels = new Set(input.labels.map(normalizeLabelName));
-  if (labels.has(normalizeLabelName(LABEL_TRIAGE_STOP_WORK_LABEL))) {
+  const labels = new Set(input.labels.map(canonicalLabelName));
+  if (labels.has(canonicalLabelName(LABEL_TRIAGE_STOP_WORK_LABEL))) {
     return { act: false, reason: `${LABEL_TRIAGE_STOP_WORK_LABEL} is set` };
   }
-  if (!labels.has(normalizeLabelName(SOS_LABEL))) {
-    const terminal = LABEL_TRIAGE_TERMINAL_LABELS.find((l) => labels.has(normalizeLabelName(l)));
+  if (!labels.has(canonicalLabelName(SOS_LABEL))) {
+    const terminal = LABEL_TRIAGE_TERMINAL_LABELS.find((l) => labels.has(canonicalLabelName(l)));
     if (terminal) {
       return { act: false, reason: `terminal label ${terminal} is set` };
     }
   }
-  if (labels.has(normalizeLabelName(ORCHESTRATOR_ATTENTION_LABEL))) {
+  if (labels.has(canonicalLabelName(ORCHESTRATOR_ATTENTION_LABEL))) {
     return { act: false, reason: "already assigned to orchestrator" };
   }
   return { act: true, reason: "human activity requires orchestrator attention" };
@@ -479,8 +800,8 @@ export function parseTargetActors(
 }
 
 /**
- * Close guard decision (#847). A targeted actor closing a non-terminal issue
- * is intercepted; terminal acceptance labels allow a legitimate closure.
+ * Close guard decision (#847, #996). A targeted autonomous actor closing an issue
+ * is always intercepted and reopened; terminal acceptance labels do not bypass the guard.
  */
 export function closeGuardDecision(input: {
   actor: string;
@@ -499,12 +820,7 @@ export function closeGuardDecision(input: {
   if (input.isPullRequest) {
     return { act: false, reason: "pull request activity" };
   }
-  const accepted = new Set((input.acceptedLabels ?? CLOSE_GUARD_ACCEPTED_LABELS).map(normalizeLabelName));
-  const match = input.labels.map(normalizeLabelName).find((l) => accepted.has(l));
-  if (match) {
-    return { act: false, reason: `terminal acceptance label ${match} is set` };
-  }
-  return { act: true, reason: "targeted actor closed a non-terminal issue" };
+  return { act: true, reason: "targeted actor closed an issue" };
 }
 
 // ---------------------------------------------------------------------------
@@ -589,6 +905,140 @@ export interface DirectActionResult {
 }
 
 // ---------------------------------------------------------------------------
+// Merge-event hook (#1076)
+//
+// Merges land on `origin/main` only; the primary checkout does not track the
+// remote, so a merged plugin fix stays inert until the checkout advances and
+// the directory-installed plugin reloads. On a merged `pull_request.closed`
+// event the router fast-forwards the mapped checkout, reloads its plugin, and
+// announces what changed to Front Desk, the repo orchestrator and a durable log.
+// ---------------------------------------------------------------------------
+
+/** Rolling cap on stored merge-event records. */
+export const MERGE_EVENT_LOG_MAX = 200;
+
+export interface MergeEventRecord {
+  repo: string;
+  checkoutPath: string;
+  pluginId: string | null;
+  timestamp: string;
+  fromSha: string;
+  toSha: string;
+  /** Commit subjects applied across `from..to` (PR/squash titles). */
+  titles: string[];
+  fastForwarded: boolean;
+  alreadyCurrent: boolean;
+  reloaded: boolean;
+  reloadReason: string;
+  newRevision: string;
+  status: "fast-forwarded" | "already-current" | "skipped";
+  reason: string;
+}
+
+export interface MergeEventResult extends DirectActionResult {
+  repo?: string;
+  checkoutPath?: string;
+  status?: MergeEventRecord["status"];
+  fromSha?: string;
+  toSha?: string;
+  titles?: string[];
+  fastForwarded?: boolean;
+  alreadyCurrent?: boolean;
+  reloaded?: boolean;
+  record?: MergeEventRecord;
+}
+
+/** Read the durable merge-event log; missing or corrupt reads as empty. */
+export function readMergeEventRecords(path: string): MergeEventRecord[] {
+  try {
+    if (!existsSync(path)) return [];
+    const parsed = JSON.parse(readFileSync(path, "utf8") || "[]");
+    return Array.isArray(parsed) ? (parsed as MergeEventRecord[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+/** Append one record to the durable merge-event log, capped oldest-first. */
+export function appendMergeEventRecord(record: MergeEventRecord, path: string): MergeEventRecord[] {
+  const records = readMergeEventRecords(path);
+  records.push(record);
+  const capped = records.slice(-MERGE_EVENT_LOG_MAX);
+  try {
+    const dir = dirname(path);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    const tempPath = `${path}.${process.pid}.${Date.now()}.tmp`;
+    writeFileSync(tempPath, JSON.stringify(capped, null, 2), "utf8");
+    try {
+      renameSync(tempPath, path);
+    } catch {
+      writeFileSync(path, JSON.stringify(capped, null, 2), "utf8");
+      try {
+        unlinkSync(tempPath);
+      } catch {}
+    }
+  } catch {
+    // A merge-event write must never fail the fast-forward it records.
+  }
+  return capped;
+}
+
+/**
+ * Resolve the opt-in binding for a payload repo. Both the payload and the
+ * configured keys accept `host/owner/repo`, `owner/repo`, URLs and `.git`.
+ */
+export function resolveMergeEventHook(
+  repo: string | null | undefined,
+  hooks: Record<string, MergeEventHook> | null | undefined,
+): MergeEventHook | null {
+  if (!repo || !hooks) return null;
+  const wanted = new Set(candidateRepoKeys(repo).map((k) => k.toLowerCase()));
+  if (wanted.size === 0) return null;
+  for (const [key, hook] of Object.entries(hooks)) {
+    if (!hook || typeof hook.checkoutPath !== "string" || !hook.checkoutPath.trim()) continue;
+    for (const candidate of candidateRepoKeys(key)) {
+      if (wanted.has(candidate.toLowerCase())) return hook;
+    }
+  }
+  return null;
+}
+
+/** Fleet-envelope body announcing one merge-event outcome. Pure. */
+export function formatMergeEventNotice(record: MergeEventRecord): string {
+  const plugin = record.pluginId ? `plugin \`${record.pluginId}\`` : "no plugin bound";
+  const lines: string[] = [];
+  if (record.status === "already-current") {
+    lines.push(`[Merge Event] ${record.repo} already current`);
+    lines.push(`- Checkout: \`${record.checkoutPath}\` (${plugin})`);
+    lines.push(`- Time: ${record.timestamp}`);
+    lines.push(`- Revision: \`${record.fromSha}\` (nothing new to pull)`);
+    return lines.join("\n");
+  }
+  if (record.status === "skipped") {
+    lines.push(`[Merge Event] ${record.repo} checkout not updated`);
+    lines.push(`- Checkout: \`${record.checkoutPath}\` (${plugin})`);
+    lines.push(`- Time: ${record.timestamp}`);
+    lines.push(`- Revision: \`${record.fromSha}\``);
+    lines.push(`- Skipped: ${record.reason}`);
+    return lines.join("\n");
+  }
+  const count = record.titles.length;
+  lines.push(`[Merge Event] ${record.repo} fast-forwarded`);
+  lines.push(`- Checkout: \`${record.checkoutPath}\` (${plugin})`);
+  lines.push(`- Time: ${record.timestamp}`);
+  lines.push(
+    `- Revision: \`${record.fromSha}\` -> \`${record.toSha}\` (${count} commit${count === 1 ? "" : "s"})`,
+  );
+  lines.push(`- Fast-forward: ${record.fastForwarded ? "ok" : "failed"}`);
+  lines.push(`- Plugin reload: ${record.reloaded ? "ok" : record.reloadReason}`);
+  if (count > 0) {
+    lines.push("- Applied:");
+    for (const title of record.titles) lines.push(`  - ${title}`);
+  }
+  return lines.join("\n");
+}
+
+// ---------------------------------------------------------------------------
 // Repository onboarding (#847)
 //
 // On `repository.created`, seed the new repository with the canonical label
@@ -609,7 +1059,7 @@ export const REPO_ONBOARDING_ISSUE_TITLE =
 /** Labels applied to the onboarding issue. */
 export const REPO_ONBOARDING_ISSUE_LABELS: readonly string[] = [
   ORCHESTRATOR_ATTENTION_LABEL,
-  "priority/1-high",
+  "priority/high",
 ];
 
 /** Body of the auto-created onboarding issue. */
@@ -643,11 +1093,354 @@ export function eventKind(event: string, body: any): string {
   return `${event}:${action || "event"}`;
 }
 
+// ---------------------------------------------------------------------------
+// Declarative wakeup classifier (#1181)
+//
+// A dormant fleet must not be woken by passive webhook noise: a self-authored
+// comment, a close, an unlabel, or a cosmetic re-tag on `format/*`, `size/*`,
+// `target/*`. Only genuine operator intent -- a slash command, an action-token
+// transfer, or a lifecycle advance -- should break quiescence. WAKEUP_RULES is
+// the single declarative table of those signals; `isActionableWakeupEvent` is
+// the first-match projection over it, so the router never re-implements the
+// policy inline.
+// ---------------------------------------------------------------------------
+
+/** Slash-command verbs a human operator types to direct the fleet. */
+export const SLASH_COMMAND_RE =
+  /(?:^|\s)\/(?:orchestrator|frontdesk|hold|rework|approve|verify|done|close|instruction|agent|sos|stop|sweep|triage|assign|unblock|block)\b/i;
+
+/** The explicit board-sweep request (`/sweep`), which always delivers (#1181). */
+export const SLASH_SWEEP_RE = /(?:^|\s)\/sweep\b/i;
+
+/** Action tokens whose transfer wakes the fleet (canonical, lowercased). */
+export const WAKEUP_ACTION_LABELS: ReadonlySet<string> = new Set([
+  "attention/orchestrator",
+  "attention/frontdesk",
+  "priority/sos",
+  "state/review",
+  "review/needed",
+  "flag/stop-work",
+]);
+
+/** Label namespaces that are cosmetic metadata, never a wakeup. */
+export const PASSIVE_LABEL_PREFIXES: readonly string[] = ["format/", "size/", "target/"];
+
+/** `event:action` lifecycle advances that always wake the fleet. */
+export const WAKEUP_LIFECYCLE_EVENTS: ReadonlySet<string> = new Set([
+  "issues:opened",
+  "issues:reopened",
+  "pull_request:opened",
+  "pull_request:ready_for_review",
+]);
+
+export interface WakeupRule {
+  /** Stable rule id, surfaced in logs and tests. */
+  id: string;
+  /** One-line description of the signal. */
+  description: string;
+  /** True when a match warrants waking a dormant fleet. */
+  actionable: boolean;
+  /** Pure predicate over the lowercased event and the raw webhook body. */
+  matches: (event: string, body: any) => boolean;
+}
+
+/** Comment/review text carried by a webhook body, if any. */
+function wakeupCommentText(body: any): string {
+  const bodyText = body?.comment?.body ?? body?.review?.body;
+  return typeof bodyText === "string" ? bodyText : "";
+}
+
+/** `event:action` key, lowercased, against {@link WAKEUP_LIFECYCLE_EVENTS}. */
+function wakeupEventAction(event: string, body: any): string {
+  return `${event}:${String(body?.action ?? "").toLowerCase()}`;
+}
+
+/**
+ * Declarative wakeup rules, first match wins. Actionable signals come first so
+ * a directive still wakes the fleet even inside an envelope-decorated comment;
+ * the passive rules below make the negative space explicit rather than relying
+ * on an implicit default.
+ */
+export const WAKEUP_RULES: readonly WakeupRule[] = [
+  {
+    id: "operator-slash-command",
+    description: "direct operator slash command in a comment or review body",
+    actionable: true,
+    matches: (_event, body) => SLASH_COMMAND_RE.test(wakeupCommentText(body)),
+  },
+  {
+    id: "action-token-transfer",
+    description:
+      "labeled with attention/orchestrator, attention/frontdesk, priority/sos, state/review, review/needed or flag/stop-work",
+    actionable: true,
+    matches: (_event, body) => {
+      if (String(body?.action ?? "").toLowerCase() !== "labeled") return false;
+      return WAKEUP_ACTION_LABELS.has(canonicalLabelName(body?.label?.name));
+    },
+  },
+  {
+    id: "lifecycle-advance",
+    description: "ticket lifecycle advance (issues opened/reopened, pull_request opened/ready_for_review)",
+    actionable: true,
+    matches: (event, body) => WAKEUP_LIFECYCLE_EVENTS.has(wakeupEventAction(event, body)),
+  },
+  {
+    id: "passive-self-stamped-comment",
+    description: "fleet-originated (self-stamped) comment",
+    actionable: false,
+    matches: (event, body) => event === "issue_comment" && envelopeAgentId(body) !== null,
+  },
+  {
+    id: "passive-issue-closed",
+    description: "issue closed",
+    actionable: false,
+    matches: (event, body) =>
+      event === "issues" && String(body?.action ?? "").toLowerCase() === "closed",
+  },
+  {
+    id: "passive-unlabeled",
+    description: "label removed",
+    actionable: false,
+    matches: (_event, body) => String(body?.action ?? "").toLowerCase() === "unlabeled",
+  },
+  {
+    id: "passive-metadata-label",
+    description: "cosmetic format/*, size/* or target/* relabel",
+    actionable: false,
+    matches: (_event, body) =>
+      PASSIVE_LABEL_PREFIXES.some((prefix) => canonicalLabelName(body?.label?.name).startsWith(prefix)),
+  },
+  {
+    id: "passive-cosmetic-edit",
+    description: "body/description edit or other cosmetic mutation",
+    actionable: false,
+    matches: (_event, body) =>
+      ["edited", "label_updated", "synchronize", "synchronized"].includes(
+        String(body?.action ?? "").toLowerCase(),
+      ),
+  },
+];
+
+/**
+ * Pure wakeup classifier: true when `event`/`body` is an actionable signal that
+ * should break fleet dormancy. Unknown events are non-actionable by default, so
+ * an unmodelled event never wakes a dormant fleet on its own.
+ */
+export function isActionableWakeupEvent(event: string, body: any): boolean {
+  const ev = String(event ?? "").toLowerCase();
+  for (const rule of WAKEUP_RULES) {
+    if (rule.matches(ev, body)) return rule.actionable;
+  }
+  return false;
+}
+
 export function eventHash(repoKey: string, issue: number | null, kind: string, actor: string, bodyText?: string): string {
   return `${repoKey}#${issue}|${kind}|${actor}|${bodyText ?? ""}`;
 }
 
 export const FORGEJO_DIGEST_PREFIX = "🔔 Forgejo digest";
+
+// Issue #283/#985: fleet-originated prompts carry a JSON signature so models can
+// route machine turns. #1003 delivers it as a `fleet_envelope` text attachment
+// (the operator sees a subtle pill, the daemon folds it back into the provider
+// prompt); the legacy HTML-comment grammar stays for the queue and CLI fallback.
+// Process-originated messages (router, watchdog) have no agent id, so `sender`
+// carries the process identity.
+export const FLEET_ENVELOPE_VERSION = 1;
+/** Attachment context kind the client renders as a fleet-provenance pill (#1003). */
+export const FLEET_ENVELOPE_CONTEXT_KIND = "fleet_envelope";
+/** Pill title shown by the client for {@link FLEET_ENVELOPE_CONTEXT_KIND}. */
+export const FLEET_ENVELOPE_TITLE = "Fleet context";
+export const ROUTER_SENDER = "forgejo-hook";
+export const WATCHDOG_SENDER = "fleet-watchdog";
+export const FRONT_DESK_REPO = "frontdesk";
+export const FLEET_REPO = "fleet";
+
+export interface FleetEnvelopeFields {
+  origin: string;
+  sender: string;
+  repo: string;
+  kind: string;
+  ref?: number | string | null;
+}
+
+export interface FleetEnvelope {
+  fleet: {
+    v: number;
+    origin: string;
+    sender: string;
+    repo: string;
+    kind: string;
+    ref: number | string | null;
+  };
+}
+
+export function fleetEnvelope({ origin, sender, repo, kind, ref = null }: FleetEnvelopeFields): FleetEnvelope {
+  return {
+    fleet: {
+      v: FLEET_ENVELOPE_VERSION,
+      origin,
+      sender,
+      repo,
+      kind,
+      ref,
+    },
+  };
+}
+
+export function formatFleetEnvelope(fields: FleetEnvelopeFields): string {
+  return `<!-- ${JSON.stringify(fleetEnvelope(fields))} -->`;
+}
+
+/** Prepend the fleet signature to an agent/router prompt body. */
+export function withFleetEnvelope(fields: FleetEnvelopeFields, message: string): string {
+  if (typeof message === "string" && message.startsWith('<!-- {"fleet"')) return message;
+  return `${formatFleetEnvelope(fields)}\n${message}`;
+}
+
+/**
+ * The attachment arm the Paseo client renders as a subtle pill and the daemon
+ * folds back into the provider prompt ({@link renderPromptAttachmentAsText}).
+ * Derived from the installed send options so a protocol drift fails typecheck.
+ */
+export type FleetEnvelopeAttachment = Extract<
+  NonNullable<PaseoAgentSendOptions["attachments"]>[number],
+  { type: "text" }
+>;
+
+function fleetEnvelopeAttachmentFromJson(json: string): FleetEnvelopeAttachment {
+  return {
+    type: "text",
+    mimeType: "text/plain",
+    contextKind: FLEET_ENVELOPE_CONTEXT_KIND,
+    title: FLEET_ENVELOPE_TITLE,
+    text: json,
+  };
+}
+
+/**
+ * Build the out-of-band form of the fleet envelope (#1003). The envelope stays
+ * model-visible via the daemon's prompt-attachment fold, but reaches the
+ * operator as an attachment pill instead of raw JSON in the composer bubble.
+ */
+export function fleetEnvelopeAttachment(fields: FleetEnvelopeFields): FleetEnvelopeAttachment {
+  return fleetEnvelopeAttachmentFromJson(JSON.stringify(fleetEnvelope(fields)));
+}
+
+const FLEET_ENVELOPE_COMMENT_RE = /<!-- ({"fleet":.*?}) -->\n?/g;
+
+/**
+ * Move any legacy in-band `<!-- {"fleet": ...} -->` comments out of a delivered
+ * prompt into structured attachments. Kept at the delivery boundary so queued
+ * strings (including ones persisted before this change) still parse, while no
+ * new fleet turn ships raw JSON in the message text.
+ */
+export function extractFleetEnvelopeAttachments(message: string): {
+  text: string;
+  attachments: FleetEnvelopeAttachment[];
+} {
+  const attachments: FleetEnvelopeAttachment[] = [];
+  const text = message.replace(FLEET_ENVELOPE_COMMENT_RE, (match, json: string) => {
+    try {
+      if (JSON.parse(json)?.fleet) {
+        attachments.push(fleetEnvelopeAttachmentFromJson(json));
+        return "";
+      }
+    } catch {
+      // Malformed comment: leave it in the body rather than drop a message.
+    }
+    return match;
+  });
+  return { text, attachments };
+}
+
+/**
+ * Consolidate multiple fleet-envelope attachments into a single outer envelope.
+ * When a batch delivery carries N constituent envelopes, this produces one
+ * `kind: "batch"` envelope so the prompt carries exactly one provenance signal
+ * per fleet design (#283 / #1326).
+ */
+function consolidateFleetEnvelopeAttachments(
+  attachments: readonly FleetEnvelopeAttachment[],
+): FleetEnvelopeAttachment {
+  // Pick repo from the first valid envelope; fall back to the fleet repo.
+  let repo = FLEET_REPO;
+  for (const att of attachments) {
+    try {
+      const fleet = JSON.parse(att.text)?.fleet;
+      if (fleet?.repo) { repo = fleet.repo; break; }
+    } catch {}
+  }
+
+  const fields: FleetEnvelopeFields = {
+    origin: "router",
+    sender: ROUTER_SENDER,
+    repo,
+    kind: "batch",
+    ref: null,
+  };
+  return fleetEnvelopeAttachment(fields);
+}
+
+/** Re-inline attachments for the CLI fallback, which has no attachment channel.
+ * When multiple attachments are present (e.g. a batch), they are consolidated
+ * into a single outer envelope instead of being stacked (#1326). */
+function inlineFleetEnvelopeAttachments(text: string, attachments: readonly FleetEnvelopeAttachment[]): string {
+  let effective = attachments;
+  if (attachments.length > 1) {
+    effective = [consolidateFleetEnvelopeAttachments(attachments)];
+  }
+  const comments = effective.map((a) => `<!-- ${a.text} -->`).join("\n");
+  return text.length > 0 ? `${comments}\n${text}` : comments;
+}
+
+export function routerEnvelope({
+  repo,
+  kind,
+  ref = null,
+}: {
+  repo: string;
+  kind: string;
+  ref?: number | string | null;
+}): FleetEnvelopeFields {
+  return { origin: "router", sender: ROUTER_SENDER, repo, kind, ref };
+}
+
+export function watchdogEnvelope({
+  repo = FLEET_REPO,
+  ref = null,
+}: { repo?: string; ref?: number | string | null } = {}): FleetEnvelopeFields {
+  return { origin: "watchdog", sender: WATCHDOG_SENDER, repo, kind: "alert", ref };
+}
+
+/** Alert repo context for a daemon agent, when resolvable (mirrors the standalone router) (#999). */
+export function agentRepoKey(
+  agent: (Pick<WatchdogAgent, "id" | "labels"> & { title?: string | null; name?: string | null }) | null | undefined,
+  orchRecords: ReadonlyArray<Pick<OrchestratorRecord, "agentId" | "key">>,
+): string {
+  const record = orchRecords.find((r) => r.agentId === agent?.id);
+  if (record?.key) return record.key;
+
+  // Extract repo from Orchestrator title / name (#999)
+  for (const raw of [agent?.title, agent?.name]) {
+    if (!raw || typeof raw !== "string") continue;
+    const match = raw.trim().match(/^Orchestrator\s*[·\-\:\.]\s*(.+)$/i);
+    if (match) {
+      const cand = match[1].trim();
+      const canonical = canonicalRepoKey(cand);
+      if (canonical) return canonical;
+      const firstWord = cand.split(/\s+/)[0];
+      if (firstWord) {
+        const firstCanonical = canonicalRepoKey(firstWord);
+        if (firstCanonical) return firstCanonical;
+        return firstWord;
+      }
+      return cand;
+    }
+  }
+
+  return agent?.labels?.repo ?? FLEET_REPO;
+}
 
 export interface CoalesceEvent {
   hash: string;
@@ -676,7 +1469,8 @@ export type CoalesceResult =
   | "window-capped"
   | "deduped"
   | "sos-deduped"
-  | "suppressed";
+  | "suppressed"
+  | "ignored";
 
 export interface CoalesceInput {
   repoKey: string;
@@ -708,7 +1502,11 @@ export function formatDigest(repoKey: string, issue: number | null, buffered: Co
   const head = `${FORGEJO_DIGEST_PREFIX} ${repoKey}${line} (${buffered.length} events: ${parts.join(", ")})`;
   const bodyText = latestCommentBody(buffered);
   const withBody = bodyText ? `${head}\nLatest comment: ${bodyText.slice(0, 2000)}` : head;
-  return last?.url && !withBody.includes(last.url) ? `${withBody} ${last.url}` : withBody;
+  const digest = last?.url && !withBody.includes(last.url) ? `${withBody} ${last.url}` : withBody;
+  return withFleetEnvelope(
+    routerEnvelope({ repo: repoKey, kind: "webhook", ref: issue ?? null }),
+    digest,
+  );
 }
 
 export function bufferKey(repoKey: string, issue: number | null): string {
@@ -730,6 +1528,7 @@ export interface WatchdogAgent {
   id: string;
   title?: string | null;
   name?: string | null;
+  cwd?: string | null;
   status?: string | null;
   role?: string | null;
   provider?: string | null;
@@ -758,10 +1557,11 @@ export interface WatchdogAgent {
   lastActivityAt?: string | null;
   updatedAt?: string | null;
   labels?: Record<string, string> | null;
+  parentId?: string | null;
   pendingPermissions?: WatchdogPermission[] | null;
   archivedAt?: string | null;
   config?: { provider?: string | null; model?: string | null; [key: string]: unknown } | null;
-  recentTimeline?: string[] | string | null;
+  recentTimeline?: unknown[] | string | null;
   timeline?: unknown;
 }
 
@@ -791,12 +1591,21 @@ export interface WatchdogAnomaly {
   scope?: string;
 }
 
+/** Fleet-level delivery options. `deliverMessage` translates `steer` into the
+ * SDK's `activeTurnBehavior`; callers must not pass SDK-only keys here. */
+export interface DeliverOptions {
+  noWait?: boolean;
+  steer?: boolean;
+  /** Extra structured prompt attachments; legacy envelope comments are merged in. */
+  attachments?: FleetEnvelopeAttachment[];
+}
+
 export interface WatchdogAuditOptions {
   now?: number;
   agentMap?: Map<string, WatchdogAgent> | null;
   orchestratorRecords?: OrchestratorRecord[];
   frontDeskId?: string | null;
-  deliver?: (targetAgentId: string, msg: string, options?: { noWait?: boolean; steer?: boolean }) => Promise<boolean>;
+  deliver?: (targetAgentId: string, msg: string, options?: DeliverOptions) => Promise<boolean>;
   reloadAgent?: (id: string) => Promise<{ ok: boolean; error?: string }>;
   /** Stop a wedged agent (`paseo agent stop <id>`); injectable for tests. */
   stopAgent?: (id: string) => Promise<{ ok: boolean; error?: string }>;
@@ -808,8 +1617,8 @@ export interface WatchdogAuditOptions {
   diskMetadata?: Map<string, WatchdogAgentDisk> | null;
   /** Cancellation-timeout markers keyed by agent id; loaded from logs when omitted. */
   cancellations?: Map<string, number | null> | null;
-  /** Recent timeline provider-retry errors keyed by agent id (#890). */
-  timelineErrors?: Map<string, string[] | string> | null;
+  /** Recent timeline provider-retry errors keyed by agent id (#890, #1144). */
+  timelineErrors?: Map<string, TimelineRetryError[] | string[] | string> | null;
   /** Explicit circuit breaker cache path; defaults to ~/.paseo/model-health.json */
   circuitBreakerPath?: string;
   modelHealthPath?: string;
@@ -818,6 +1627,8 @@ export interface WatchdogAuditOptions {
   steerMessage?: string;
   runningStaleSeconds?: number;
   cancellationRecencySeconds?: number;
+  /** Consecutive identical tool calls that classify as a runaway loop (#1265). */
+  repetitiveToolLoopThreshold?: number;
   /** Also treat a plain finished idle agent as stalled (aggressive amnesia detection). */
   assumePendingWork?: boolean;
   /**
@@ -825,6 +1636,14 @@ export interface WatchdogAuditOptions {
    * `true` in production; tests inject `false` when exercising unrelated paths.
    */
   childWakeups?: boolean;
+  /**
+   * Injected allow seam for fleet permission auto-adjudication (#1084).
+   * Defaults to `agents.allowPermission` (SDK `respondToPermission`, falling
+   * back to `paseo permit allow`); tests inject a stub so no real permit is run.
+   */
+  allowFleetPermission?: (agentId: string, permissionId: string) => Promise<boolean>;
+  /** Durable auto-adjudication JSONL path; defaults to `<stateDir>/permission-decisions.jsonl`. */
+  adjudicationLogPath?: string;
   /**
    * Persist per-provider/model rollup receipts on this tick (#560). Defaults to
    * `true` in production and `false` for injected fixtures, so unit tests never
@@ -838,6 +1657,179 @@ export interface WatchdogAuditResult {
   timestamp: number;
   audited: { orchestrators: number; agents: number; queues: number };
   anomalies: WatchdogAnomaly[];
+  /** Dead session verdicts from the health-canary pass (#1328). */
+  deadSessions?: DeadSessionVerdict[];
+}
+
+// ---------------------------------------------------------------------------
+// Dead session detection (#1328)
+//
+// Deterministic predicates derived from the Python agent-health-check:
+//   DEAD_ORPHANED_DISK_RECORD    – absent from daemon, still on disk.
+//   DEAD_TERMINAL_FATAL_ERROR    – error/closed with non-transient lastError.
+//   DEAD_WEDGED_RUNNING_TURN     – running turn with no activity in stale window.
+//   DEAD_REGISTRY_WITHOUT_PROCESS– registry references id but daemon list does not.
+//   DEAD_SUPERSEDED_BY_RETRY     – terminal session superseded by newer retry.
+// ---------------------------------------------------------------------------
+
+export const DEAD_PREDICATE_ORDER = [
+  "DEAD_ORPHANED_DISK_RECORD",
+  "DEAD_TERMINAL_FATAL_ERROR",
+  "DEAD_WEDGED_RUNNING_TURN",
+  "DEAD_REGISTRY_WITHOUT_PROCESS",
+  "DEAD_SUPERSEDED_BY_RETRY",
+] as const;
+export type DeadPredicateType = (typeof DEAD_PREDICATE_ORDER)[number];
+
+export interface DeadSessionVerdict {
+  agentId: string;
+  name: string | null;
+  liveStatus: string;
+  deadPredicates: DeadPredicateType[];
+  deadReasons: string[];
+  registrations: string[];
+  activeWorkers: number;
+  killAllowed: boolean;
+  killBlockedReasons: string[];
+  supersededBy: string | null;
+}
+
+/** Kill-safety guard: returns reasons why this agent must NOT be killed. */
+export function computeKillGuardReasons(
+  assessment: {
+    agentId: string;
+    liveStatus: string;
+    taxonomy: WatchdogTaxonomyType[];
+    deadPredicates: DeadPredicateType[];
+    activeWorkers: number;
+    frontDeskId?: string | null;
+    selfId?: string | null;
+    sameCwdAsSuccessor?: boolean;
+  },
+  opts: { selfId?: string | null; frontDeskId?: string | null } = {},
+): string[] {
+  const reasons: string[] = [];
+  const { selfId = opts.selfId, frontDeskId = opts.frontDeskId } = opts;
+  const dead = assessment.deadPredicates;
+
+  if (dead.length === 0) {
+    reasons.push("not classified as dead (no dead predicate holds)");
+  }
+  if (assessment.liveStatus === "running" && !dead.includes("DEAD_WEDGED_RUNNING_TURN")) {
+    reasons.push("healthy running agent with recent activity");
+  }
+  if (assessment.activeWorkers > 0) {
+    reasons.push(`has ${assessment.activeWorkers} live child worker(s)`);
+  }
+  if (frontDeskId && assessment.agentId === frontDeskId) {
+    reasons.push("registered front desk");
+  }
+  if (selfId && assessment.agentId === selfId) {
+    reasons.push("self / dispatching agent");
+  }
+  if (assessment.sameCwdAsSuccessor) {
+    reasons.push("shares worktree cwd with successor");
+  }
+  return reasons;
+}
+
+/** Evidence strings for each dead predicate. */
+const DEAD_PREDICATE_EVIDENCE: Record<string, string> = {
+  DEAD_ORPHANED_DISK_RECORD: "live daemon list no longer contains the agent, but ~/.paseo/agents/<id>.json still exists",
+  DEAD_TERMINAL_FATAL_ERROR: "status is error/closed with a non-transient disk lastError",
+  DEAD_WEDGED_RUNNING_TURN: "running turn with no activity inside the stale window",
+  DEAD_REGISTRY_WITHOUT_PROCESS: "fleet registry still references the agent id, but the live daemon list does not",
+  DEAD_SUPERSEDED_BY_RETRY: "terminal error/closed session superseded by a newer retry with matching scope/task",
+};
+
+/** Normalize agent display name/title into a task name for comparison. */
+export function extractTaskName(name: string | null | undefined): string {
+  if (!name) return "";
+  const text = String(name).trim();
+  const m = text.match(/^Worker\s*[·-]\s*(.*)/i);
+  return m ? m[1].trim() : text;
+}
+
+/** Match task/ticket name or issue prefix (e.g. 'repo#23 ...'). */
+export function matchTaskName(nameA: string | null | undefined, nameB: string | null | undefined): boolean {
+  const taskA = extractTaskName(nameA);
+  const taskB = extractTaskName(nameB);
+  if (!taskA || !taskB) return false;
+  if (taskA.toLowerCase() === taskB.toLowerCase()) return true;
+  const re = /^([a-zA-Z0-9_./-]+#\d+)\b/;
+  const mA = taskA.match(re);
+  const mB = taskB.match(re);
+  if (mA && mB && mA[1].toLowerCase() === mB[1].toLowerCase()) return true;
+  return false;
+}
+
+/** Extract (parentAgentId, repoScope) tuple from agent representation. */
+function getAgentScope(agent: { id: string; name?: string | null; title?: string | null; cwd?: string | null; createdAt?: number | string | null; labels?: Record<string, string> | null; parentAgentId?: string | null; repo?: string | null }): [string | null, string | null] {
+  const labels = agent.labels ?? {};
+  const parentId = labels["paseo.parent-agent-id"] ?? labels["parentAgentId"] ?? agent.parentAgentId ?? null;
+  let repo = agent.repo ?? labels["repo"] ?? null;
+  if (!repo) {
+    const name = agent.name ?? agent.title ?? "";
+    const m = name.match(/(?:Worker\s*[·-]\s*)?([a-zA-Z0-9_.-]+)#\d+/);
+    if (m) repo = m[1];
+    else {
+      const orch = name.match(/Orchestrator\s*[·-]\s*([a-zA-Z0-9_./-]+)/);
+      if (orch) repo = orch[1];
+    }
+  }
+  return [parentId, repo];
+}
+
+/** Determine whether two agents share parent orchestrator or repo scope. */
+function matchAgentScope(a: { id: string; name?: string | null; title?: string | null; cwd?: string | null; createdAt?: number | string | null; labels?: Record<string, string> | null }, b: { id: string; name?: string | null; title?: string | null; cwd?: string | null; createdAt?: number | string | null; labels?: Record<string, string> | null }): boolean {
+  const [parentA, repoA] = getAgentScope(a);
+  const [parentB, repoB] = getAgentScope(b);
+  if (parentA && parentB && String(parentA) === String(parentB)) return true;
+  if (repoA && repoB) {
+    const ra = repoA.split("/").pop()?.toLowerCase() ?? "";
+    const rb = repoB.split("/").pop()?.toLowerCase() ?? "";
+    if (ra === rb) return true;
+  }
+  return false;
+}
+
+function normalizeAgentCwd(cwd: string | null | undefined): string | null {
+  if (!cwd || typeof cwd !== "string") return null;
+  return cwd.trim().replace(/^~(?=$|[/\\])/, process.env.HOME ?? "") || null;
+}
+
+function getAgentCreatedAtMs(agent: { createdAt?: number | string | null }): number | null {
+  if (!agent) return null;
+  const val = agent.createdAt;
+  if (val == null) return null;
+  return coerceEpochMs(val);
+}
+
+/** Find a candidate successor B strictly newer than A matching scope, task, and distinct cwd. */
+export function findSuccessorRetry(agent: { id: string; name?: string | null; title?: string | null; cwd?: string | null; createdAt?: number | string | null; labels?: Record<string, string> | null }, candidates: Array<{ id: string; name?: string | null; title?: string | null; cwd?: string | null; createdAt?: number | string | null; labels?: Record<string, string> | null }>): { id: string; name?: string | null; title?: string | null; cwd?: string | null; createdAt?: number | string | null; labels?: Record<string, string> | null } | null {
+  const timeA = getAgentCreatedAtMs(agent);
+  if (timeA == null) return null;
+  const nameA = agent.name ?? agent.title;
+  const cwdA = normalizeAgentCwd(agent.cwd);
+
+  let best: typeof agent | null = null;
+  let bestTime = -1;
+
+  for (const cand of candidates) {
+    if (cand.id === agent.id) continue;
+    const timeB = getAgentCreatedAtMs(cand);
+    if (timeB == null || timeB <= timeA) continue;
+    if (!matchAgentScope(agent, cand)) continue;
+    const nameB = cand.name ?? cand.title;
+    if (!matchTaskName(nameA, nameB)) continue;
+    const cwdB = normalizeAgentCwd(cand.cwd);
+    if (cwdA && cwdB && cwdA === cwdB) continue;
+    if (timeB > bestTime) {
+      bestTime = timeB;
+      best = cand;
+    }
+  }
+  return best;
 }
 
 // ---------------------------------------------------------------------------
@@ -852,10 +1844,12 @@ export interface WatchdogAuditResult {
 export const WATCHDOG_TAXONOMY = [
   "TURN_CONCURRENCY_LOCK",
   "TURN_CANCELLATION_TIMEOUT",
+  "PENDING_PERMISSION_BLOCKED",
   "IDLE_POST_ERROR_AMNESIA",
   "ZOMBIE_HUNG_TURN",
   "STALE_ERROR_GHOSTING",
   "PROVIDER_QUOTA_EXHAUSTION",
+  "REPETITIVE_TOOL_LOOP",
 ] as const;
 export type WatchdogTaxonomyType = (typeof WATCHDOG_TAXONOMY)[number];
 
@@ -863,9 +1857,11 @@ export type WatchdogSeverity = "high" | "medium";
 
 export type WatchdogAnomalyType =
   | "AGENT_PERMISSION_REQUIRED"
+  | "AGENT_PERMISSION_AUTO_ALLOWED"
   | "AGENT_ATTENTION_REQUIRED"
   | "AGENT_ERROR"
   | "ORCHESTRATOR_MISSING"
+  | "ORCHESTRATOR_PROVISIONED"
   | "QUEUE_WEDGED"
   | "QUEUE_UNORCHESTRATED"
   | "CHILD_WAKEUP"
@@ -876,6 +1872,51 @@ export const DEFAULT_CANCELLATION_RECENCY_SECONDS = 86400;
 export const DEFAULT_WATCHDOG_STEER_MESSAGE =
   "Health check: your previous turn ended without resuming work. " +
   "Sweep the board for triage and continue dispatching pending work.";
+
+// Machine-scale watchdog defaults (#1123). Human-timescale intervals left a
+// wedged queue unrecovered for quarter-hour stretches, so the busy threshold,
+// alert cooldown, and board sweep all run on the fleet's own cadence.
+/**
+ * Minimum consecutive busy drain checks before the watchdog considers an
+ * orchestrator wedged and attempts auto-recovery (#1344).
+ *
+ * Rationale: drain-steer must fire *before* the watchdog reloads.
+ * With drainBusyAttemptLimit at 4 the first steer lands well ahead of this
+ * threshold, giving queued work a chance to flow through without the
+ * watchdog nuking the orchestrator mid-turn. Normal agent turns that run
+ * tests routinely take several minutes; a low threshold would reload the
+ * orchestrator before steering ever gets a shot.
+ */
+export const DEFAULT_WATCHDOG_BUSY_THRESHOLD = 12;
+export const DEFAULT_WATCHDOG_ALERT_COOLDOWN_MS = 2 * 60 * 1000;
+export const DEFAULT_BOARD_SWEEP_INTERVAL_MS = 3 * 60 * 1000;
+/**
+ * Interval between forced full-reconciliation sweeps (#1263). Routine sweeps
+ * suppress Front Desk delivery when the actionable digest is unchanged, which
+ * strands a candidate whose notification was never consumed (orchestrator
+ * busy, rotated, or missed). The reconciliation pass re-emits every candidate
+ * regardless of that digest. Defaults to 2h; `0` disables the periodic pass.
+ */
+export const DEFAULT_BOARD_RECONCILIATION_INTERVAL_MS = 2 * 60 * 60 * 1000;
+
+// Queue-drain escalation (#1265). A busy incumbent is retried politely first;
+// by the steer threshold queued work is pushed into the active turn, and by the
+// interrupt threshold a turn that still has not yielded is canceled outright.
+// Without the interrupt step a runaway turn that never yields swallows every
+// steer and strands the queue (the #1265 incident).
+//
+// Harmonized with {@link DEFAULT_WATCHDOG_BUSY_THRESHOLD} so steer always fires
+// before the watchdog considers the orchestrator wedged (#1344).
+export const DEFAULT_DRAIN_STEER_ATTEMPT_LIMIT = 4;
+export const DEFAULT_DRAIN_INTERRUPT_ATTEMPT_LIMIT = 12;
+
+/**
+ * Minimum elapsed time (ms) the busy streak must be continuous before the
+ * watchdog considers an orchestrator wedged and attempts auto-recovery (#1344).
+ * Normal agent turns running tests routinely take several minutes; this guard
+ * prevents the watchdog from nuking a healthy in-flight turn.
+ */
+export const DEFAULT_WATCHDOG_MIN_BUSY_ELAPSED_MS = 3 * 60 * 1000; // 3 minutes
 
 export const CANCELLATION_TIMEOUT_MARKER = "cancelagentrun: acknowledged turn still active after timeout";
 
@@ -911,25 +1952,32 @@ const TRANSIENT_MARKERS = [
 ];
 const ATTENTION_STALL_REASONS = ["error", "stalled", "interrupted", "failed"];
 
+/** Consecutive identical tool calls that classify as a runaway loop (#1265). */
+export const DEFAULT_REPETITIVE_TOOL_LOOP_THRESHOLD = 15;
+
 export const WATCHDOG_SEVERITIES: Record<WatchdogTaxonomyType, WatchdogSeverity> = {
   TURN_CONCURRENCY_LOCK: "high",
   TURN_CANCELLATION_TIMEOUT: "high",
+  PENDING_PERMISSION_BLOCKED: "medium",
   ZOMBIE_HUNG_TURN: "high",
   PROVIDER_QUOTA_EXHAUSTION: "high",
   STALE_ERROR_GHOSTING: "medium",
   IDLE_POST_ERROR_AMNESIA: "medium",
+  REPETITIVE_TOOL_LOOP: "high",
 };
 
 const STOP_TRIGGERS: ReadonlySet<WatchdogTaxonomyType> = new Set([
   "TURN_CONCURRENCY_LOCK",
   "TURN_CANCELLATION_TIMEOUT",
   "ZOMBIE_HUNG_TURN",
+  "REPETITIVE_TOOL_LOOP",
 ]);
 const STEER_TRIGGERS: ReadonlySet<WatchdogTaxonomyType> = new Set([
   "TURN_CONCURRENCY_LOCK",
   "TURN_CANCELLATION_TIMEOUT",
   "ZOMBIE_HUNG_TURN",
   "IDLE_POST_ERROR_AMNESIA",
+  "REPETITIVE_TOOL_LOOP",
 ]);
 
 export function hasMarker(text: unknown, markers: readonly string[]): boolean {
@@ -1034,35 +2082,55 @@ export function detectStaleErrorGhosting(liveStatus: unknown, lastError: unknown
   return Boolean(String(lastError ?? "").trim());
 }
 
+export interface ProviderQuotaDetectionOptions {
+  now?: number;
+  recencySeconds?: number;
+  lastActivityAt?: unknown;
+  liveStatus?: unknown;
+}
+
 /**
- * Scan recent timeline text or entries for provider retry errors indicating quota exhaustion (#890).
+ * Scan recent timeline text or entries for provider retry errors indicating quota exhaustion (#890, #1144).
  * Specifically handles lines like: `[Error] provider-retry: Provider retry (attempt 1): Free usage exceeded, subscribe to Go`.
+ * Supports entry timestamps and options to filter out stale historical quota errors.
  */
-export function findProviderRetryQuotaError(recentTimeline: unknown): string | null {
+export function findProviderRetryQuotaError(
+  recentTimeline: unknown,
+  options?: ProviderQuotaDetectionOptions,
+): string | null {
   if (!recentTimeline) return null;
-  const lines: string[] = [];
+  const entries: Array<{ text: string; timestamp?: number | null }> = [];
   if (typeof recentTimeline === "string") {
-    lines.push(...recentTimeline.split("\n"));
+    for (const line of recentTimeline.split("\n")) {
+      entries.push({ text: line });
+    }
   } else if (Array.isArray(recentTimeline)) {
     for (const item of recentTimeline) {
       if (typeof item === "string") {
-        lines.push(item);
+        entries.push({ text: item });
       } else if (item && typeof item === "object") {
         const text =
           (item as any).message ??
+          (item as any).msg ??
           (item as any).text ??
           (item as any).detail ??
           (item as any).error ??
           "";
         if (typeof text === "string" && text) {
-          lines.push(text);
+          const rawTime =
+            (item as any).timestamp ??
+            (item as any).time ??
+            (item as any).createdAt ??
+            (item as any).date ??
+            null;
+          entries.push({ text, timestamp: coerceEpochMs(rawTime) });
         }
       }
     }
   }
 
-  for (const line of lines) {
-    const raw = String(line ?? "").trim();
+  for (const entry of entries) {
+    const raw = String(entry.text ?? "").trim();
     if (!raw) continue;
     const lower = raw.toLowerCase();
     const isRetryOrError =
@@ -1073,20 +2141,48 @@ export function findProviderRetryQuotaError(recentTimeline: unknown): string | n
     if (!isRetryOrError) continue;
     if (hasMarker(lower, TRANSIENT_MARKERS)) continue;
     if (hasMarker(lower, QUOTA_MARKERS)) {
+      if (options) {
+        const { now, recencySeconds, lastActivityAt } = options;
+        if (entry.timestamp != null) {
+          if (now !== undefined && recencySeconds !== undefined) {
+            if ((now - entry.timestamp) / 1000 > recencySeconds) {
+              continue;
+            }
+          }
+          if (lastActivityAt != null) {
+            const activityMs = coerceEpochMs(lastActivityAt);
+            if (activityMs != null && activityMs > entry.timestamp) {
+              continue;
+            }
+          }
+        }
+      }
       return raw;
     }
   }
   return null;
 }
 
-/** Taxonomy 6: fatal provider/quota error (not a recoverable transient). Checks lastError and recent timeline (#890). */
-export function detectProviderQuotaExhaustion(lastError: unknown, recentTimeline?: unknown): boolean {
+/** Taxonomy 6: fatal provider/quota error (not a recoverable transient). Checks lastError and recent timeline (#890, #1144). */
+export function detectProviderQuotaExhaustion(
+  lastError: unknown,
+  recentTimeline?: unknown,
+  options?: ProviderQuotaDetectionOptions,
+): boolean {
   const text = String(lastError ?? "").toLowerCase();
   if (text && !hasMarker(text, TRANSIENT_MARKERS) && hasMarker(text, QUOTA_MARKERS)) {
     return true;
   }
   if (recentTimeline) {
-    return Boolean(findProviderRetryQuotaError(recentTimeline));
+    if (options?.liveStatus) {
+      const status = String(options.liveStatus).toLowerCase();
+      // A running agent with no direct lastError has moved past the historical
+      // timeline error: treat the quota line as stale rather than active (#1144).
+      if (status === "running" && !text.trim()) {
+        return false;
+      }
+    }
+    return Boolean(findProviderRetryQuotaError(recentTimeline, options));
   }
   return false;
 }
@@ -1127,11 +2223,101 @@ export function detectZombieHungTurn(
   return (now - activity) / 1000 >= staleSeconds;
 }
 
+/**
+ * Per-tool input keys, so a tool call's identity ignores result payloads
+ * (`output`, `content`, `diff`, ...). Two `read`s of the same file are the same
+ * call even though the returned content may differ each time (#1265).
+ */
+const TOOL_CALL_INPUT_KEYS: Record<string, readonly string[]> = {
+  shell: ["command", "cwd"],
+  read: ["filePath", "offset", "limit"],
+  edit: ["filePath", "oldString", "newString"],
+  write: ["filePath", "content"],
+  search: ["query", "toolName", "mode"],
+  fetch: ["url", "prompt"],
+  plain_text: ["label", "text"],
+  plan: ["text"],
+};
+
+function stableStringify(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value) ?? "null";
+  if (Array.isArray(value)) return `[${value.map((entry) => stableStringify(entry)).join(",")}]`;
+  const obj = value as Record<string, unknown>;
+  const keys = Object.keys(obj).sort();
+  return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify(obj[key])}`).join(",")}}`;
+}
+
+/**
+ * Input-only signature for a structured tool-call timeline item. Returns null
+ * for non-tool items so assistant text, reasoning, and errors never join a run.
+ */
+export function toolCallSignature(item: unknown): string | null {
+  if (!item || typeof item !== "object") return null;
+  const raw = item as Record<string, unknown>;
+  if (raw.type !== "tool_call" && raw.type !== "tool_use") return null;
+  const nested = raw.toolCall && typeof raw.toolCall === "object" ? (raw.toolCall as Record<string, unknown>) : null;
+  const name = String(raw.name ?? raw.toolName ?? nested?.name ?? "").trim();
+  if (!name) return null;
+  const detail = raw.detail ?? raw.input ?? nested?.input ?? null;
+  let args: unknown = detail;
+  if (detail && typeof detail === "object") {
+    const d = detail as Record<string, unknown>;
+    const inputKeys = typeof d.type === "string" ? TOOL_CALL_INPUT_KEYS[d.type] : undefined;
+    if (inputKeys) {
+      args = Object.fromEntries(inputKeys.filter((key) => key in d).map((key) => [key, d[key]]));
+    } else if (d.type === "unknown") {
+      args = d.input ?? null;
+    }
+  }
+  return `${name}:${stableStringify(args)}`;
+}
+
+/**
+ * Longest run of identical consecutive tool calls (same tool name and input
+ * arguments) in a structured timeline. Non-tool items do not break a run: a
+ * runaway loop interleaves reasoning between otherwise identical calls. Returns
+ * the run length, or 0 when it stays under `threshold`.
+ */
+export function detectRepetitiveToolLoop(
+  timeline: unknown,
+  threshold: number = DEFAULT_REPETITIVE_TOOL_LOOP_THRESHOLD,
+): number {
+  const items = normalizeTimelineItems(timeline);
+  if (threshold <= 1 || items.length === 0) return 0;
+  let best = 0;
+  let run = 0;
+  let last: string | null = null;
+  for (const item of items) {
+    const signature = toolCallSignature(item);
+    if (signature === null) continue;
+    run = signature === last ? run + 1 : 1;
+    last = signature;
+    if (run > best) best = run;
+  }
+  return best >= threshold ? best : 0;
+}
+
+function normalizeTimelineItems(timeline: unknown): unknown[] {
+  if (!timeline) return [];
+  if (Array.isArray(timeline)) return timeline;
+  if (typeof timeline === "string") {
+    const trimmed = timeline.trim();
+    if (!trimmed) return [];
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) return parsed;
+    } catch {
+      // not a JSON timeline; nothing structured to classify
+    }
+  }
+  return [];
+}
+
 // ---------------------------------------------------------------------------
 // Reactive child-lifecycle wakeups (#537)
 //
 // The watchdog tick also acts as the bounded, dedup-guarded watcher that wakes
-// a parent agent (`paseo send --steer --no-wait <parent>`) when one of its
+// a parent agent (`paseo send --no-wait <parent>`) when one of its
 // labelled children becomes blocked, errors, or finishes. Pure assessment
 // helpers live here so tests can exercise the transition rules directly.
 // ---------------------------------------------------------------------------
@@ -1168,16 +2354,266 @@ const PROBE_AGENT_TITLES = new Set([
 
 /**
  * True when the agent is an orchestrator peer rather than a delegated worker
- * (#895). Two-tier spawn authority means orchestrators are Front Desk's peers
+ * (#895/#999). Two-tier spawn authority means orchestrators are Front Desk's peers
  * even when the daemon stamps a `paseo.parent-agent-id` on them.
+ * Standardized on agent title/name matching `/^Orchestrator\s*[·\-\:\.]/i`, `/^Orchestrator\b/i`,
+ * or title `"orchestrator"`, with fallback to role/labels.
  */
 export function isOrchestratorAgent(
-  agent: Pick<WatchdogAgent, "role" | "labels">,
+  agent: Pick<WatchdogAgent, "role" | "labels"> & { title?: string | null; name?: string | null },
 ): boolean {
+  if (!agent) return false;
+  const title = String(agent.title ?? agent.name ?? "").trim();
+  if (
+    /^Orchestrator\s*[·\-\:\.]/i.test(title) ||
+    /^Orchestrator\b/i.test(title) ||
+    title.toLowerCase() === "orchestrator"
+  ) {
+    return true;
+  }
   const labels = agent.labels ?? {};
   const role = String(agent.role ?? labels.role ?? "").trim().toLowerCase();
   if (role === "orchestrator") return true;
-  return String(labels.category ?? "").trim().toLowerCase() === "orchestrator";
+  if (String(labels.category ?? "").trim().toLowerCase() === "orchestrator") return true;
+  return false;
+}
+
+/**
+ * True when the agent is a Front Desk agent (#999, #1143).
+ * Authoritative and deterministic: identity resolves strictly from the roster
+ * (the registered Front Desk id) and explicit spawn metadata (`role` /
+ * `labels.role` / `labels.category`). Display names and titles are never
+ * inspected, so retired sessions (`Front Desk (retired)`) and workers whose
+ * branch or title merely mentions Front Desk never match.
+ */
+export function isFrontDeskAgent(
+  agent: Pick<WatchdogAgent, "role" | "labels"> & {
+    title?: string | null;
+    name?: string | null;
+    id?: string | null;
+  },
+  registeredFrontDeskId?: string | null,
+): boolean {
+  if (!agent) return false;
+  const agentId = typeof (agent as { id?: unknown }).id === "string"
+    ? String((agent as { id?: unknown }).id)
+    : null;
+  if (registeredFrontDeskId && agentId && agentId === registeredFrontDeskId) return true;
+  const labels = ((agent as { labels?: unknown }).labels ?? {}) as Record<string, unknown>;
+  const role = String(
+    (agent as { role?: unknown }).role ?? (labels as Record<string, unknown>).role ?? "",
+  )
+    .trim()
+    .toLowerCase();
+  if (role) {
+    // Retired sessions explicitly opt out, even when a stale registration lingers.
+    if (role.includes("retired")) return false;
+    return role === "front-desk" || role === "frontdesk";
+  }
+  const category = String((labels as Record<string, unknown>).category ?? "")
+    .trim()
+    .toLowerCase();
+  return category === "front-desk" || category === "frontdesk";
+}
+
+/**
+ * Tests whether an agent matches an orchestrator identity for the given repository (#987/#993/#999).
+ * Matches by title/name matching 'Orchestrator · <repo>' (including forge-qualified repo names),
+ * or matching agent cwd against the repo workspace checkout, with fallback to labels.repo.
+ */
+export function isOrchestratorMatchingRepo(
+  agent: Pick<WatchdogAgent, "role" | "labels" | "title" | "name" | "cwd">,
+  repo: string,
+  workspaceCwd?: string | null,
+): boolean {
+  if (!agent) return false;
+  const target = String(repo ?? "").trim();
+  if (!target) return false;
+  const canonical = canonicalRepoKey(target) ?? target;
+
+  const candidateMatchesRepo = (cand: string): boolean => {
+    const c = String(cand ?? "").trim();
+    if (!c) return false;
+    if (isRepoMatching(c, target) || isRepoMatching(c, canonical)) return true;
+    const cCanonical = canonicalRepoKey(c);
+    if (cCanonical) {
+      if (
+        cCanonical === canonical ||
+        isRepoMatching(cCanonical, canonical) ||
+        isRepoMatching(cCanonical, target)
+      ) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  // 1. Check title / name matching 'Orchestrator · <repo>' or 'Orchestrator · <forge>/<repo>'
+  for (const raw of [agent.title, agent.name]) {
+    if (!raw || typeof raw !== "string") continue;
+    const trimmed = raw.trim();
+    const match = trimmed.match(/^Orchestrator\s*[·\-\:\.]\s*(.+)$/i);
+    if (match) {
+      const rest = match[1].trim();
+      if (candidateMatchesRepo(rest)) return true;
+      const firstWord = rest.split(/\s+/)[0];
+      if (firstWord && candidateMatchesRepo(firstWord)) return true;
+    }
+  }
+
+  // 2. Check workspace cwd matching if available
+  const agentCwd = String(agent.cwd ?? "").trim();
+  if (agentCwd) {
+    const normalizedAgentCwd = resolve(agentCwd).toLowerCase();
+    // Compare against explicit workspaceCwd if provided
+    if (workspaceCwd) {
+      const normalizedTargetCwd = resolve(workspaceCwd).toLowerCase();
+      if (normalizedAgentCwd === normalizedTargetCwd) return true;
+    } else {
+      // Resolve workspace deterministically for target repo
+      try {
+        const resolved = resolveWorkspaceForRepo(target);
+        if (resolved?.cwd) {
+          const normalizedTargetCwd = resolve(resolved.cwd).toLowerCase();
+          if (normalizedAgentCwd === normalizedTargetCwd) return true;
+        }
+      } catch {
+        // ignore workspace lookup failures
+      }
+    }
+  }
+
+  // 3. Fallback: check labels.repo if it is an orchestrator
+  if (isOrchestratorAgent(agent)) {
+    const agentRepo = String(agent.labels?.repo ?? "").trim();
+    if (agentRepo && candidateMatchesRepo(agentRepo)) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Find all live orchestrator agents running for `repo` (#987/#993/#999).
+ * Matches by title/name matching 'Orchestrator · <repo>' or agent cwd matching the repo checkout.
+ * Enforces singleton invariant by sorting the newest/authoritative agent first.
+ */
+export function findLiveOrchestratorAgents(
+  repo: string,
+  agentMap: ReadonlyMap<string, WatchdogAgent> | null | undefined,
+  registeredAgentId?: string | null,
+  workspaceCwd?: string | null,
+): WatchdogAgent[] {
+  if (!agentMap || agentMap.size === 0) return [];
+  const target = String(repo ?? "").trim();
+  if (!target) return [];
+
+  let targetCwd = workspaceCwd;
+  if (!targetCwd) {
+    try {
+      const resolved = resolveWorkspaceForRepo(target);
+      targetCwd = resolved?.cwd ?? null;
+    } catch {
+      targetCwd = null;
+    }
+  }
+
+  const matched: WatchdogAgent[] = [];
+  const matchedIds = new Set<string>();
+
+  const isLive = (agent: WatchdogAgent | undefined): agent is WatchdogAgent => {
+    if (!agent || Boolean(agent.archivedAt)) return false;
+    const status = String(agent.status ?? "").toLowerCase();
+    return (
+      status !== "closed" &&
+      status !== "archived" &&
+      status !== "terminated" &&
+      status !== "error"
+    );
+  };
+
+  for (const [id, agent] of agentMap) {
+    if (!isLive(agent)) continue;
+
+    if (isOrchestratorMatchingRepo(agent, target, targetCwd)) {
+      matched.push(agent);
+      matchedIds.add(id);
+    }
+  }
+
+  // If a registered agent id is provided and live, include it if not already matched
+  if (registeredAgentId && !matchedIds.has(registeredAgentId)) {
+    const regAgent = agentMap.get(registeredAgentId);
+    if (isLive(regAgent)) {
+      matched.push(regAgent);
+      matchedIds.add(registeredAgentId);
+    }
+  }
+
+  if (matched.length <= 1) return matched;
+
+  // Enforce singleton invariant: sort newest/authoritative first.
+  const getTime = (a: WatchdogAgent): number => {
+    const ts = a.updatedAt || a.lastActivityAt || a.activeTurn?.startedAt;
+    if (!ts) return 0;
+    const parsed = Date.parse(ts);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+
+  matched.sort((a, b) => {
+    const timeDiff = getTime(b) - getTime(a);
+    if (timeDiff !== 0) return timeDiff;
+    // Prefer registered agent if timestamps tie
+    if (registeredAgentId) {
+      if (a.id === registeredAgentId) return -1;
+      if (b.id === registeredAgentId) return 1;
+    }
+    // Tie-breaker: stable sort by ID descending (newer IDs / deterministic)
+    return String(b.id ?? "").localeCompare(String(a.id ?? ""));
+  });
+
+  return matched;
+}
+
+/**
+ * Find a live orchestrator agent already running for `repo` (#987/#993/#999).
+ * Returns the newest/authoritative agent id, or null when no matching live agent exists.
+ */
+export function findLiveOrchestratorAgent(
+  repo: string,
+  agentMap: ReadonlyMap<string, WatchdogAgent> | null | undefined,
+  registeredAgentId?: string | null,
+  workspaceCwd?: string | null,
+): string | null {
+  const matching = findLiveOrchestratorAgents(repo, agentMap, registeredAgentId, workspaceCwd);
+  return matching[0]?.id ?? null;
+}
+
+/** Find active Front Desk agents, newest first, for registry recovery (#1143: roster/labels only, never display names). */
+export function findLiveFrontDeskAgents(
+  agentMap: ReadonlyMap<string, WatchdogAgent> | null | undefined,
+  registeredFrontDeskId?: string | null,
+): WatchdogAgent[] {
+  if (!agentMap || agentMap.size === 0) return [];
+  const isLive = (agent: WatchdogAgent): boolean => {
+    if (agent.archivedAt) return false;
+    const status = String(agent.status ?? "").toLowerCase();
+    return !["closed", "archived", "terminated", "error", "failed"].includes(status);
+  };
+  const matches = Array.from(agentMap.values()).filter(
+    (agent) => isLive(agent) && isFrontDeskAgent(agent, registeredFrontDeskId),
+  );
+  const getTime = (agent: WatchdogAgent): number => {
+    const ts = agent.updatedAt || agent.lastActivityAt || agent.activeTurn?.startedAt;
+    if (!ts) return 0;
+    const parsed = Date.parse(ts);
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+  return matches.sort((a, b) => {
+    const timeDiff = getTime(b) - getTime(a);
+    return timeDiff !== 0 ? timeDiff : String(b.id).localeCompare(String(a.id));
+  });
 }
 
 /**
@@ -1219,6 +2655,7 @@ export function isChildWakeupCandidate(
   const parentId = child.labels?.["paseo.parent-agent-id"]?.trim();
   if (!parentId) return false;
   if (isOrchestratorAgent(child)) return false;
+  if (isFrontDeskAgent(child)) return false;
   if (isProbeAgent(child)) return false;
   if (context.frontDeskId && parentId === context.frontDeskId) return false;
   return true;
@@ -1238,6 +2675,7 @@ export function assessChildWakeup(
 ): ChildWakeupAssessment | null {
   if (!agent || agent.archivedAt) return null;
   if (isOrchestratorAgent(agent)) return null;
+  if (isFrontDeskAgent(agent)) return null;
   if (isProbeAgent(agent)) return null;
   const parentId = agent.labels?.["paseo.parent-agent-id"]?.trim();
   if (context.frontDeskId && parentId === context.frontDeskId) return null;
@@ -1318,6 +2756,7 @@ export function formatChildWakeupMessage(
 /** Persisted agent metadata from `~/.paseo/agents` subdirectories (fusion input). */
 export interface WatchdogAgentDisk {
   path?: string;
+  cwd?: string | null;
   lastStatus?: string | null;
   lastError?: string | null;
   requiresAttention?: boolean;
@@ -1331,12 +2770,13 @@ export interface WatchdogAgentDisk {
   labels?: Record<string, string> | null;
   provider?: string | null;
   model?: string | null;
-  recentTimeline?: string[] | string | null;
+  recentTimeline?: unknown[] | string | null;
 }
 
 export function defaultAgentsDir(): string {
-  const home = process.env.HOME ?? os.homedir();
-  return join(home, ".paseo", "agents");
+  const custom = (process.env.PASEO_HOME || "").trim();
+  const root = custom || join(resolveHostHome(), ".paseo");
+  return join(root, "agents");
 }
 
 /** Map agent id -> persisted metadata path under the agents directory subfolders. */
@@ -1514,13 +2954,23 @@ export function scanCancellationTimeouts(
   return latest;
 }
 
+/** Normalized provider-retry error extracted from a daemon log line (#890, #1144). */
+export interface TimelineRetryError {
+  /** Extracted error text used for marker matching. */
+  text: string;
+  /** Epoch-ms timestamp when the daemon emitted the line, if parseable. */
+  timestamp: number | null;
+}
+
 /**
  * Scan daemon log paths for provider retry quota exhaustion lines keyed by agentId (#890).
+ * Preserves each line's timestamp so the watchdog can distinguish an active quota
+ * block from a stale historical error (#1144).
  */
 export function scanTimelineRetryErrors(
   logPaths: readonly string[],
-): Map<string, string[]> {
-  const result = new Map<string, string[]>();
+): Map<string, TimelineRetryError[]> {
+  const result = new Map<string, TimelineRetryError[]>();
   for (const path of logPaths) {
     let content: string;
     try {
@@ -1537,10 +2987,22 @@ export function scanTimelineRetryErrors(
         continue;
       }
       let agentId: string | null = null;
+      let text = line.trim();
+      let timestamp: number | null = null;
       try {
         const payload = JSON.parse(line);
         if (payload && typeof payload === "object") {
           agentId = typeof payload.agentId === "string" ? payload.agentId : null;
+          if (typeof payload.message === "string") {
+            text = payload.message;
+          } else if (typeof payload.msg === "string") {
+            text = payload.msg;
+          }
+          if (typeof payload.time === "number") {
+            timestamp = payload.time;
+          } else if (typeof payload.timestamp === "string" || typeof payload.timestamp === "number") {
+            timestamp = coerceEpochMs(payload.timestamp);
+          }
         }
       } catch {
         // non-JSON log line
@@ -1551,7 +3013,7 @@ export function scanTimelineRetryErrors(
       }
       if (!agentId) continue;
       const list = result.get(agentId) ?? [];
-      list.push(line.trim());
+      list.push({ text, timestamp });
       result.set(agentId, list);
     }
   }
@@ -1569,7 +3031,9 @@ export function defaultCircuitBreakerPath(): string {
   if (process.env.NODE_ENV === "test" && !process.env.MODEL_HEALTH_PATH) {
     return join(os.tmpdir(), `paseo-model-health-test-${process.pid}.json`);
   }
-  return process.env.MODEL_HEALTH_PATH || join(process.env.HOME || os.homedir(), ".paseo", "model-health.json");
+  const custom = (process.env.PASEO_HOME || "").trim();
+  const root = custom || join(resolveHostHome(), ".paseo");
+  return process.env.MODEL_HEALTH_PATH || join(root, "plugin-data", "xpufx", "uppidi-fleet", "model-health.json");
 }
 
 export interface ModelHealthEntry {
@@ -1693,27 +3157,16 @@ export function recordModelQuotaFailure(
 }
 
 /**
- * Resolve the orchestrator model from explicit inputs or the configured fallback chain,
- * skipping any candidate currently cooling down in the circuit breaker cache (#890).
+ * Build the ordered, de-duplicated orchestrator model candidate list from the
+ * explicit request and the configured role fallback chain (#890/#973).
  */
-export function resolveOrchestratorModel(
+export function orchestratorModelCandidates(
   options: {
     requestedProvider?: string;
     requestedModel?: string;
     fallbackList?: readonly string[];
-    circuitBreakerPath?: string;
-    nowSec?: number;
   } = {},
-): { provider: string; model: string; key: string } {
-  const circuitBreakerPath =
-    options.circuitBreakerPath !== undefined
-      ? options.circuitBreakerPath
-      : process.env.NODE_ENV === "test" && !process.env.MODEL_HEALTH_PATH
-        ? null
-        : defaultCircuitBreakerPath();
-  const nowSec = options.nowSec ?? Math.floor(Date.now() / 1000);
-
-  // 1. Build ordered candidate list
+): string[] {
   let configuredFallbacks: string[] = [];
   if (options.fallbackList && options.fallbackList.length > 0) {
     configuredFallbacks = [...options.fallbackList];
@@ -1726,12 +3179,10 @@ export function resolveOrchestratorModel(
   if (options.requestedModel?.trim()) {
     const reqM = options.requestedModel.trim();
     const reqP = options.requestedProvider?.trim() || "";
-    const reqKey = reqP ? modelKey(reqP, reqM) : reqM;
-    rawCandidates.push(reqKey);
+    rawCandidates.push(reqP ? modelKey(reqP, reqM) : reqM);
   }
   rawCandidates.push(...configuredFallbacks);
 
-  // Deduplicate candidates preserving order
   const candidates: string[] = [];
   const seen = new Set<string>();
   for (const c of rawCandidates) {
@@ -1741,28 +3192,644 @@ export function resolveOrchestratorModel(
       candidates.push(trimmed);
     }
   }
+  return candidates;
+}
 
-  // 2. Filter out cooling down / quota exhausted candidates
-  for (const candidate of candidates) {
-    const health = circuitBreakerPath ? getCachedModelHealth(candidate, circuitBreakerPath, nowSec) : null;
-    if (!health || health.status !== "quota_exhausted") {
-      const parsed = parseModelKey(candidate);
-      return {
-        key: candidate,
-        provider: parsed.provider,
-        model: parsed.model,
-      };
+/**
+ * Resolve the orchestrator model from explicit inputs or the configured fallback chain,
+ * skipping any candidate currently cooling down in the circuit breaker cache (#890) and
+ * any candidate whose provider is disabled on the host (#973).
+ */
+export interface ResolvedOrchestratorModel {
+  provider: string;
+  model: string;
+  key: string;
+  /** True when no configured candidate is enabled and healthy (#1011). */
+  exhausted?: boolean;
+  /** Human-readable reason when `exhausted` is set. */
+  error?: string;
+  /** The operator-configured chain that was evaluated, in order. */
+  configuredChain?: string[];
+  /** Configured entries skipped as dead, with the reason (#1011). */
+  dropped?: DroppedModelCandidate[];
+  /** Live enabled provider ids when the host reported them, else null. */
+  availableProviders?: string[] | null;
+}
+
+function formatModelResolutionFailure(
+  configuredChain: readonly string[],
+  dropped: readonly DroppedModelCandidate[],
+  availableProviders: ReadonlySet<string> | null | undefined,
+): string {
+  const dead = dropped.map((d) => `${d.key} (${d.reason})`).join(", ") || "none";
+  const live = availableProviders
+    ? [...availableProviders].sort().join(", ") || "none"
+    : "unknown";
+  return (
+    "No orchestrator model is satisfiable. " +
+    `Configured chain: [${configuredChain.join(", ") || "empty"}]. ` +
+    `Dead entries: ${dead}. ` +
+    `Live enabled providers: ${live}. ` +
+    "Fix the provider set or the configured fallback group; the fleet will not substitute a hidden default (#1011)."
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Unified agent spawning & role-model whitelist enforcement (#1215)
+// ---------------------------------------------------------------------------
+
+/** Valid role values for the unified spawn endpoint. */
+export type SpawnRole = "frontdesk" | "orchestrator" | "worker";
+
+/** Request payload for the unified spawn endpoint. */
+export interface SpawnRequest {
+  role: SpawnRole;
+  repo?: string;
+  issueIndex?: number;
+  model?: string;
+  workspace?: string;
+  parentId?: string | null;
+}
+
+/** Result of a spawn request through the Hook Router. */
+export interface SpawnResult {
+  ok: boolean;
+  agentId?: string;
+  role?: string;
+  model?: string;
+  repo?: string;
+  error?: string;
+  /** Machine-readable failure kind so callers can pick an HTTP status (#973). */
+  errorCode?: "workspace_not_found" | "spawn_failed" | "cli_disabled" | "model_exhausted" | "provider_concurrency_limit";
+}
+
+/**
+ * Resolve the `role-models.json` key for a spawn role.
+ * Maps `worker` → `coding-agent`, `frontdesk` → `front-desk`, `orchestrator` → `orchestrator`.
+ */
+function roleKeyForSpawn(role: SpawnRole): RoleModelKey {
+  if (role === "frontdesk") return "front-desk";
+  if (role === "orchestrator") return "orchestrator";
+  // worker → coding-agent
+  return "coding-agent";
+}
+
+/**
+ * Verify that a requested model is whitelisted for the given role.
+ * Returns `{ allowed: true }` when the model is in the role's primaryModel + fallbackGroup,
+ * or `{ allowed: false, error }` when it is not.
+ */
+export function verifyModelWhitelist(
+  role: SpawnRole,
+  requestedModel: string,
+): { allowed: true } | { allowed: false; error: string } {
+  const roleKey = roleKeyForSpawn(role);
+  const savedRoles = loadSavedRoleModels();
+  const config = savedRoles[roleKey];
+  if (!config) {
+    return { allowed: false, error: `No role-model configuration found for role '${role}' (${roleKey})` };
+  }
+  const allowed = new Set<string>([
+    config.primaryModel,
+    ...(config.fallbackGroup ?? []),
+  ]);
+  if (allowed.has(requestedModel)) {
+    return { allowed: true };
+  }
+  return {
+    allowed: false,
+    error: `Model ${requestedModel} is not authorized for role ${role}`,
+  };
+}
+
+/**
+ * Resolve the model to use for a spawn request.
+ * When `model` is omitted, returns the canonical default for the role.
+ * When `model` is specified, validates against the whitelist.
+ */
+export function resolveSpawnModel(
+  role: SpawnRole,
+  requestedModel: string | undefined,
+): { model: string; resolvedFrom: "explicit" | "default" } {
+  const roleKey = roleKeyForSpawn(role);
+  const savedRoles = loadSavedRoleModels();
+  const config = savedRoles[roleKey] ?? DEFAULT_ROLE_MODELS[roleKey];
+  const defaultModel = config?.primaryModel ?? "antigravity-acp/gemini-3.8-flash-low";
+
+  if (!requestedModel || !requestedModel.trim()) {
+    return { model: defaultModel, resolvedFrom: "default" };
+  }
+
+  const trimmed = requestedModel.trim();
+  // Validate against whitelist
+  const verdict = verifyModelWhitelist(role, trimmed);
+  if (!verdict.allowed) {
+    throw new Error(verdict.error);
+  }
+  return { model: trimmed, resolvedFrom: "explicit" };
+}
+
+/**
+ * Build the prompt body for a worker spawn, including the coding-agent skill
+ * directive, teax usage instructions, and fleet role label guidance.
+ */
+function buildWorkerPrompt(options: {
+  repo: string;
+  issueIndex?: number;
+  model: string;
+}): string {
+  const issueRef = options.issueIndex ? ` #${options.issueIndex}` : "";
+  const host = resolveForgejoHost();
+  const repoArg = ` -R ${options.repo}`;
+  const hostArg = host ? ` --hostname ${host}` : "";
+  return [
+    `You are a coding agent working on repository ${options.repo}${issueRef}.`,
+    `Use the Forgejo CLI \`teax\` for all Forgejo interactions.`,
+    `Form: \`teax <command>${repoArg}${hostArg}\``,
+    "",
+    renderSkillDirective("coding-agent"),
+    "",
+    `### Fleet Role: worker`,
+    `This agent was spawned by the Fleet Hook Router. Always report back via \`teax comment${repoArg}${hostArg} ...\`.`,
+  ].join("\n");
+}
+
+/**
+ * Build the prompt body for a frontdesk spawn.
+ */
+function buildFrontDeskPrompt(): string {
+  return [
+    "You are the Fleet Front Desk liaison. Monitor incoming events, coordinate with project orchestrators, and triage requests across the workspace.",
+    "",
+    renderSkillDirective("front-desk"),
+  ].join("\n");
+}
+
+/**
+ * Build the prompt body for an orchestrator spawn.
+ */
+function buildOrchestratorPrompt(repo: string): string {
+  return [
+    `You are the project orchestrator for ${repo}. Coordinate tasks, supervise coding agents, and manage pull requests and issues for this repository using the forge CLI (teax) and Paseo conventions.`,
+    "",
+    renderSkillDirective("orchestrator"),
+    "",
+    renderSkillDirective("coding-agent"),
+  ].join("\n");
+}
+
+/**
+ * Labels applied to every worker spawn so the fleet dashboard can identify it.
+ * Stamps authoritative fleet provenance (#1151).
+ */
+function buildWorkerLabels(options: {
+  repo: string;
+  issueIndex?: number;
+  parentId?: string | null;
+}): Record<string, string> {
+  const labels: Record<string, string> = {
+    role: "coding-agent",
+    category: "coding-agent",
+    repo: options.repo,
+    "fleet.uppidi.com/role": "coding-agent",
+  };
+  if (options.parentId) {
+    labels["fleet.uppidi.com/parent"] = options.parentId;
+    labels["paseo.parent-agent-id"] = options.parentId;
+  }
+  if (options.issueIndex) {
+    labels["fleet.uppidi.com/issue"] = String(options.issueIndex);
+    labels["forgejo.issue"] = String(options.issueIndex);
+  }
+  return labels;
+}
+
+/**
+ * Spawn an agent through the Hook Router with full whitelist enforcement.
+ * This is the single authoritative spawn path for all fleet agents.
+ */
+export async function handleSpawnAgent(
+  request: SpawnRequest,
+  options: {
+    paseo?: PaseoApi;
+    spawnAgent?: HookRouterOptions["spawnAgent"];
+    spawnAutoAllow?: HookRouterOptions["spawnAutoAllow"];
+    archiveAgent?: HookRouterOptions["archiveAgent"];
+    queueDir?: string;
+    stateDir?: string;
+  } = {},
+): Promise<SpawnResult> {
+  const { role, repo, issueIndex, model, workspace } = request;
+
+  // Validate required fields per role
+  if (role === "orchestrator" && (!repo || !repo.trim())) {
+    return { ok: false, error: "repo is required for orchestrator spawns" };
+  }
+  if (role === "worker" && (!repo || !repo.trim())) {
+    return { ok: false, error: "repo is required for worker spawns" };
+  }
+
+  // Resolve and validate model
+  let resolvedModel: string;
+  let resolvedFrom: "explicit" | "default";
+  try {
+    const result = resolveSpawnModel(role, model);
+    resolvedModel = result.model;
+    resolvedFrom = result.resolvedFrom;
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return { ok: false, error: msg };
+  }
+
+  // Build prompt based on role
+  let title: string;
+  let prompt: string;
+  const labels: Record<string, string> = {};
+  const category: string = role === "worker" ? "coding-agent" : role;
+
+  if (role === "frontdesk") {
+    title = "Front Desk";
+    prompt = buildFrontDeskPrompt();
+    Object.assign(labels, {
+      role: "front-desk",
+      category: "front-desk",
+      "fleet.uppidi.com/role": "front-desk",
+    });
+  } else if (role === "orchestrator") {
+    const canonicalRepo = canonicalRepoKey(repo!) ?? repo!;
+    title = `Orchestrator · ${canonicalRepo}`;
+    prompt = buildOrchestratorPrompt(canonicalRepo);
+    Object.assign(labels, {
+      role: "orchestrator",
+      category: "orchestrator",
+      repo: canonicalRepo,
+      "fleet.uppidi.com/role": "orchestrator",
+    });
+  } else {
+    // worker
+    const canonicalRepo = canonicalRepoKey(repo!) ?? repo!;
+    const issueRef = issueIndex ? ` #${issueIndex}` : "";
+    title = `Worker · ${canonicalRepo}${issueRef}`;
+    prompt = buildWorkerPrompt({ repo: canonicalRepo, issueIndex, model: resolvedModel });
+    Object.assign(labels, buildWorkerLabels({ repo: canonicalRepo, issueIndex, parentId: request.parentId }));
+  }
+
+  // ── Per-provider concurrency limit guard (#1198) ─────────────────────
+  try {
+    const settings = getUppidiFleetSettingsStorage().read();
+    const limits = settings.providerConcurrencyLimits ?? {};
+    // Derive provider from the resolved model key (e.g. "openai/gpt-4o")
+    const parsedModel = parseModelKey(resolvedModel);
+    const targetProvider = parsedModel.provider;
+    if (targetProvider && limits[targetProvider] && limits[targetProvider] > 0) {
+      // Fetch live agent map to count active agents for this provider
+      let agentMap: Map<string, any> | null = null;
+      try {
+        if (options.paseo?.agents?.list) {
+          const list = await options.paseo.agents.list();
+          const entries = list?.entries ?? list;
+          if (Array.isArray(entries)) {
+            agentMap = new Map();
+            for (const entry of entries) {
+              const a: any = entry?.agent ?? entry;
+              if (a?.id) agentMap.set(a.id, a);
+            }
+          }
+        }
+      } catch {
+        // Best-effort; proceed without blocking on roster fetch
+      }
+      if (agentMap) {
+        const activeCounts = getActiveAgentCountByProvider(
+          Array.from(agentMap.values())
+        );
+        const activeForProvider = activeCounts[targetProvider] ?? 0;
+        if (activeForProvider >= limits[targetProvider]) {
+          return {
+            ok: false,
+            errorCode: "provider_concurrency_limit",
+            error: `Concurrency limit (${limits[targetProvider]}) reached for provider "${targetProvider}"`,
+          };
+        }
+      }
+    }
+  } catch {
+    // Settings read failure is non-fatal; proceed with spawn
+  }
+
+  // Spawn via injected spawnAgent or fall through to the router's provision logic
+  if (typeof options.spawnAgent === "function") {
+    try {
+      const spawned = await options.spawnAgent({
+        title,
+        prompt,
+        cwd: workspace,
+        model: resolvedModel,
+        labels,
+      });
+      if (spawned?.id) {
+        return {
+          ok: true,
+          agentId: spawned.id,
+          role,
+          model: resolvedModel,
+          repo: repo,
+        };
+      }
+      return { ok: false, error: "spawn returned no agent id" };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return { ok: false, error: msg };
     }
   }
 
-  // 3. If all candidates are cooling down, fall back to first candidate
-  const fallback = candidates[0] || "antigravity-acp/gemini-3.8-flash-low";
-  const parsed = parseModelKey(fallback);
+  return { ok: false, error: "no spawn mechanism available" };
+}
+
+export function resolveOrchestratorModel(
+  options: {
+    requestedProvider?: string;
+    requestedModel?: string;
+    fallbackList?: readonly string[];
+    circuitBreakerPath?: string;
+    nowSec?: number;
+    /** When provided, candidates whose provider is absent are skipped (#973). */
+    availableProviders?: ReadonlySet<string> | null;
+  } = {},
+): ResolvedOrchestratorModel {
+  const circuitBreakerPath =
+    options.circuitBreakerPath !== undefined
+      ? options.circuitBreakerPath
+      : process.env.NODE_ENV === "test" && !process.env.MODEL_HEALTH_PATH
+        ? null
+        : defaultCircuitBreakerPath();
+  const nowSec = options.nowSec ?? Math.floor(Date.now() / 1000);
+
+  const candidates = orchestratorModelCandidates(options);
+  const isAvailable = (provider: string): boolean =>
+    !options.availableProviders || options.availableProviders.has(provider);
+  const availableProviders = options.availableProviders
+    ? [...options.availableProviders].sort()
+    : null;
+  const dropped: DroppedModelCandidate[] = [];
+
+  // #1011: walk the configured primary + fallbackGroup in order and skip every
+  // entry that is dead on this host (provider disabled, or circuit-broken by
+  // the shared model-health cache). The skipped entries are returned so the
+  // spawn path can drop them *visibly*. A hidden default is never appended.
+  for (const candidate of candidates) {
+    const parsed = parseModelKey(candidate);
+    if (!isAvailable(parsed.provider)) {
+      dropped.push({
+        key: candidate,
+        provider: parsed.provider,
+        model: parsed.model,
+        reason: "provider_disabled",
+      });
+      continue;
+    }
+    const health = circuitBreakerPath
+      ? getCachedModelHealth(candidate, circuitBreakerPath, nowSec)
+      : null;
+    if (health && health.status === "quota_exhausted") {
+      dropped.push({
+        key: candidate,
+        provider: parsed.provider,
+        model: parsed.model,
+        reason: "quota_exhausted",
+      });
+      continue;
+    }
+    return {
+      key: candidate,
+      provider: parsed.provider,
+      model: parsed.model,
+      configuredChain: candidates,
+      dropped,
+      availableProviders,
+    };
+  }
+
+  // Total exhaustion: fail loud. Appending DEFAULT_ROLE_MODELS here was the
+  // silent substitution #1011 is fixing, so the resolver returns an explicit
+  // failure the spawn path must handle.
   return {
-    key: fallback,
-    provider: parsed.provider,
-    model: parsed.model,
+    provider: "",
+    model: "",
+    key: "",
+    exhausted: true,
+    error: formatModelResolutionFailure(candidates, dropped, options.availableProviders),
+    configuredChain: candidates,
+    dropped,
+    availableProviders,
   };
+}
+
+// ---------------------------------------------------------------------------
+// Fleet model-resolution alerts (#1011)
+//
+// Total chain exhaustion is an operator decision, not a silent fallback: the
+// spawn fails loud and the resolver's failure is persisted here as a banner the
+// cockpit reads, plus a board issue/comment on the affected repository.
+// ---------------------------------------------------------------------------
+
+/** Title of the per-repo issue raised when orchestrator model resolution is stuck (#1011). */
+export const MODEL_EXHAUSTION_ALERT_TITLE = "[Fleet Alert] No orchestrator model available";
+
+/** Labels carried by the model-exhaustion issue (#1011). */
+export const MODEL_EXHAUSTION_ALERT_LABELS: readonly string[] = [
+  ORCHESTRATOR_ATTENTION_LABEL,
+  "priority/high",
+];
+
+/** Scoped path of the persistent model-alert banner store (#1011). */
+export function defaultModelAlertsPath(home: string = resolveHostHome()): string {
+  const override = process.env.UPPIDI_FLEET_ALERTS_PATH?.trim();
+  if (override) return override;
+  const custom = (process.env.PASEO_HOME || "").trim();
+  const root = custom || join(home, ".paseo");
+  return join(root, "plugin-data", "xpufx", "uppidi-fleet", "model-alerts.json");
+}
+
+export function readModelAlerts(
+  path: string = defaultModelAlertsPath(),
+): Record<string, FleetModelAlert> {
+  try {
+    if (!existsSync(path)) return {};
+    const parsed = JSON.parse(readFileSync(path, "utf8") || "{}");
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, FleetModelAlert>;
+    }
+  } catch {
+    // Ignore unreadable/corrupt banner state.
+  }
+  return {};
+}
+
+export function writeModelAlerts(
+  data: Record<string, FleetModelAlert>,
+  path: string = defaultModelAlertsPath(),
+): void {
+  try {
+    const dir = dirname(path);
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+    const tempPath = `${path}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
+    writeFileSync(tempPath, JSON.stringify(data, null, 2), "utf8");
+    try {
+      renameSync(tempPath, path);
+    } catch {
+      writeFileSync(path, JSON.stringify(data, null, 2), "utf8");
+      try {
+        unlinkSync(tempPath);
+      } catch {}
+    }
+  } catch {
+    // A banner write must never fail a spawn.
+  }
+}
+
+/** Upsert the persistent banner record for `repo` (#1011). */
+export function recordModelAlert(
+  alert: FleetModelAlert,
+  path: string = defaultModelAlertsPath(),
+): FleetModelAlert {
+  const alerts = readModelAlerts(path);
+  alerts[alert.repo] = alert;
+  writeModelAlerts(alerts, path);
+  return alert;
+}
+
+/** Clear the banner for `repo` once its chain resolves again (#1011). */
+export function clearModelAlert(
+  repo: string,
+  path: string = defaultModelAlertsPath(),
+): boolean {
+  const alerts = readModelAlerts(path);
+  const key = canonicalRepoKey(repo) ?? repo;
+  if (!alerts[key]) return false;
+  delete alerts[key];
+  writeModelAlerts(alerts, path);
+  return true;
+}
+
+/** Render the issue/comment body naming chain, dead entries and live providers (#1011). */
+export function formatModelExhaustionAlertBody(alert: FleetModelAlert): string {
+  const dead =
+    alert.dropped.length > 0
+      ? alert.dropped.map((d) => `- \`${d.key}\` — ${d.reason}`).join("\n")
+      : "- (none recorded)";
+  const live =
+    alert.availableProviders && alert.availableProviders.length > 0
+      ? alert.availableProviders.map((p) => `\`${p}\``).join(", ")
+      : "unknown";
+  return [
+    "The fleet could not provision an orchestrator because **no configured model is satisfiable**.",
+    "",
+    `Repository: \`${alert.repo}\``,
+    `Role: \`${alert.role}\``,
+    `Detected: ${alert.createdAt}`,
+    "",
+    "**Configured chain (in order):**",
+    ...(alert.configuredChain.length > 0
+      ? alert.configuredChain.map((c) => `- \`${c}\``)
+      : ["- (empty)"]),
+    "",
+    "**Dead entries:**",
+    dead,
+    "",
+    `**Live enabled providers:** ${live}`,
+    "",
+    `> ${alert.message}`,
+    "",
+    "The fleet will not substitute a hidden default. Fix the provider set or the configured fallback group, then the next spawn will re-check the primary.",
+    "",
+    "---",
+    "_Raised automatically by the fleet hook router (#1011)._ ",
+  ].join("\n");
+}
+
+/** RPC handler for the persistent model-alert banner (#1011). */
+export async function handleUppidiFleetAlerts(): Promise<UppidiFleetAlertsOutput> {
+  try {
+    return { ok: true, alerts: Object.values(readModelAlerts()) };
+  } catch (err) {
+    return {
+      ok: false,
+      alerts: [],
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+/** RPC: manually rotate a long-lived role (dashboard/RPC/MCP surface, #1019). */
+export async function handleUppidiRotateRole(input: UppidiRotateRoleInput): Promise<UppidiRotateRoleOutput> {
+  try {
+    const router = getActiveHookRouter();
+    if (!router) {
+      return { ok: false, role: input.role, triggers: [], errorCode: "not_found", error: "hook router is not running" };
+    }
+    return await router.rotateRole({
+      role: input.role,
+      repo: input.repo,
+      reason: input.reason,
+      force: input.force ?? true,
+    });
+  } catch (err) {
+    return { ok: false, role: input.role, triggers: [], error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** RPC: rotation policy and guardrail state per role. */
+export async function handleUppidiRotationStatus(
+  input: UppidiRotationStatusInput,
+): Promise<UppidiRotationStatusOutput> {
+  try {
+    const router = getActiveHookRouter() ?? new HookRouter();
+    return router.rotationStatus(input);
+  } catch (err) {
+    return { ok: false, statuses: [], error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/** RPC: hot-apply a global or per-repo rotation policy for one role. */
+export async function handleUppidiSetRotationPolicy(
+  input: UppidiSetRotationPolicyInput,
+): Promise<UppidiSetRotationPolicyOutput> {
+  try {
+    const router = getActiveHookRouter();
+    const policy = router
+      ? router.setRotationPolicyRole(input.role, input.repo, input.policy)
+      : persistRotationPolicyWithoutRouter(input.role, input.repo, input.policy);
+    return {
+      ok: true,
+      policy,
+      message: `Updated rotation policy for ${input.role}${input.repo ? ` in ${input.repo}` : ""}`,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      policy: DEFAULT_ROTATION_POLICY,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+function persistRotationPolicyWithoutRouter(
+  role: string,
+  repo: string | undefined,
+  patch: RotationRolePolicy,
+): RotationPolicy {
+  const storage = getUppidiFleetSettingsStorage();
+  const current = (storage.read() as { rotationPolicy?: RotationPolicy }).rotationPolicy ?? DEFAULT_ROTATION_POLICY;
+  const next: RotationPolicy = { roles: { ...(current.roles ?? {}) }, byRepo: { ...(current.byRepo ?? {}) } };
+  if (repo) {
+    const repoKey = canonicalRepoKey(repo) ?? repo;
+    next.byRepo[repoKey] = { ...(next.byRepo[repoKey] ?? {}), [role]: { ...(next.byRepo[repoKey]?.[role] ?? {}), ...patch } };
+  } else {
+    next.roles[role] = { ...(next.roles[role] ?? {}), ...patch };
+  }
+  storage.update((prev) => ({ ...prev, rotationPolicy: next }));
+  return next;
 }
 
 export interface ProviderModeInfo {
@@ -1838,7 +3905,14 @@ export function assessAgentHealth(
     assumePendingWork?: boolean;
     runningStaleSeconds?: number;
     recentTimeline?: string | unknown[] | null;
-    timelineErrors?: Map<string, string[] | string> | null;
+    timelineErrors?: Map<string, TimelineRetryError[] | string[] | string> | null;
+    repetitiveToolLoopThreshold?: number;
+    /** True when this agent is the registered Front Desk. */
+    isFrontDesk?: boolean;
+    /** True when this agent is a registered orchestrator. */
+    isOrchestrator?: boolean;
+    /** Queue depth for this agent's router queue. */
+    queueDepth?: number;
   } = {},
 ): WatchdogAssessment {
   const liveStatus = String(live?.status ?? disk?.lastStatus ?? "").toLowerCase();
@@ -1861,10 +3935,32 @@ export function assessAgentHealth(
     (disk as any)?.timeline ??
     null;
 
-  const quotaDetected = detectProviderQuotaExhaustion(rawLastError, agentTimeline);
+  const quotaOpts: ProviderQuotaDetectionOptions = {
+    now,
+    recencySeconds,
+    lastActivityAt,
+    liveStatus,
+  };
+
+  // Repetition detection needs the structured tool-call timeline. The
+  // `timelineErrors` map holds daemon log lines, so it is deliberately skipped
+  // here (#1265).
+  const structuredTimeline =
+    options.recentTimeline ??
+    (live as any)?.recentTimeline ??
+    (live as any)?.timeline ??
+    (disk as any)?.recentTimeline ??
+    (disk as any)?.timeline ??
+    null;
+  const repetitiveRun =
+    liveStatus === "running" || liveStatus === "working"
+      ? detectRepetitiveToolLoop(structuredTimeline, options.repetitiveToolLoopThreshold)
+      : 0;
+
+  const quotaDetected = detectProviderQuotaExhaustion(rawLastError, agentTimeline, quotaOpts);
   const timelineQuotaError =
     quotaDetected && !String(rawLastError ?? "").trim()
-      ? findProviderRetryQuotaError(agentTimeline)
+      ? findProviderRetryQuotaError(agentTimeline, quotaOpts)
       : null;
   const lastError = timelineQuotaError ?? rawLastError;
 
@@ -1894,6 +3990,7 @@ export function assessAgentHealth(
   const checks: Record<WatchdogTaxonomyType, boolean> = {
     TURN_CONCURRENCY_LOCK: turnLock,
     TURN_CANCELLATION_TIMEOUT: cancellationTimeout,
+    PENDING_PERMISSION_BLOCKED: Boolean(live?.pendingPermissions?.length),
     IDLE_POST_ERROR_AMNESIA: detectIdlePostErrorAmnesia(
       liveStatus,
       rawLastError,
@@ -1902,9 +3999,17 @@ export function assessAgentHealth(
       activeWorkers,
       options.assumePendingWork ?? false,
     ),
-    ZOMBIE_HUNG_TURN: detectZombieHungTurn(liveStatus, lastActivityAt, now, staleSeconds),
+    ZOMBIE_HUNG_TURN: (() => {
+      // Exempt front-desk and registered orchestrators from ZOMBIE_HUNG_TURN
+      // when their router queues are empty (depth === 0) and active workers is 0 (#1352).
+      if ((options.isFrontDesk || options.isOrchestrator) && (options.queueDepth ?? 0) === 0 && activeWorkers === 0) {
+        return false;
+      }
+      return detectZombieHungTurn(liveStatus, lastActivityAt, now, staleSeconds);
+    })(),
     STALE_ERROR_GHOSTING: detectStaleErrorGhosting(liveStatus, rawLastError),
     PROVIDER_QUOTA_EXHAUSTION: quotaDetected,
+    REPETITIVE_TOOL_LOOP: repetitiveRun > 0,
   };
 
   const taxonomy = archived ? [] : WATCHDOG_TAXONOMY.filter((name) => checks[name]);
@@ -1919,7 +4024,13 @@ export function assessAgentHealth(
           ? attentionReason ?? undefined
           : name === "ZOMBIE_HUNG_TURN"
             ? lastActivityAt ?? undefined
-            : String(lastError || "").trim() || undefined;
+            : name === "REPETITIVE_TOOL_LOOP"
+              ? `${repetitiveRun} identical consecutive tool calls`
+              : name === "PENDING_PERMISSION_BLOCKED"
+                ? live?.pendingPermissions?.length
+                  ? `requires ${live.pendingPermissions.length} permission(s)`
+                  : undefined
+                : String(lastError || "").trim() || undefined;
     if (detail) details[name] = detail;
   }
 
@@ -2001,6 +4112,17 @@ export function countActiveWorkers(
 /** Consecutive sweeps an absent orchestrator must stay missing before pruning (#889). */
 export const ORCHESTRATOR_PRUNE_GRACE_SWEEPS = 3;
 
+/**
+ * Rosters assembled without the global `paseo ls --global` source are marked
+ * partial: they can omit live agents in other workspaces, so destructive
+ * callers must not treat a missing entry as proof of absence (#1068).
+ */
+const partialAgentMaps = new WeakSet<Map<string, WatchdogAgent>>();
+
+export function isPartialAgentMap(map: Map<string, WatchdogAgent> | null | undefined): boolean {
+  return Boolean(map && partialAgentMaps.has(map));
+}
+
 export interface StaleOrchestratorMark {
   key: string;
   agentId: string;
@@ -2012,6 +4134,8 @@ export interface PruneResult {
   ok: boolean;
   prunedCount: number;
   pruned: Array<{ key: string; agentId: string; reason: string }>;
+  /** Closed orchestrator sessions archived and unlinked during this sweep (#973). */
+  archived?: Array<{ key: string; agentId: string; reason: string }>;
   /** Registrations kept but flagged stale because the agent was absent (#889). */
   markedStale?: StaleOrchestratorMark[];
   /** Registrations whose agent reappeared and whose stale markers were cleared (#889). */
@@ -2037,6 +4161,8 @@ export interface BoardCandidate {
   labels: string[];
   category: string;
   is_dispatchable: boolean;
+  /** Present only on first-seen candidates. */
+  is_new?: boolean;
   reason: string;
 }
 
@@ -2055,6 +4181,8 @@ export interface BoardSweepResult {
     repo: string;
     count: number;
     dispatchable: number;
+    /** Tickets requiring explicit Front Desk attention (#1354). */
+    totalFrontDeskAttention?: number;
   }>;
   staleWipRecovered?: StaleWipResult[];
   prunedCount: number;
@@ -2064,6 +4192,47 @@ export interface BoardSweepResult {
   /** Enrolled repos auto-staffed by this sweep because they were unstaffed with pending work (#889). */
   autoEnsured?: Array<{ repo: string; agentId?: string; status?: string; error?: string }>;
   error?: string;
+}
+
+// ---------------------------------------------------------------------------
+// Sweep digest persistence (#1352)
+// ---------------------------------------------------------------------------
+
+/** Shape of the persisted sweep state JSON file. */
+export interface SweepDigestsPayload {
+  digests: Record<string, string>;
+  errorSignature: string;
+  /** Epoch-ms of the last forced full-reconciliation sweep; null when never reconciled. */
+  lastBoardReconciliationAt: number | null;
+}
+
+let _sweepDigestStorage: PluginStorage<SweepDigestsPayload> | null = null;
+
+/**
+ * Resolve (or lazily create) the scoped PluginStorage for sweep digests.
+ * Path: ~/.paseo/plugin-data/xpufx/uppidi-fleet/board-state/sweeps.json
+ */
+export function getSweepDigestStorage(
+  options?: { baseDir?: string },
+): PluginStorage<SweepDigestsPayload> {
+  if (!_sweepDigestStorage || options?.baseDir) {
+    const baseDir = options?.baseDir ?? join(resolvePaseoHome(), "plugin-data", "xpufx");
+    _sweepDigestStorage = new PluginStorage<SweepDigestsPayload>(
+      "uppidi-fleet",
+      "board-state/sweeps.json",
+      {
+        defaultData: { digests: {}, errorSignature: "", lastBoardReconciliationAt: null } as SweepDigestsPayload,
+        baseDir,
+      },
+    );
+    return _sweepDigestStorage;
+  }
+  return _sweepDigestStorage;
+}
+
+/** Reset the singleton so tests get a fresh instance. */
+export function resetSweepDigestStorage(): void {
+  _sweepDigestStorage = null;
 }
 
 /** Append a bare URL so chat linkifiers can pick it up. */
@@ -2187,8 +4356,14 @@ export function summarize(event: string, body: any): string {
 
 export function formatWebhookMessage(event: string, body: any): string {
   const env = forgejoEnvelope(event, body);
-  const sum = summarize(event, body);
-  return `[forgejo-hook] ${JSON.stringify(env)}\n\n${sum}`;
+  const repo = keyFromPayload(body) ?? repositoryFromPayload(body)?.full_name ?? "unknown";
+  // The `[forgejo-hook]` machine line stays first and byte-identical so legacy
+  // parsers keep working; the fleet signature is prepended to the prompt body.
+  const message = withFleetEnvelope(
+    routerEnvelope({ repo, kind: "webhook", ref: issueNumberOf(body) }),
+    summarize(event, body),
+  );
+  return `[forgejo-hook] ${JSON.stringify(env)}\n\n${message}`;
 }
 
 export function stableId(key: string, msg: string): string {
@@ -2223,11 +4398,24 @@ export function formatFleetTeardownNotice(
 const MAX_LOG_LINES = 1000;
 const logBuffer: string[] = [];
 
+let activeDiskLogger: DiskLogger | null = null;
+
+export function getActiveDiskLogger(): DiskLogger | null {
+  return activeDiskLogger;
+}
+
+export function setActiveDiskLogger(logger: DiskLogger | null): void {
+  activeDiskLogger = logger;
+}
+
 export function appendHookLog(message: string): void {
   const line = `[${new Date().toISOString()}] ${message}`;
   logBuffer.push(line);
   if (logBuffer.length > MAX_LOG_LINES) {
     logBuffer.splice(0, logBuffer.length - MAX_LOG_LINES);
+  }
+  if (activeDiskLogger) {
+    activeDiskLogger.log(line);
   }
 }
 
@@ -2257,28 +4445,49 @@ export class HookRouter {
   /** Global pause-all flag (#877): set by `pause('all')`, consulted by `isPaused`. */
   private allQueuesPaused = false;
   private busyQueues = new Set<string>();
+  /** Timestamp when each queue first entered the busy streak (#1344). */
+  private busySince = new Map<string, number>();
   public busyAttempts = new Map<string, number>();
   private droppedCount = new Map<string, number>();
   private draining = new Set<string>();
   private backoffTimers = new Map<string, NodeJS.Timeout>();
   private unsubscribeLifecycle?: () => void;
   private isClosed = false;
+  private isHaltedState = false;
+  /** Unified fleet lifecycle mode (#1034). Replaces bare `isHaltedState` as the source of truth. */
+  private _mode: FleetMode = "RUN";
+  /** Per-class delivery overrides; absent entries fall back to defaults for `_mode`. */
+  private _eventClassPolicy?: Record<string, string>;
+  private teardownInProgress = false;
   private startedAt: number | null = null;
-  private mutedRepos = new Set<string>();
+  private pausedRepos = new Set<string>();
+  /** Repos where autonomous dispatch is barred entirely (#1282). */
+  private kanbanOnlyRepos = new Set<string>();
   private enrolledRepos = new Set<string>();
 
   public readonly coalesceBuffers = new Map<string, CoalesceEntry>();
   public readonly sosStates = new Map<string, { state: string; transition: number }>();
   public readonly watchdogAlerts = new Map<string, number>();
+  /**
+   * Active queue-wedge episodes already alerted (#1123). A key is present while
+   * a queue remains wedged and is cleared once it drains or the delivery streak
+   * falls back below the busy threshold, so a later re-wedge alerts again
+   * without waiting out a wall-clock cooldown.
+   */
+  public readonly watchdogWedgeAlerts = new Set<string>();
   public readonly coalesceDisable: boolean;
   public readonly debounceMs: number;
   public readonly coalesceMaxEvents: number;
   public readonly coalesceWindowMaxMs: number;
   public readonly watchdogIntervalMs: number;
   public readonly watchdogBusyThreshold: number;
+  public readonly watchdogMinBusyElapsedMs: number;
   public readonly watchdogAlertCooldownMs: number;
   public readonly boardSweepIntervalMs: number;
+  public readonly boardReconciliationIntervalMs: number;
   public readonly frontDeskThrottleMs: number;
+  public readonly drainBusyAttemptLimit: number;
+  public readonly drainInterruptAttemptLimit: number;
   private lastDeliveryTimes = new Map<string, number>();
   public latestAgentMap: Map<string, WatchdogAgent> | null = null;
   /** Teardown reconciliation state (#872): last teardown stamp + suppressed ids. */
@@ -2290,17 +4499,58 @@ export class HookRouter {
   public readonly options?: HookRouterOptions;
   public readonly isTestMode: boolean;
   private inFlightEnsure = new Map<string, Promise<EnsureOrchestratorResult>>();
+  /**
+   * Per-repo coalescing for auto-ensure (#987): overlapping watchdog, webhook,
+   * and board-sweep passes must not each observe "unstaffed" and spawn one.
+   */
+  private inFlightUnstaffed = new Map<string, Promise<EnsureOrchestratorResult | null>>();
+  /** Guard runBoardSweep against overlapping concurrent sweeps (#993). */
+  private inFlightBoardSweep = new Map<string, Promise<BoardSweepResult>>();
+  /** One rotation per role (per repo for orchestrators) + cooldown clock (#1019). */
+  private readonly rotationLock = new RotationLock();
+  private readonly lastRotationAt = new Map<string, number>();
+  private readonly lastSweepDigests = new Map<string, string>();
+  /**
+   * Quiescent/dormant mode (#1181): true when no queue backlog, no unstaffed
+   * enrolled queue, and no live running turn are observed. Passive webhook
+   * noise is dropped while quiescent; an actionable wakeup clears it.
+   */
+  private quiescent = false;
+  /** Last transition in or out of quiescence (#1181). */
+  public lastQuiescenceChangeAt: number | null = null;
+  /** Per-repo SHA256 digest of the last actionable sweep set (#1181). */
+  private readonly lastSweepActionDigests = new Map<string, string>();
+  /** Failure signature of the last sweep, for error-state change detection (#1181). */
+  private lastSweepErrorSignature = "";
+  /** Epoch-ms of the last forced full-reconciliation sweep (#1263). */
+  private lastBoardReconciliationAt: number | null = null;
+  private rotationAutoEnabled: boolean;
   /** Direct-action guards (#847). */
   public readonly labelTriageEnabled: boolean;
   public readonly closeGuardEnabled: boolean;
   /** CI failure issue creator (#865). */
   public readonly ciFailureEnabled: boolean;
   public readonly repoOnboardingEnabled: boolean;
+  public readonly backwardTransitionSteeringEnabled: boolean;
   public readonly staleWipSweepEnabled: boolean;
   public readonly staleWipHours: number;
   private readonly closeGuardTargetActors: string[];
   private readonly closeGuardAcceptedLabels: string[];
   private readonly sharedAgentActor: string;
+  /** Opt-in repo -> checkout/plugin bindings for the merge-event hook (#1076). */
+  private mergeEventHooks: Record<string, MergeEventHook>;
+  /** Durable append-only merge-event log path (#1076). */
+  private readonly mergeEventLogPath: string;
+  /** One fast-forward per checkout at a time; guards the primary checkout (#1076). */
+  private readonly mergeEventLocks = new Set<string>();
+  /** Durable append-only audit receipt store (audits.jsonl, platform#348). */
+  public readonly auditsFilePath: string;
+  /** Durable append-only audit merge-reconciliation log (platform#348). */
+  public readonly auditReconciliationsFilePath: string;
+  /** Scoped rotating disk logger (#1115). */
+  public readonly diskLogger: DiskLogger;
+  public readonly logDir: string;
+  public readonly logFilePath: string;
 
   constructor(server?: PluginServerContext | null, options?: HookRouterOptions) {
     this.server = server ?? null;
@@ -2327,7 +4577,10 @@ export class HookRouter {
     this.closeGuardEnabled = options?.closeGuardEnabled ?? !this.isTestMode;
     this.ciFailureEnabled = options?.ciFailureEnabled ?? !this.isTestMode;
     this.repoOnboardingEnabled = options?.repoOnboardingEnabled ?? !this.isTestMode;
+    this.backwardTransitionSteeringEnabled =
+      options?.backwardTransitionSteeringEnabled ?? !this.isTestMode;
     this.staleWipSweepEnabled = options?.staleWipSweepEnabled ?? !this.isTestMode;
+    this.rotationAutoEnabled = options?.rotationAutoEnabled ?? !this.isTestMode;
     this.staleWipHours =
       options?.staleWipHours ??
       Number(process.env.STALE_WIP_HOURS ?? ISSUES_CHECK_DEFAULT_STALE_WIP_HOURS);
@@ -2337,6 +4590,7 @@ export class HookRouter {
         ? options.closeGuardAcceptedLabels.map(normalizeLabelName)
         : [...CLOSE_GUARD_ACCEPTED_LABELS];
     this.sharedAgentActor = options?.sharedActor ?? SHARED_AGENT_ACTOR;
+    this.mergeEventHooks = options?.mergeEventHooks ?? persisted.mergeEventHooks ?? {};
 
     this.configuredPort =
       options?.port !== undefined
@@ -2361,9 +4615,14 @@ export class HookRouter {
     this.secret = options?.secret ?? process.env.FORGE_HOOK_SECRET;
     this.activePaseo = options?.paseo ?? (server as any)?.paseo ?? null;
 
-    if (persisted.mutedRepos) {
-      for (const r of persisted.mutedRepos) {
-        if (r) this.mutedRepos.add(r);
+    if (persisted.pausedRepos) {
+      for (const r of persisted.pausedRepos) {
+        if (r) this.pausedRepos.add(r);
+      }
+    }
+    if (persisted.kanbanOnlyRepos) {
+      for (const r of persisted.kanbanOnlyRepos) {
+        if (r) this.kanbanOnlyRepos.add(r);
       }
     }
     if (persisted.enrolledRepos) {
@@ -2371,14 +4630,85 @@ export class HookRouter {
         if (r) this.enrolledRepos.add(r);
       }
     }
+    // Unified fleet control mode + policy (#1034)
+    const settingsMode = coerceFleetMode(settings?.mode ?? "RUN");
+    // Boot-time start mode (#1112)
+    const startModeOnBoot = settings?.startModeOnBoot ?? "previous-state";
+    if (startModeOnBoot === "halt") {
+      this._mode = "HALT";
+    } else if (startModeOnBoot === "run") {
+      this._mode = "RUN";
+    } else {
+      // 'previous-state': honour persisted mode, fall back to settings mode
+      this._mode = persisted.mode ?? settingsMode;
+    }
+    this._eventClassPolicy = settings?.eventClassPolicy;
+    // Back-compat: if isHaltedState was true, set mode to HALT
+    if (this.isHaltedState && this._mode === "RUN") {
+      this._mode = "HALT";
+    }
+    // Immediately synchronise isHaltedState / allQueuesPaused with _mode
+    if (this._mode === "HALT" || this._mode === "STOP") {
+      this.isHaltedState = true;
+      this.allQueuesPaused = true;
+    }
 
-    const home = process.env.HOME ?? os.homedir();
+    const home = resolveHostHome();
+    const custom = (process.env.PASEO_HOME || "").trim();
+    const root = custom || join(home, ".paseo");
     const scopedRoot = this.isTestMode
       ? join(os.tmpdir(), `paseo-test-hook-router-${process.pid}`)
-      : join(home, ".paseo", "plugin-data", "xpufx", "uppidi-fleet");
+      : join(root, "plugin-data", "xpufx", "uppidi-fleet");
     this.queueDir = options?.queueDir ?? process.env.HOOK_QUEUE_DIR ?? join(scopedRoot, "queues");
     this.stateDir =
       options?.stateDir ?? process.env.HOOK_STATE_DIR ?? join(scopedRoot, "orchestrators");
+    this.mergeEventLogPath =
+      options?.mergeEventLogPath ??
+      process.env.HOOK_MERGE_EVENT_LOG ??
+      join(scopedRoot, "merge-events.json");
+    this.auditsFilePath = options?.auditsFilePath ?? process.env.UPPIDI_FLEET_AUDITS_FILE ?? join(dirname(this.stateDir), "audits.jsonl");
+    this.auditReconciliationsFilePath =
+      options?.auditReconciliationsFilePath ??
+      process.env.UPPIDI_FLEET_AUDIT_RECONCILIATIONS_FILE ??
+      join(dirname(this.stateDir), "audit-reconciliations.jsonl");
+
+    // Load persisted sweep digests on startup (#1352).
+    const testBaseDir = this.isTestMode ? scopedRoot : undefined;
+    try {
+      const sdStorage = getSweepDigestStorage(testBaseDir ? { baseDir: testBaseDir } : undefined);
+      const persisted = sdStorage.read();
+      if (persisted.digests) {
+        for (const [repo, digest] of Object.entries(persisted.digests)) {
+          this.lastSweepActionDigests.set(repo, digest);
+        }
+      }
+      if (persisted.errorSignature) {
+        this.lastSweepErrorSignature = persisted.errorSignature;
+      }
+      if (persisted.lastBoardReconciliationAt != null) {
+        this.lastBoardReconciliationAt = persisted.lastBoardReconciliationAt;
+      }
+    } catch {
+      // Non-fatal: first run has no persisted state.
+    }
+
+    const explicitLogDir = options?.logDir;
+    const explicitLogFilePath = options?.logFilePath;
+    this.diskLogger = new DiskLogger({
+      ...(explicitLogDir ? { logDir: explicitLogDir } : {}),
+      ...(explicitLogFilePath ? { filePath: explicitLogFilePath } : {}),
+      maxBytes: options?.logMaxBytes,
+      maxFiles: options?.logMaxFiles,
+      echoToConsole: true,
+      ...(!explicitLogDir && !explicitLogFilePath && this.isTestMode
+        ? { storageBaseDir: scopedRoot }
+        : {}),
+    });
+    this.logDir = this.diskLogger.logDir;
+    this.logFilePath = this.diskLogger.logFilePath;
+    if (!getActiveDiskLogger()) {
+      setActiveDiskLogger(this.diskLogger);
+    }
 
     this.coalesceDisable =
       options?.coalesceDisable ??
@@ -2389,19 +4719,40 @@ export class HookRouter {
     this.watchdogIntervalMs =
       options?.watchdogIntervalMs ?? (isTestMode ? 0 : Number(process.env.WATCHDOG_INTERVAL_MS ?? 60000));
     this.watchdogBusyThreshold =
-      options?.watchdogBusyThreshold ?? Number(process.env.WATCHDOG_BUSY_THRESHOLD ?? 10);
+      options?.watchdogBusyThreshold ?? Number(process.env.WATCHDOG_BUSY_THRESHOLD ?? DEFAULT_WATCHDOG_BUSY_THRESHOLD);
+    this.watchdogMinBusyElapsedMs =
+      options?.watchdogMinBusyElapsedMs ??
+      Number(process.env.WATCHDOG_MIN_BUSY_ELAPSED_MS ?? DEFAULT_WATCHDOG_MIN_BUSY_ELAPSED_MS);
     this.watchdogAlertCooldownMs =
-      options?.watchdogAlertCooldownMs ?? Number(process.env.WATCHDOG_ALERT_COOLDOWN_MS ?? 15 * 60 * 1000);
+      options?.watchdogAlertCooldownMs ?? Number(process.env.WATCHDOG_ALERT_COOLDOWN_MS ?? DEFAULT_WATCHDOG_ALERT_COOLDOWN_MS);
     this.boardSweepIntervalMs =
-      options?.boardSweepIntervalMs ?? (isTestMode ? 0 : Number(process.env.BOARD_SWEEP_INTERVAL_MS ?? 15 * 60 * 1000));
+      options?.boardSweepIntervalMs ?? (isTestMode ? 0 : Number(process.env.BOARD_SWEEP_INTERVAL_MS ?? DEFAULT_BOARD_SWEEP_INTERVAL_MS));
+    this.boardReconciliationIntervalMs =
+      options?.boardReconciliationIntervalMs ??
+      (isTestMode
+        ? 0
+        : Number(process.env.BOARD_RECONCILIATION_INTERVAL_MS ?? DEFAULT_BOARD_RECONCILIATION_INTERVAL_MS));
     this.frontDeskThrottleMs =
       options?.frontDeskThrottleMs !== undefined
         ? options.frontDeskThrottleMs
         : isTestMode
           ? 0
           : Number(process.env.HOOK_FRONTDESK_THROTTLE_MS ?? 2000);
+    const steerAttemptLimitRaw =
+      options?.drainBusyAttemptLimit ?? Number(process.env.HOOK_DRAIN_BUSY_ATTEMPT_LIMIT ?? DEFAULT_DRAIN_STEER_ATTEMPT_LIMIT);
+    this.drainBusyAttemptLimit = Number.isFinite(steerAttemptLimitRaw)
+      ? Math.max(1, Math.floor(steerAttemptLimitRaw))
+      : DEFAULT_DRAIN_STEER_ATTEMPT_LIMIT;
+    const interruptAttemptLimitRaw =
+      options?.drainInterruptAttemptLimit ??
+      Number(process.env.HOOK_DRAIN_INTERRUPT_ATTEMPT_LIMIT ?? DEFAULT_DRAIN_INTERRUPT_ATTEMPT_LIMIT);
+    const interruptAttemptLimit = Number.isFinite(interruptAttemptLimitRaw)
+      ? Math.max(1, Math.floor(interruptAttemptLimitRaw))
+      : DEFAULT_DRAIN_INTERRUPT_ATTEMPT_LIMIT;
+    this.drainInterruptAttemptLimit = Math.max(this.drainBusyAttemptLimit, interruptAttemptLimit);
     mkdirSync(this.queueDir, { recursive: true });
     mkdirSync(this.stateDir, { recursive: true });
+    mkdirSync(this.logDir, { recursive: true });
 
     this.loadPersistedQueues();
     this.bindLifecycleEvents();
@@ -2504,11 +4855,24 @@ export class HookRouter {
     if (!repoKey) {
       throw new Error("Could not derive repository key from payload");
     }
+    const isFd = isFrontDeskEvent(body);
+    const targetKey = isFd ? "frontdesk" : repoKey;
+    if (this.isHaltedState) {
+      this.log(`[info] Webhook ingress suppressed for ${targetKey} (hook router halted)`);
+      return { key: targetKey, result: "suppressed", frontDesk: isFd, bypass: false };
+    }
     const ev = String(event ?? "unknown");
+    // Quiescence (#1181): an actionable wakeup clears dormancy immediately; a
+    // passive event while quiescent must not wake the fleet at all.
+    if (isActionableWakeupEvent(ev, body)) {
+      this.exitQuiescence(`actionable webhook ${ev}`);
+    } else if (this.quiescent && !isFd) {
+      this.log(`[info] Suppressing passive webhook ${ev} for ${targetKey} while fleet is dormant (#1181)`);
+      return { key: targetKey, result: "suppressed", frontDesk: false, bypass: false };
+    }
     const issue = issueNumberOf(body);
     const actor = senderFromPayload(body)?.login ?? "unknown";
     const kind = eventKind(ev, body);
-    const isFd = isFrontDeskEvent(body);
     const bypass = isFd || isBypassEvent(ev, body);
     const sosState = sosStateOf(ev, body);
     const commentBody = typeof body?.comment?.body === "string" ? body.comment.body : "";
@@ -2522,6 +4886,14 @@ export class HookRouter {
     // acknowledged immediately and the guard acts asynchronously. Both are
     // disabled by default under test so fixtures never touch the network.
     void this.runDirectActions(ev, body);
+
+    // Explicit operator board sweep (`/sweep`) always delivers, bypassing the
+    // delta gate that suppresses unchanged sweeps (#1181).
+    if (SLASH_SWEEP_RE.test(commentBody)) {
+      void this.runBoardSweep(undefined, undefined, { explicit: true }).catch((err) =>
+        this.log(`[warn] Explicit /sweep failed: ${err instanceof Error ? err.message : String(err)}`),
+      );
+    }
 
     const orch = isFd ? null : this.readOrchestrator(repoKey);
     if (!isFd && !bypass && ev === "issue_comment") {
@@ -2538,6 +4910,11 @@ export class HookRouter {
         (typeof commentBody === "string" && /(?:^|\s)\/(?:sos|stop)\b/i.test(commentBody));
       this.enqueue("frontdesk", msg, isSos);
       return { key: "frontdesk", result: bypass ? "bypass" : "direct", frontDesk: true, bypass };
+    }
+
+    if (!this.isEnrolledRepo(repoKey)) {
+      this.log(`[info] Ambient webhook ignored for unenrolled repo ${repoKey} (${ev})`);
+      return { key: repoKey, result: "ignored", frontDesk: false, bypass: false };
     }
 
     const result = this.coalesceOrSend({
@@ -2582,10 +4959,15 @@ export class HookRouter {
         await this.runLabelTriage(body);
       } else if (ev === "issues" && action === "closed") {
         await this.runCloseGuard(body);
+      } else if (ev === "issues" && action === "unlabeled") {
+        await this.runBackwardTransitionSteering(body);
       } else if (ev === "action_run_failure") {
         await this.runCiFailure(body);
       } else if (ev === "repository" && action === "created") {
         await this.runRepoOnboarding(body);
+      } else if (ev === "pull_request" && action === "closed" && body?.pull_request?.merged === true) {
+        this.reconcileMergeAudit(body);
+        await this.runMergeEvent(body);
       }
     } catch (err) {
       this.log(
@@ -2609,6 +4991,421 @@ export class HookRouter {
     const sender = senderFromPayload(body);
     const login = sender?.login ?? sender?.username;
     return typeof login === "string" ? login : "";
+  }
+
+  // -------------------------------------------------------------------------
+  // Merge-event hook (#1076)
+  // -------------------------------------------------------------------------
+
+  /** Configured merge-event bindings (copy). Empty means disabled. */
+  public getMergeEventHooks(): Record<string, MergeEventHook> {
+    return { ...this.mergeEventHooks };
+  }
+
+  /** Persist an opt-in checkout/plugin binding for `repo`. */
+  public setMergeEventHook(repo: string, hook: MergeEventHook): Record<string, MergeEventHook> {
+    const key = canonicalRepoKey(repo) ?? repo.trim();
+    this.mergeEventHooks = { ...this.mergeEventHooks, [key]: hook };
+    saveRouterConfig({ mergeEventHooks: this.mergeEventHooks });
+    return this.getMergeEventHooks();
+  }
+
+  /** Remove any binding that resolves to `repo`. */
+  public removeMergeEventHook(repo: string): Record<string, MergeEventHook> {
+    const wanted = new Set(candidateRepoKeys(repo).map((k) => k.toLowerCase()));
+    const next: Record<string, MergeEventHook> = {};
+    for (const [key, hook] of Object.entries(this.mergeEventHooks)) {
+      const matches = candidateRepoKeys(key).some((candidate) => wanted.has(candidate.toLowerCase()));
+      if (!matches) next[key] = hook;
+    }
+    this.mergeEventHooks = next;
+    saveRouterConfig({ mergeEventHooks: this.mergeEventHooks });
+    return this.getMergeEventHooks();
+  }
+
+  /** Expand `~` and resolve a configured checkout path. */
+  private resolveCheckoutPath(raw: string): string {
+    const trimmed = raw.trim();
+    if (trimmed === "~") return resolveHostHome();
+    if (trimmed.startsWith("~/")) return join(resolveHostHome(), trimmed.slice(2));
+    return resolve(trimmed);
+  }
+
+  private async gitExec(
+    args: string[],
+    cwd: string,
+  ): Promise<{ ok: boolean; code: number; stdout: string; stderr: string }> {
+    try {
+      const res = await execFileAsync("git", args, { cwd, timeout: 60000, maxBuffer: 10 * 1024 * 1024 });
+      return { ok: true, code: 0, stdout: String(res.stdout ?? ""), stderr: String(res.stderr ?? "") };
+    } catch (err: any) {
+      return {
+        ok: false,
+        code: typeof err?.code === "number" ? err.code : 1,
+        stdout: String(err?.stdout ?? ""),
+        stderr: String(err?.stderr ?? err?.message ?? err),
+      };
+    }
+  }
+
+  private async gitIsAncestor(ancestor: string, descendant: string, cwd: string): Promise<boolean | null> {
+    const res = await this.gitExec(["merge-base", "--is-ancestor", ancestor, descendant], cwd);
+    if (res.ok) return true;
+    if (res.code === 1) return false;
+    return null;
+  }
+
+  private async reloadMergeEventPlugin(pluginId: string): Promise<{ ok: boolean; error?: string }> {
+    try {
+      await execFileAsync("paseo", ["plugin", "reload", pluginId], { timeout: 30000 });
+      return { ok: true };
+    } catch (err) {
+      return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
+  /** Fleet-envelope notice to Front Desk and the repo orchestrator, plus queue durability. */
+  private async announceMergeEvent(repo: string, record: MergeEventRecord): Promise<void> {
+    const message = withFleetEnvelope(
+      routerEnvelope({ repo, kind: "merge-event" }),
+      formatMergeEventNotice(record),
+    );
+    const targets: Array<{ key: string; agentId: string | null }> = [
+      { key: "frontdesk", agentId: this.readFrontDesk()?.agentId ?? null },
+    ];
+    const orch = this.readOrchestrator(repo);
+    targets.push(
+      orch?.agentId
+        ? { key: orch.key ?? repo, agentId: orch.agentId }
+        : { key: canonicalRepoKey(repo) ?? repo, agentId: null },
+    );
+    for (const target of targets) {
+      try {
+        this.enqueue(target.key, message, false);
+      } catch (err) {
+        this.log(
+          `[warn] merge-event notice enqueue failed for ${target.key}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+      if (target.agentId) {
+        try {
+          await this.deliverMessage(target.agentId, message, { noWait: true, steer: true });
+        } catch (err) {
+          this.log(
+            `[warn] merge-event notice delivery failed for ${target.agentId.slice(0, 7)}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+      }
+    }
+  }
+
+  private skipMergeEventRecord(
+    repo: string,
+    checkoutPath: string,
+    pluginId: string | null,
+    timestamp: string,
+    fromSha: string,
+    reason: string,
+  ): MergeEventRecord {
+    return {
+      repo,
+      checkoutPath,
+      pluginId,
+      timestamp,
+      fromSha,
+      toSha: fromSha,
+      titles: [],
+      fastForwarded: false,
+      alreadyCurrent: false,
+      reloaded: false,
+      reloadReason: reason,
+      newRevision: fromSha,
+      status: "skipped",
+      reason,
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // Audit merge reconciliation (platform#348 Phase A / #1172)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Tags an observed `pull_request.closed` merge as `audited` or
+   * `direct_or_adhoc` by matching the merged commit SHA against stored audit
+   * receipts, and appends the reconciliation to the durable log. Never blocks
+   * the merge (advisory by design) and never throws: a failed append must not
+   * take the webhook ack down with it.
+   */
+  public reconcileMergeAudit(body: any): AuditMergeReconciliation {
+    const now = new Date().toISOString();
+    const repo = keyFromPayload(body) ?? this.bareRepoFromPayload(body);
+    const pr = body?.pull_request?.number;
+    const headCommit =
+      body?.pull_request?.merge_commit_sha ||
+      body?.pull_request?.head?.sha ||
+      body?.pull_request?.target_commitish?.sha ||
+      body?.pull_request?.sha;
+
+    if (!repo || typeof pr !== "number" || typeof headCommit !== "string" || !headCommit) {
+      return {
+        v: 1,
+        repo: repo ? canonicalRepoKey(repo) ?? repo : "",
+        pr: typeof pr === "number" ? pr : 0,
+        headCommit: typeof headCommit === "string" ? headCommit : "",
+        mergedAt: now,
+        status: "direct_or_adhoc" as const,
+      };
+    }
+
+    let receipt: Awaited<ReturnType<typeof findAuditReceipt>>;
+    try {
+      receipt = findAuditReceipt(
+        { repo, pr, commit: headCommit },
+        { filePath: this.auditsFilePath },
+      );
+    } catch (err) {
+      // An unreadable store must not take the webhook ack down: fall through
+      // and record the merge as direct_or_adhoc.
+      this.log(`[warn] audit receipt lookup failed: ${err instanceof Error ? err.message : String(err)}`);
+      receipt = undefined;
+    }
+    const status = receipt ? ("audited" as const) : ("direct_or_adhoc" as const);
+    const record: AuditMergeReconciliation = {
+      v: 1,
+      repo: canonicalRepoKey(repo) ?? repo,
+      pr,
+      headCommit,
+      mergedAt: now,
+      status,
+      ...(receipt ? { auditId: receipt.auditId, verdict: receipt.verdict } : {}),
+    };
+    const outcome = appendAuditReconciliation(record, {
+      reconciliationsPath: this.auditReconciliationsFilePath,
+    });
+    this.log(
+      `[info] audit reconciliation ${status} for ${record.repo}#${record.pr} (${headCommit.slice(0, 7)})${
+        outcome.ok ? "" : `, append failed: ${outcome.error}`
+      }`,
+    );
+    return record;
+  }
+
+  /**
+   * Fast-forward a mapped checkout on a merged pull request, reload its plugin,
+   * and announce the result. Skips (and reports) a dirty, divergent or
+   * unreachable checkout; never rewrites history (`--ff-only`).
+   */
+  public async runMergeEvent(body: any): Promise<MergeEventResult> {
+    const repo = keyFromPayload(body) ?? this.bareRepoFromPayload(body);
+    if (!repo) return { acted: false, reason: "missing repository in payload" };
+    const hook = resolveMergeEventHook(repo, this.mergeEventHooks);
+    if (!hook) return { acted: false, reason: `no merge-event mapping for ${repo}` };
+    const checkoutPath = this.resolveCheckoutPath(hook.checkoutPath);
+    if (this.mergeEventLocks.has(checkoutPath)) {
+      return { acted: false, reason: `merge event already in progress for ${checkoutPath}` };
+    }
+    this.mergeEventLocks.add(checkoutPath);
+    try {
+      return await this.executeMergeEvent(repo, checkoutPath, hook);
+    } catch (err) {
+      const reason = err instanceof Error ? err.message : String(err);
+      this.log(`[warn] merge event failed for ${repo} (${checkoutPath}): ${reason}`);
+      return { acted: false, reason: `merge event failed: ${reason}` };
+    } finally {
+      this.mergeEventLocks.delete(checkoutPath);
+    }
+  }
+
+  private async executeMergeEvent(
+    repo: string,
+    checkoutPath: string,
+    hook: MergeEventHook,
+  ): Promise<MergeEventResult> {
+    const pluginId = hook.pluginId?.trim() || null;
+    const timestamp = new Date().toISOString();
+    const repoKey = canonicalRepoKey(repo) ?? repo;
+
+    const finish = async (record: MergeEventRecord, acted: boolean): Promise<MergeEventResult> => {
+      appendMergeEventRecord(record, this.mergeEventLogPath);
+      await this.announceMergeEvent(repoKey, record);
+      this.log(
+        `[info] merge event ${record.status} for ${repoKey}: ${record.fromSha} -> ${record.toSha} (${record.reason})`,
+      );
+      return {
+        acted,
+        reason: record.reason,
+        repo: repoKey,
+        checkoutPath,
+        status: record.status,
+        fromSha: record.fromSha,
+        toSha: record.toSha,
+        titles: record.titles,
+        fastForwarded: record.fastForwarded,
+        alreadyCurrent: record.alreadyCurrent,
+        reloaded: record.reloaded,
+        record,
+      };
+    };
+
+    const head = await this.gitExec(["rev-parse", "HEAD"], checkoutPath);
+    if (!head.ok || !head.stdout.trim()) {
+      const detail = head.stderr.trim() || `exit ${head.code}`;
+      return finish(
+        this.skipMergeEventRecord(repoKey, checkoutPath, pluginId, timestamp, "", `git rev-parse HEAD failed: ${detail}`),
+        false,
+      );
+    }
+    const fromFull = head.stdout.trim();
+    const shortFrom = fromFull.slice(0, 7);
+
+    const status = await this.gitExec(["status", "--porcelain"], checkoutPath);
+    if (!status.ok) {
+      const detail = status.stderr.trim() || `exit ${status.code}`;
+      return finish(
+        this.skipMergeEventRecord(repoKey, checkoutPath, pluginId, timestamp, shortFrom, `git status failed: ${detail}`),
+        false,
+      );
+    }
+    if (status.stdout.trim()) {
+      const files = status.stdout.trim().split("\n").slice(0, 5).join(", ");
+      return finish(
+        this.skipMergeEventRecord(
+          repoKey,
+          checkoutPath,
+          pluginId,
+          timestamp,
+          shortFrom,
+          `working tree dirty; refusing to fast-forward (${files})`,
+        ),
+        false,
+      );
+    }
+
+    const fetch = await this.gitExec(["fetch", "origin"], checkoutPath);
+    if (!fetch.ok) {
+      const detail = fetch.stderr.trim() || `exit ${fetch.code}`;
+      return finish(
+        this.skipMergeEventRecord(
+          repoKey,
+          checkoutPath,
+          pluginId,
+          timestamp,
+          shortFrom,
+          `git fetch failed: ${detail}`,
+        ),
+        false,
+      );
+    }
+
+    const canFastForward = await this.gitIsAncestor("HEAD", "origin/main", checkoutPath);
+    const remoteAncestor = await this.gitIsAncestor("origin/main", "HEAD", checkoutPath);
+    if (canFastForward === null || remoteAncestor === null) {
+      return finish(
+        this.skipMergeEventRecord(
+          repoKey,
+          checkoutPath,
+          pluginId,
+          timestamp,
+          shortFrom,
+          "could not compare HEAD with origin/main",
+        ),
+        false,
+      );
+    }
+    if (!canFastForward && remoteAncestor) {
+      const record: MergeEventRecord = {
+        repo: repoKey,
+        checkoutPath,
+        pluginId,
+        timestamp,
+        fromSha: shortFrom,
+        toSha: shortFrom,
+        titles: [],
+        fastForwarded: false,
+        alreadyCurrent: true,
+        reloaded: false,
+        reloadReason: "already current",
+        newRevision: shortFrom,
+        status: "already-current",
+        reason: "already current",
+      };
+      return finish(record, false);
+    }
+    if (!canFastForward && !remoteAncestor) {
+      return finish(
+        this.skipMergeEventRecord(
+          repoKey,
+          checkoutPath,
+          pluginId,
+          timestamp,
+          shortFrom,
+          "checkout has diverged from origin/main; refusing to merge",
+        ),
+        false,
+      );
+    }
+
+    const merge = await this.gitExec(["merge", "--ff-only", "origin/main"], checkoutPath);
+    if (!merge.ok) {
+      const detail = merge.stderr.trim() || `exit ${merge.code}`;
+      return finish(
+        this.skipMergeEventRecord(
+          repoKey,
+          checkoutPath,
+          pluginId,
+          timestamp,
+          shortFrom,
+          `git merge --ff-only failed: ${detail}`,
+        ),
+        false,
+      );
+    }
+
+    const newHead = await this.gitExec(["rev-parse", "HEAD"], checkoutPath);
+    const toFull = newHead.ok && newHead.stdout.trim() ? newHead.stdout.trim() : fromFull;
+    const shortTo = toFull.slice(0, 7);
+    const alreadyCurrent = fromFull === toFull;
+
+    let titles: string[] = [];
+    if (!alreadyCurrent) {
+      const log = await this.gitExec(["log", "--reverse", "--format=%s", `${fromFull}..${toFull}`], checkoutPath);
+      titles = log.ok
+        ? log.stdout
+            .split("\n")
+            .map((line) => line.trim())
+            .filter(Boolean)
+        : [];
+    }
+
+    let reloaded = false;
+    let reloadReason = pluginId ? "not run" : "no plugin bound";
+    if (alreadyCurrent) {
+      reloadReason = "already current";
+    } else if (pluginId) {
+      const reload = await this.reloadMergeEventPlugin(pluginId);
+      reloaded = reload.ok;
+      reloadReason = reload.ok ? "ok" : `failed: ${reload.error}`;
+    }
+
+    const record: MergeEventRecord = {
+      repo: repoKey,
+      checkoutPath,
+      pluginId,
+      timestamp,
+      fromSha: shortFrom,
+      toSha: shortTo,
+      titles,
+      fastForwarded: !alreadyCurrent,
+      alreadyCurrent,
+      reloaded,
+      reloadReason,
+      newRevision: shortTo,
+      status: alreadyCurrent ? "already-current" : "fast-forwarded",
+      reason: alreadyCurrent
+        ? "already current"
+        : `${titles.length} commit(s) applied; reload ${reloadReason}`,
+    };
+    return finish(record, true);
   }
 
   /**
@@ -2739,6 +5536,59 @@ export class HookRouter {
 
     this.log(`[info] close guard: reopened ${repo}#${issueNumber} closed by targeted actor '${actor}'`);
     return { acted: true, reason: decision.reason, reopened: true, commented, notified };
+  }
+
+  /**
+   * Bi-directional flight control (#1282): a card dragged from Review back to
+   * In Progress means changes were requested. Post the steering comment on the
+   * ticket and notify the repo's orchestrator so the author agent picks the
+   * rework up. Best-effort: a failed comment or notification still reports the
+   * attempt and never affects webhook acknowledgement.
+   */
+  public async runBackwardTransitionSteering(body: any): Promise<DirectActionResult> {
+    if (!this.backwardTransitionSteeringEnabled) {
+      return { acted: false, reason: "backward transition steering disabled" };
+    }
+    if (!isBackwardStateTransition(body)) {
+      return { acted: false, reason: "not a backward state transition" };
+    }
+    const repo = this.bareRepoFromPayload(body);
+    const issueNumber = issueNumberOf(body);
+    if (!repo || issueNumber == null) {
+      return { acted: false, reason: "missing repo or issue number" };
+    }
+
+    const host = resolveForgejoHost();
+    const token = await this.resolveApiToken(host);
+    const comment = await forgejoApiRequest<any>(
+      "POST",
+      `/api/v1/repos/${repo}/issues/${issueNumber}/comments`,
+      { body: BACKWARD_TRANSITION_STEERING_COMMENT },
+      { host, token },
+    );
+    const commented = comment.outcome === "ok";
+    if (!commented) {
+      this.log(`[warn] backward steering: comment failed for ${repo}#${issueNumber}: ${comment.error}`);
+    }
+
+    let notified = false;
+    try {
+      notified = await this.notifyReopened(repo, body, body?.issue ?? {}, this.actorFromPayload(body));
+    } catch (err) {
+      this.log(
+        `[warn] backward steering: notify failed for ${repo}#${issueNumber}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    this.log(
+      `[info] backward steering: ${repo}#${issueNumber} returned to WIP; commented=${commented} notified=${notified}`,
+    );
+    return {
+      acted: commented || notified,
+      reason: commented ? "change-request steering posted" : "steering comment failed",
+      commented,
+      notified,
+    };
   }
 
   /**
@@ -3054,10 +5904,10 @@ export class HookRouter {
     return result !== "deduped" && result !== "sos-deduped";
   }
 
-  public isRepoMuted(repoKey: string): boolean {
+  public isRepoPaused(repoKey: string): boolean {
     if (!repoKey) return false;
-    if (this.mutedRepos.has(repoKey)) return true;
-    for (const m of this.mutedRepos) {
+    if (this.pausedRepos.has(repoKey)) return true;
+    for (const m of this.pausedRepos) {
       if (m.toLowerCase() === repoKey.toLowerCase()) return true;
       const cleanM = m.toLowerCase().replace(/^https?:\/\//, "").replace(/\.git$/, "");
       const cleanK = repoKey.toLowerCase().replace(/^https?:\/\//, "").replace(/\.git$/, "");
@@ -3068,41 +5918,113 @@ export class HookRouter {
     return false;
   }
 
-  public muteRepo(repoKey: string): string[] {
-    this.mutedRepos.add(repoKey);
+  public pauseRepo(repoKey: string): string[] {
+    this.pausedRepos.add(repoKey);
     this.saveConfigState();
-    this.log(`[info] Repository ${repoKey} muted (circuit breaker engaged)`);
-    return Array.from(this.mutedRepos);
+    this.log(`[info] Repository ${repoKey} paused (circuit breaker engaged)`);
+    return Array.from(this.pausedRepos);
   }
 
-  public unmuteRepo(repoKey: string): string[] {
-    for (const m of Array.from(this.mutedRepos)) {
-      if (m === repoKey || this.isRepoMutedMatch(m, repoKey)) {
-        this.mutedRepos.delete(m);
+  public unpauseRepo(repoKey: string): string[] {
+    for (const m of Array.from(this.pausedRepos)) {
+      if (m === repoKey || this.isRepoPausedMatch(m, repoKey)) {
+        this.pausedRepos.delete(m);
       }
     }
     this.saveConfigState();
-    this.log(`[info] Repository ${repoKey} unmuted; resuming processing`);
+    this.log(`[info] Repository ${repoKey} unpaused; resuming processing`);
     void this.drain(repoKey);
-    return Array.from(this.mutedRepos);
+    return Array.from(this.pausedRepos);
   }
 
-  public toggleRepoMute(repoKey: string, forceMute?: boolean): { isMuted: boolean; mutedRepos: string[] } {
-    const current = this.isRepoMuted(repoKey);
-    const shouldMute = forceMute !== undefined ? forceMute : !current;
-    if (shouldMute) {
-      this.muteRepo(repoKey);
+  public toggleRepoPause(repoKey: string, forcePause?: boolean): { isPaused: boolean; pausedRepos: string[] } {
+    const current = this.isRepoPaused(repoKey);
+    const shouldPause = forcePause !== undefined ? forcePause : !current;
+    if (shouldPause) {
+      this.pauseRepo(repoKey);
     } else {
-      this.unmuteRepo(repoKey);
+      this.unpauseRepo(repoKey);
     }
     return {
-      isMuted: shouldMute,
-      mutedRepos: Array.from(this.mutedRepos),
+      isPaused: shouldPause,
+      pausedRepos: Array.from(this.pausedRepos),
     };
   }
 
-  public getMutedRepos(): string[] {
-    return Array.from(this.mutedRepos);
+  public getPausedRepos(): string[] {
+    return Array.from(this.pausedRepos);
+  }
+
+  /** True when `repo` is barred from autonomous dispatch entirely (#1282). */
+  public isRepoKanbanOnly(repoKey: string): boolean {
+    if (!repoKey) return false;
+    for (const m of this.kanbanOnlyRepos) {
+      if (m === repoKey || this.isRepoPausedMatch(m, repoKey)) return true;
+    }
+    return false;
+  }
+
+  /**
+   * True when a repository cannot drain or auto-dispatch work (#1282): either
+   * paused (queue buffered) or kanban-only (automation barred entirely).
+   */
+  public isRepoDispatchSuppressed(repoKey: string): boolean {
+    return this.isRepoPaused(repoKey) || this.isRepoKanbanOnly(repoKey);
+  }
+
+  public getKanbanOnlyRepos(): string[] {
+    return Array.from(this.kanbanOnlyRepos);
+  }
+
+  /**
+   * Resolves a repository's automation tier (#1282). `kanban-only` beats
+   * `paused` because it is the stricter bar; an unconfigured repo keeps
+   * dispatching as `full-active` so a new repo never silently goes passive.
+   */
+  public getRepoAutomationTier(repoKey: string): AutomationTier {
+    if (this.isRepoKanbanOnly(repoKey)) return "kanban-only";
+    if (this.isRepoPaused(repoKey)) return "paused";
+    return "full-active";
+  }
+
+  /**
+   * Applies an explicit automation tier to one repository (#1282). The repo is
+   * removed from both restriction sets first so the tier is authoritative
+   * rather than additive, then persisted to plugin settings.
+   */
+  public toggleRepoAutomationTier(
+    repoKey: string,
+    tier: AutomationTier,
+  ): {
+    tier: AutomationTier;
+    isPaused: boolean;
+    isKanbanOnly: boolean;
+    pausedRepos: string[];
+    kanbanOnlyRepos: string[];
+  } {
+    const repo = String(repoKey ?? "").trim();
+    if (repo) {
+      const removeFrom = (set: Set<string>) => {
+        for (const m of Array.from(set)) {
+          if (m === repo || this.isRepoPausedMatch(m, repo)) set.delete(m);
+        }
+      };
+      removeFrom(this.pausedRepos);
+      removeFrom(this.kanbanOnlyRepos);
+      if (tier === "paused") this.pausedRepos.add(repo);
+      else if (tier === "kanban-only") this.kanbanOnlyRepos.add(repo);
+      this.saveConfigState();
+      this.log(`[info] Repository ${repo} automation tier set to ${tier}`);
+      if (this.getRepoAutomationTier(repo) === "full-active") void this.drain(repo);
+    }
+    const resolved = this.getRepoAutomationTier(repo);
+    return {
+      tier: resolved,
+      isPaused: resolved === "paused",
+      isKanbanOnly: resolved === "kanban-only",
+      pausedRepos: this.getPausedRepos(),
+      kanbanOnlyRepos: this.getKanbanOnlyRepos(),
+    };
   }
 
   public enrollRepo(repoKey: string): string[] {
@@ -3112,9 +6034,23 @@ export class HookRouter {
   }
 
   public unenrollRepo(repoKey: string): string[] {
+    const purgeQueue = (key: string) => {
+      for (const cand of candidateRepoKeys(key)) {
+        this.clearQueue(cand);
+      }
+    };
     for (const enrolled of Array.from(this.enrolledRepos)) {
       if (enrolled === repoKey || isRepoMatching(enrolled, repoKey)) {
         this.enrolledRepos.delete(enrolled);
+        this.deleteOrchestrator(enrolled, { source: "unenroll", reason: "repo unenrolled", actor: "unenrollRepo" });
+        purgeQueue(enrolled);
+      }
+    }
+    this.deleteOrchestrator(repoKey, { source: "unenroll", reason: "repo unenrolled", actor: "unenrollRepo" });
+    purgeQueue(repoKey);
+    for (const key of Array.from(this.queues.keys())) {
+      if (key === repoKey || isRepoMatching(key, repoKey)) {
+        this.clearQueue(key);
       }
     }
     this.saveConfigState();
@@ -3122,35 +6058,14 @@ export class HookRouter {
   }
 
 
+  /**
+   * Declared enrollment only. Runtime artifacts (queues, orchestrator state
+   * records) are surfaced through {@link getQueuesOverview} and
+   * {@link listOrchestratorRecords} instead of being folded into the allowlist,
+   * so an UNENROLL in settings.json is authoritative (#1165, #1154).
+   */
   public getEnrolledRepos(): string[] {
-    const set = new Set<string>(this.enrolledRepos);
-    try {
-      if (existsSync(this.stateDir)) {
-        const files = readdirSync(this.stateDir);
-        for (const file of files) {
-          if (!file.endsWith(".json") || file === "frontdesk.json") continue;
-          try {
-            const raw = readFileSync(join(this.stateDir, file), "utf8");
-            const parsed = JSON.parse(raw);
-            if (parsed && typeof parsed.key === "string" && parsed.key.trim()) {
-              set.add(parsed.key.trim());
-            }
-          } catch (err) {
-            this.log(`[warn] state read/parse failed (hook-router.ts:2259): ${err}`);
-          }
-        }
-      }
-    } catch (err) {
-      this.log(`[warn] state read/parse failed (hook-router.ts:2262): ${err}`);
-    }
-
-    for (const key of this.queues.keys()) {
-      if (key !== "frontdesk") {
-        set.add(key);
-      }
-    }
-
-    return Array.from(set);
+    return Array.from(this.enrolledRepos);
   }
 
   /** Enrolled repository keys in canonical `host/owner/repo` form (#911). */
@@ -3187,26 +6102,43 @@ export class HookRouter {
     repo: string,
     opts: { reason?: string; agentMap?: Map<string, WatchdogAgent> | null } = {},
   ): Promise<EnsureOrchestratorResult | null> {
+    if (this.isHaltedState) return null;
     const canonical = canonicalRepoKey(repo) ?? String(repo ?? "").trim();
     if (!canonical) return null;
-    if (this.isRepoMuted(canonical) || this.isPaused(canonical)) return null;
+    if (this.isRepoDispatchSuppressed(canonical) || this.isPaused(canonical)) return null;
     if (!this.isEnrolledRepo(canonical)) return null;
 
-    try {
-      const active = await this.getActiveOrchestrator(canonical, opts.agentMap);
-      if (active) return null;
-    } catch {
-      // Liveness unknown: skip rather than spawn a duplicate.
-      return null;
-    }
+    // #987: coalesce overlapping auto-ensure calls per repo. Without this, two
+    // passes that each observe "no active orchestrator" both provision one and
+    // the registry flips between duplicates. The in-flight entry is installed
+    // synchronously, before the first await yields.
+    const inFlight = this.inFlightUnstaffed.get(canonical);
+    if (inFlight) return await inFlight;
 
-    this.log(
-      `[info] Auto-ensure: unstaffed enrolled repo ${canonical}${opts.reason ? ` (${opts.reason})` : ""}; provisioning orchestrator`,
-    );
-    return await this.ensureOrchestrator({ repo: canonical });
+    const promise = (async (): Promise<EnsureOrchestratorResult | null> => {
+      try {
+        const active = await this.getActiveOrchestrator(canonical, opts.agentMap);
+        if (active) return null;
+      } catch {
+        // Liveness unknown: skip rather than spawn a duplicate.
+        return null;
+      }
+
+      this.log(
+        `[info] Auto-ensure: unstaffed enrolled repo ${canonical}${opts.reason ? ` (${opts.reason})` : ""}; provisioning orchestrator`,
+      );
+      return await this.ensureOrchestrator({ repo: canonical });
+    })();
+
+    this.inFlightUnstaffed.set(canonical, promise);
+    try {
+      return await promise;
+    } finally {
+      this.inFlightUnstaffed.delete(canonical);
+    }
   }
 
-  private isRepoMutedMatch(a: string, b: string): boolean {
+  private isRepoPausedMatch(a: string, b: string): boolean {
     if (a.toLowerCase() === b.toLowerCase()) return true;
     const cleanA = a.toLowerCase().replace(/^https?:\/\//, "").replace(/\.git$/, "");
     const cleanB = b.toLowerCase().replace(/^https?:\/\//, "").replace(/\.git$/, "");
@@ -3215,8 +6147,11 @@ export class HookRouter {
 
   private saveConfigState(): void {
     saveRouterConfig({
-      mutedRepos: Array.from(this.mutedRepos),
+      pausedRepos: Array.from(this.pausedRepos),
+      kanbanOnlyRepos: Array.from(this.kanbanOnlyRepos),
       enrolledRepos: Array.from(this.enrolledRepos),
+      mode: this._mode,
+      eventClassPolicy: this._eventClassPolicy,
     });
   }
 
@@ -3294,17 +6229,50 @@ export class HookRouter {
     appendHookLog(message);
   }
 
-  private getPaseo(): PaseoApi | null {
+  public setActivePaseo(paseo: PaseoApi | null): void {
+    this.activePaseo = paseo;
+  }
+
+  public static setActivePaseo(paseo: PaseoApi | null): void {
+    setActivePaseo(paseo);
+  }
+
+  public getPaseo(): PaseoApi | null {
     return this.activePaseo ?? (this.server as any)?.paseo ?? null;
   }
 
-  public readFrontDesk(): FrontDeskRecord | null {
+  /**
+   * Every path a `frontdesk.json` may live at, writer targets first. `writeFrontDesk`
+   * writes `dirname(stateDir)/frontdesk.json`, while `writePersistedFrontDesk`
+   * (agents.ts) uses the persisted hook state dir, which can differ from this
+   * router's dirs in another process. Reading both keeps a written file visible (#1068).
+   */
+  private frontDeskCandidatePaths(): string[] {
     const parentDir = dirname(this.stateDir);
-    const candidates = [
-      join(this.stateDir, "frontdesk.json"),
-      join(parentDir, "frontdesk.json"),
-      join(this.queueDir, "frontdesk.json"),
+    const custom = process.env.HOOK_STATE_DIR;
+    const persistedDir =
+      custom && custom.trim().length > 0
+        ? custom.trim()
+        : process.env.NODE_ENV === "test"
+          ? join(os.tmpdir(), `paseo-uppidi-fleet-state-${process.pid}`)
+          : join(process.env.HOME ?? os.homedir(), ".paseo", "forgejo-hook");
+    const preferred = custom && custom.trim().length > 0 ? [join(persistedDir, "frontdesk.json")] : [join(parentDir, "frontdesk.json")];
+    return [
+      ...new Set([
+        ...preferred,
+        join(persistedDir, "frontdesk.json"),
+        join(parentDir, "frontdesk.json"),
+        join(this.stateDir, "frontdesk.json"),
+        join(this.queueDir, "frontdesk.json"),
+        join(persistedDir, "frontdesk.json"),
+        join(persistedDir, "orchestrators", "frontdesk.json"),
+        join(dirname(persistedDir), "frontdesk.json"),
+      ]),
     ];
+  }
+
+  public readFrontDesk(): FrontDeskRecord | null {
+    const candidates = this.frontDeskCandidatePaths();
 
     for (const path of candidates) {
       if (existsSync(path)) {
@@ -3348,6 +6316,8 @@ export class HookRouter {
               stale: Boolean(parsed.stale),
               staleSince: parsed.staleSince ?? null,
               staleReason: parsed.staleReason ?? null,
+              closedSweeps: typeof parsed.closedSweeps === "number" ? parsed.closedSweeps : 0,
+              firstClosedAt: parsed.firstClosedAt ?? null,
             };
           }
         } catch {
@@ -3401,29 +6371,57 @@ export class HookRouter {
   public writeFrontDesk(agentId: string, by = "frontdesk"): void {
     const parentDir = dirname(this.stateDir);
     mkdirSync(parentDir, { recursive: true });
-    const target = join(parentDir, "frontdesk.json");
     const record: FrontDeskRecord = {
       version: 1,
       agentId,
       updatedAt: new Date().toISOString(),
       by,
     };
-    const tmp = `${target}.${process.pid}.${Date.now()}.tmp`;
-    writeFileSync(tmp, JSON.stringify(record, null, 2), "utf8");
-    renameSync(tmp, target);
+    const targets = new Set<string>([join(parentDir, "frontdesk.json")]);
+    if (process.env.HOOK_STATE_DIR?.trim()) {
+      targets.add(join(process.env.HOOK_STATE_DIR.trim(), "frontdesk.json"));
+    }
+    for (const target of targets) {
+      mkdirSync(dirname(target), { recursive: true });
+      const tmp = `${target}.${process.pid}.${Date.now()}.tmp`;
+      writeFileSync(tmp, JSON.stringify(record, null, 2), "utf8");
+      renameSync(tmp, target);
+    }
   }
 
   public async deliverMessage(
     targetAgentId: string,
     msg: string,
-    options?: { noWait?: boolean; steer?: boolean },
+    options?: DeliverOptions,
   ): Promise<boolean> {
     const paseo = this.getPaseo();
     const shouldSteer = options?.steer ?? false;
+    // Fleet provenance rides on `attachments`; extract any legacy in-band
+    // comment so the SDK send carries the body as `text` (#1003).
+    const extracted = extractFleetEnvelopeAttachments(msg);
+    let attachments = [...(options?.attachments ?? []), ...extracted.attachments];
+    // When multiple envelopes are present (e.g. a batch delivery), consolidate
+    // them into a single outer envelope so the prompt carries exactly one
+    // provenance signal per fleet design (#283 / #1326).
+    if (attachments.length > 1) {
+      attachments = [consolidateFleetEnvelopeAttachments(attachments)];
+    }
     if (paseo?.agents?.ref) {
       try {
         const agentRef = paseo.agents.ref(targetAgentId);
-        await agentRef.send(msg, { steer: shouldSteer } as any);
+        // The public handle type has lagged the protocol; type the payload
+        // structurally so the SDK-only key stays visible and the old dead
+        // `steer` key cannot slip through as `any`.
+        type AgentSendOptions = NonNullable<Parameters<typeof agentRef.send>[1]> & {
+          activeTurnBehavior: "interrupt" | "steer";
+        };
+        const sendOptions: AgentSendOptions = {
+          activeTurnBehavior: shouldSteer ? "steer" : "interrupt",
+        };
+        if (attachments.length > 0) {
+          sendOptions.attachments = attachments;
+        }
+        await agentRef.send(extracted.text, sendOptions);
         return true;
       } catch (err) {
         this.log(`[warn] SDK send failed for ${targetAgentId}, falling back to CLI: ${err instanceof Error ? err.message : String(err)}`);
@@ -3435,14 +6433,49 @@ export class HookRouter {
       if (options?.noWait !== false) {
         args.push("--no-wait");
       }
-      if (shouldSteer) {
-        args.push("--steer");
-      }
-      args.push(targetAgentId, msg);
-      await execFileAsync("paseo", args, { timeout: options?.noWait ? 5000 : 15000 });
+      // The CLI has no attachment channel; re-inline the envelope so the
+      // fallback path still carries provenance to the model (legacy grammar).
+      const cliMsg =
+        attachments.length > 0 ? inlineFleetEnvelopeAttachments(extracted.text, attachments) : msg;
+      args.push(targetAgentId, cliMsg);
+      await execFileAsync("paseo", args, { timeout: 30000 });
       return true;
     } catch (err) {
-      this.log(`[error] CLI send failed for ${targetAgentId}: ${err instanceof Error ? err.message : String(err)}`);
+      const details = [
+        err instanceof Error ? err.message : String(err),
+        (err as any)?.code ? `code=${(err as any).code}` : '',
+        (err as any)?.stderr ? `stderr=${String((err as any).stderr).trim()}` : '',
+      ].filter(Boolean).join(' | ');
+      this.log(`[error] CLI send failed for ${targetAgentId}: ${details}`);
+      return false;
+    }
+  }
+
+  /**
+   * Stand-down steer for a demoted Front Desk or orchestrator (#283/#985).
+   * Fire-and-forget: a failed steer must never fail the promotion it follows.
+   */
+  public async deliverStandDown(
+    agentId: string,
+    kind: "frontdesk" | "orchestrator",
+    key: string,
+    newAgentId: string,
+  ): Promise<boolean> {
+    const head =
+      kind === "frontdesk"
+        ? "You are no longer Front Desk"
+        : `You are no longer the orchestrator of ${key}`;
+    const body =
+      `${head}; registry authority is now ${newAgentId}. ` +
+      "Stand down: stop sweeping, stop dispatching workers, stop adjudicating permissions for this repo.";
+    const repo = kind === "frontdesk" ? FRONT_DESK_REPO : key;
+    const message = withFleetEnvelope(routerEnvelope({ repo, kind: "handoff" }), body);
+    try {
+      const ok = await this.deliverMessage(agentId, message, { noWait: true, steer: true });
+      if (!ok) throw new Error("paseo send failed (stand-down steer)");
+      return true;
+    } catch (err) {
+      this.log(`[warn] stand-down steer failed for ${agentId.slice(0, 7)} (${key}): ${err instanceof Error ? err.message : String(err)}`);
       return false;
     }
   }
@@ -3517,24 +6550,126 @@ export class HookRouter {
     return false;
   }
 
+  // -------------------------------------------------------------------------
+  // Fleet dormancy and quiescence recognition (#1181)
+  //
+  // The fleet is dormant when there is nothing to do: no queued messages, no
+  // enrolled queue left unstaffed, and no live agent mid-turn. A dormant fleet
+  // enters quiescent mode and stops reacting to passive webhook noise on rigid
+  // intervals; only an actionable wakeup leaves it.
+  // -------------------------------------------------------------------------
+
+  /**
+   * True when the fleet is fully dormant: empty queues, no unstaffed enrolled
+   * queue, and no live running turn. A null/absent roster cannot prove a turn is
+   * running, so it counts as no live turns -- the conservative direction for not
+   * waking. A halted router is never "dormant" (it is deliberately offline).
+   */
+  public isDormant(agentMap?: Map<string, WatchdogAgent> | null): boolean {
+    if (this.isHaltedState) return false;
+    if (this.getTotalQueued() !== 0) return false;
+    if (this.countUnstaffedEnrolledQueues() > 0) return false;
+    if (this.hasLiveRunningTurns(agentMap)) return false;
+    return true;
+  }
+
+  /** Enrolled repos with a queued backlog but no registered orchestrator (#1181). */
+  public countUnstaffedEnrolledQueues(): number {
+    let count = 0;
+    for (const repo of this.getEnrolledRepos()) {
+      const depth = candidateRepoKeys(repo).reduce(
+        (n, key) => n + (this.queues.get(key)?.length ?? 0),
+        0,
+      );
+      if (depth === 0) continue;
+      if (!this.readOrchestrator(repo)?.agentId) count += 1;
+    }
+    return count;
+  }
+
+  /** True when any live agent reports a running/active turn (#1181). */
+  public hasLiveRunningTurns(agentMap?: Map<string, WatchdogAgent> | null): boolean {
+    const map = agentMap ?? this.latestAgentMap;
+    if (!map) return false;
+    for (const agent of map.values()) {
+      const status = String(agent?.status ?? "").toLowerCase();
+      if (
+        status === "running" ||
+        status === "working" ||
+        status === "busy" ||
+        Boolean(agent?.activeTurn)
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Recompute dormancy and transition quiescent mode on change. Returns the
+   * current quiescent state. Called from the board sweep, and available to any
+   * other periodic observer holding a fresh roster.
+   */
+  public refreshDormancy(agentMap?: Map<string, WatchdogAgent> | null): boolean {
+    const dormant = this.isDormant(agentMap);
+    if (dormant !== this.quiescent) {
+      this.quiescent = dormant;
+      this.lastQuiescenceChangeAt = Date.now();
+      this.log(
+        dormant
+          ? "[info] Fleet dormant (empty queues, no live turns); entering quiescent mode (#1181)"
+          : "[info] Fleet activity detected; exiting quiescent mode (#1181)",
+      );
+    }
+    return this.quiescent;
+  }
+
+  /** Current quiescent mode (#1181). */
+  public get isQuiescent(): boolean {
+    return this.quiescent;
+  }
+
+  /**
+   * Leave quiescent mode immediately for an actionable wakeup, so the very next
+   * delivery is dispatched rather than suppressed (#1181).
+   */
+  public exitQuiescence(reason = "actionable wakeup"): void {
+    if (!this.quiescent) return;
+    this.quiescent = false;
+    this.lastQuiescenceChangeAt = Date.now();
+    this.log(`[info] Fleet exited quiescence on ${reason}; active dispatch restored (#1181)`);
+  }
+
   private deliverWatchdogAlert(
     frontDeskId: string,
     alert: string,
     opts: {
-      deliverFn: (id: string, msg: string, o?: any) => Promise<boolean> | void;
+      deliverFn: (id: string, msg: string, o?: DeliverOptions) => Promise<boolean> | void;
       agentMap?: Map<string, WatchdogAgent> | null;
       isSos?: boolean;
+      /** Repo context for the fleet envelope; defaults to the fleet-wide pseudo repo. */
+      repo?: string;
     },
   ): void {
     const isSos = Boolean(opts.isSos);
+    const message = withFleetEnvelope(watchdogEnvelope({ repo: opts.repo ?? FLEET_REPO }), alert);
     const isBusy = !isSos && this.isAgentBusy(frontDeskId, opts.agentMap);
     if (isBusy) {
+      // Prevent recursive wedge self-alerts: when the frontdesk queue itself
+      // is wedged (#1329), do not re-enqueue back into it — that would create
+      // an infinite drain loop and a 15 s execFile timeout on every tick.
+      if (this.busyQueues.has("frontdesk")) {
+        this.log(
+          `[warn] Front Desk ${frontDeskId} queue is wedged; dropping watchdog alert to avoid recursive self-alert (#1329)`,
+        );
+        return;
+      }
       this.log(`[info] Front Desk ${frontDeskId} is busy; queueing watchdog alert instead of interrupting active turn`);
-      this.enqueue("frontdesk", alert, false);
+      this.enqueue("frontdesk", message, false);
       return;
     }
     this.lastDeliveryTimes.set(frontDeskId, Date.now());
-    void opts.deliverFn(frontDeskId, alert, { noWait: true, steer: isSos });
+    void opts.deliverFn(frontDeskId, message, { noWait: true, steer: isSos });
   }
 
   public async updateAgentMetadata(
@@ -3690,54 +6825,175 @@ export class HookRouter {
     }
   }
 
+  /** Archive a dead session so it stops accumulating in `paseo ls` (#973). */
+  public async archiveAgent(agentId: string): Promise<boolean> {
+    const id = String(agentId ?? "").trim();
+    if (!id) return false;
+
+    if (typeof this.options?.archiveAgent === "function") {
+      try {
+        return await this.options.archiveAgent(id);
+      } catch (err) {
+        this.log(
+          `[warn] Custom archiveAgent failed for ${id}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+        return false;
+      }
+    }
+
+    const paseo = this.getPaseo();
+    if (paseo?.agents) {
+      try {
+        const ref = typeof paseo.agents.ref === "function" ? paseo.agents.ref(id) : null;
+        if (typeof (ref as any)?.archive === "function") {
+          await (ref as any).archive();
+          return true;
+        } else if (typeof (paseo.agents as any)?.archive === "function") {
+          await (paseo.agents as any).archive(id);
+          return true;
+        }
+      } catch (err) {
+        this.log(
+          `[warn] SDK archiveAgent failed for ${id}, falling back to CLI: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
+
+    if (!this.options?.allowCliSpawn && (this.isTestMode || process.env.NODE_ENV === "test")) {
+      return false;
+    }
+
+    try {
+      await execFileAsync("paseo", ["archive", id], { timeout: 10000 });
+      return true;
+    } catch (err) {
+      this.log(
+        `[warn] CLI agent archive failed for ${id}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return false;
+    }
+  }
+
   public async getActiveOrchestrator(
     repo: string,
     cachedAgentMap?: Map<string, WatchdogAgent> | null,
   ): Promise<{ agentId: string; record: OrchestratorRecord } | null> {
     const existing = this.readOrchestrator(repo);
-    if (!existing?.agentId) return null;
+    const hadCachedMap = cachedAgentMap !== undefined;
 
-    let isAlive = false;
-    try {
-      const agentMap =
-        cachedAgentMap !== undefined ? cachedAgentMap : await this.fetchAgentMap();
-      if (agentMap) {
-        const agent = agentMap.get(existing.agentId);
-        if (
-          agent &&
-          agent.status !== "closed" &&
-          agent.status !== "archived" &&
-          agent.status !== "terminated" &&
-          agent.status !== "error"
-        ) {
-          isAlive = true;
-        }
-      } else {
-        const activeIds = await this.getActiveAgentIds();
-        if (activeIds.has(existing.agentId)) {
-          isAlive = true;
+    let agentMap: Map<string, WatchdogAgent> | null | undefined = cachedAgentMap;
+    if (agentMap === undefined) {
+      try {
+        agentMap = await this.fetchAgentMap();
+      } catch {
+        agentMap = null;
+      }
+    }
+
+    const adoptAndDeduplicate = async (
+      matches: WatchdogAgent[],
+    ): Promise<{ agentId: string; record: OrchestratorRecord }> => {
+      const authoritative = matches[0];
+      const extras = matches.slice(1);
+      for (const extra of extras) {
+        try {
+          await this.archiveAgent(extra.id);
+          this.log(`[info] Deduplication: archived extra orchestrator ${extra.id} for ${repo}`);
+        } catch (err) {
+          this.log(
+            `[warn] Failed to archive duplicate orchestrator ${extra.id}: ${err instanceof Error ? err.message : String(err)}`,
+          );
         }
       }
+      if (!existing?.agentId || existing.agentId !== authoritative.id) {
+        this.writeOrchestrator(
+          repo,
+          authoritative.id,
+          existing?.agentId ? "authoritative" : "recovered",
+        );
+        this.log(
+          `[info] ${existing?.agentId ? "Updated authoritative" : "Recovered lost"} orchestrator registration for ${repo}: ${authoritative.id}`,
+        );
+      }
+      const record = this.readOrchestrator(repo);
+      return {
+        agentId: authoritative.id,
+        record: record ?? { key: repo, agentId: authoritative.id },
+      };
+    };
+
+    let repoWorkspaceCwd: string | null = null;
+    try {
+      repoWorkspaceCwd = (await this.resolveWorkspaceCanonical(repo))?.cwd ?? null;
     } catch {
-      // ignore error in liveness check
+      repoWorkspaceCwd = null;
     }
 
-    if (isAlive) {
-      return { agentId: existing.agentId, record: existing };
+    if (agentMap) {
+      const matching = findLiveOrchestratorAgents(repo, agentMap, existing?.agentId, repoWorkspaceCwd);
+      if (matching.length > 0) {
+        return await adoptAndDeduplicate(matching);
+      }
     }
+
+    // #987: a cached snapshot can be stale. When a registration exists but the
+    // snapshot omits it, or no match was found in the cache, refresh once from
+    // the daemon before concluding the repo is unstaffed.
+    if (hadCachedMap) {
+      let fresh: Map<string, WatchdogAgent> | null = null;
+      try {
+        fresh = await this.fetchAgentMap();
+      } catch {
+        fresh = null;
+      }
+      if (fresh) {
+        agentMap = fresh;
+        const matching = findLiveOrchestratorAgents(repo, agentMap, existing?.agentId, repoWorkspaceCwd);
+        if (matching.length > 0) {
+          return await adoptAndDeduplicate(matching);
+        }
+      }
+    }
+
+    // No roster could be read at all: fall back to the id-only live list.
+    if (!agentMap && existing?.agentId) {
+      try {
+        const activeIds = await this.getActiveAgentIds();
+        if (activeIds.has(existing.agentId)) {
+          return { agentId: existing.agentId, record: existing };
+        }
+      } catch {
+        // ignore error in liveness check
+      }
+    }
+
     return null;
   }
 
-  public resolveWorkspace(repo: string): ResolvedWorkspace | null {
-    return resolveWorkspaceForRepo(repo, {
+  private workspaceLookupOptions(): WorkspaceLookupOptions {
+    return {
       workspacesData: this.options?.workspacesData,
       projectsData: this.options?.projectsData,
-      workspacesPath: this.options?.workspacesPath,
-      projectsPath: this.options?.projectsPath,
-      paseoDir:
-        this.options?.paseoDir ||
-        (this.isTestMode ? join(os.tmpdir(), `paseo-test-isolated-${process.pid}`) : undefined),
-    });
+    };
+  }
+
+  public resolveWorkspace(repo: string): ResolvedWorkspace | null {
+    return resolveWorkspaceForRepo(repo, this.workspaceLookupOptions());
+  }
+
+  /**
+   * Canonical resolver used by daemon-aware async paths: injected records first
+   * (tests), then the daemon RPC (`workspaces.list` / `workspaces.open`).
+   */
+  private async resolveWorkspaceCanonical(repo: string): Promise<ResolvedWorkspace | null> {
+    const injected = this.resolveWorkspace(repo);
+    if (injected) return injected;
+    const paseo = this.getPaseo();
+    if (typeof paseo?.workspaces?.list === "function") {
+      const canonical = await resolveWorkspaceForRepoViaDaemon(repo, paseo);
+      if (canonical) return canonical;
+    }
+    return null;
   }
 
   private async getProviderModeInfo(provider: string): Promise<ProviderModeInfo | null> {
@@ -3848,9 +7104,115 @@ export class HookRouter {
     }
   }
 
+  /**
+   * The set of provider ids the host reports as enabled, or null when the
+   * question cannot be answered (test, CLI unavailable). A null result disables
+   * availability filtering so an unknown host never blocks a spawn (#973).
+   */
+  private async getAvailableProviderSet(): Promise<Set<string> | null> {
+    if (Array.isArray(this.options?.availableProvidersData)) {
+      return new Set(this.options.availableProvidersData);
+    }
+    if (this.isTestMode || process.env.NODE_ENV === "test") {
+      return null;
+    }
+    try {
+      return new Set(await listEnabledProviders());
+    } catch (err) {
+      this.log(
+        `[warn] provider availability lookup failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Best-effort board notification for total chain exhaustion (#1011): comment
+   * on the repo's open fleet-alert issue, or open one. Any failure is logged
+   * and never blocks the spawn failure from propagating.
+   */
+  private async postModelExhaustionBoardComment(
+    repo: string,
+    alert: FleetModelAlert,
+  ): Promise<void> {
+    const compact = resolveCanonicalRepo(repo)?.compact;
+    if (!compact) {
+      this.log(`[warn] model alert: cannot resolve ${repo} to owner/repo for board notification`);
+      return;
+    }
+    const host = resolveForgejoHost();
+    const token = await this.resolveApiToken(host);
+    const body = formatModelExhaustionAlertBody(alert);
+
+    const existing = await forgejoApiGet<Array<{ number: number; title: string }>>(
+      `/api/v1/repos/${compact}/issues?state=open&limit=50`,
+      { host, token },
+    );
+    const open = existing.outcome === "ok" ? existing.data ?? [] : [];
+    const match = open.find((issue) => issue.title === MODEL_EXHAUSTION_ALERT_TITLE);
+    if (match) {
+      const comment = await forgejoApiRequest<any>(
+        "POST",
+        `/api/v1/repos/${compact}/issues/${match.number}/comments`,
+        { body },
+        { host, token },
+      );
+      if (comment.outcome !== "ok") {
+        this.log(`[warn] model alert: comment on ${compact}#${match.number} failed: ${comment.error}`);
+      }
+      return;
+    }
+    const created = await forgejoApiRequest<any>(
+      "POST",
+      `/api/v1/repos/${compact}/issues`,
+      { title: MODEL_EXHAUSTION_ALERT_TITLE, body, labels: [...MODEL_EXHAUSTION_ALERT_LABELS] },
+      { host, token },
+    );
+    if (created.outcome !== "ok") {
+      this.log(`[warn] model alert: issue create in ${compact} failed: ${created.error}`);
+    }
+  }
+
+  /**
+   * Persist the model-exhaustion banner and post the board alert (#1011). The
+   * spawn path calls this instead of falling back to a hidden default.
+   */
+  public async raiseModelExhaustionAlert(
+    repo: string,
+    resolution: ResolvedOrchestratorModel,
+  ): Promise<FleetModelAlert> {
+    const key = canonicalRepoKey(repo) ?? repo;
+    const alert: FleetModelAlert = {
+      repo: key,
+      role: "orchestrator",
+      message: resolution.error ?? `No orchestrator model is satisfiable for ${key}`,
+      configuredChain: resolution.configuredChain ?? [],
+      dropped: resolution.dropped ?? [],
+      availableProviders: resolution.availableProviders ?? null,
+      createdAt: new Date().toISOString(),
+    };
+    recordModelAlert(alert, this.options?.modelAlertsPath ?? defaultModelAlertsPath());
+    this.log(`[error] model exhaustion for ${key}: ${alert.message}`);
+    try {
+      if (this.options?.postModelExhaustionAlert) {
+        await this.options.postModelExhaustionAlert(key, alert);
+      } else if (!this.isTestMode) {
+        await this.postModelExhaustionBoardComment(key, alert);
+      }
+    } catch (err) {
+      this.log(
+        `[warn] model alert: board notification failed for ${key}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    return alert;
+  }
+
   public async ensureOrchestrator(
     input: EnsureOrchestratorInput,
   ): Promise<EnsureOrchestratorResult> {
+    if (this.isHaltedState) {
+      return { ok: false, error: "Hook router is halted; orchestrator provisioning is disabled", errorCode: "spawn_failed" };
+    }
     const rawRepo = input?.repo;
     if (!rawRepo || typeof rawRepo !== "string" || !rawRepo.trim()) {
       return { ok: false, error: "repo is required" };
@@ -3858,8 +7220,9 @@ export class HookRouter {
     const repo = rawRepo.trim();
     const canonicalKey = canonicalRepoKey(repo) ?? repo;
 
-    // 1. Existing live agent check (idempotency)
-    if (!input.force) {
+    // 1. Existing live agent check (idempotency). Rotation skips adoption so a
+    // replacement can be spawned while the incumbent is still registered.
+    if (!input.force && !input.rotation) {
       const active = await this.getActiveOrchestrator(repo);
       if (active) {
         this.log(`[info] Active orchestrator already exists for ${repo}: ${active.agentId}`);
@@ -3896,32 +7259,62 @@ export class HookRouter {
   ): Promise<EnsureOrchestratorResult> {
     const canonicalKey = canonicalRepoKey(repo) ?? repo;
 
-    // A. Resolve workspace deterministically
-    const resolved = this.resolveWorkspace(repo);
+    // A. Resolve workspace canonically: daemon RPC is the sole authority.
+    let resolved: ResolvedWorkspace | null = null;
+    try {
+      resolved = await this.resolveWorkspaceCanonical(repo);
+    } catch (err) {
+      const error = err instanceof Error ? err.message : String(err);
+      this.log(`[warn] ${error}`);
+      return { ok: false, errorCode: "workspace_not_found", error, repo };
+    }
     if (!resolved || (!resolved.cwd && !resolved.workspaceId)) {
-      this.log(`[warn] No workspace found for repository "${repo}"`);
+      const error =
+        `No workspace found for repository "${repo}". Remediation: open/register the repository in Paseo ` +
+        `(e.g. \`paseo workspace open --cwd <repo_dir>\`), then retry.`;
+      this.log(`[warn] ${error}`);
       return {
         ok: false,
-        error: `No workspace found for repository "${repo}"`,
+        errorCode: "workspace_not_found",
+        error,
         repo,
       };
     }
 
     const circuitBreakerPath = this.options?.circuitBreakerPath ?? this.options?.modelHealthPath;
     const fallbackList = this.options?.orchestratorModelFallback ?? this.options?.modelFallbackList;
+    const availableProviders = await this.getAvailableProviderSet();
     const resolvedModel = resolveOrchestratorModel({
       requestedProvider: input.provider,
       requestedModel: input.model,
       fallbackList,
       circuitBreakerPath,
+      availableProviders,
     });
+    if (resolvedModel.exhausted) {
+      const alert = await this.raiseModelExhaustionAlert(repo, resolvedModel);
+      return {
+        ok: false,
+        errorCode: "model_exhausted",
+        error: resolvedModel.error ?? `No orchestrator model is satisfiable for ${repo}`,
+        repo,
+        droppedModels: resolvedModel.dropped ?? [],
+        modelAlert: alert,
+      };
+    }
+    if (resolvedModel.dropped && resolvedModel.dropped.length > 0) {
+      this.log(
+        `[warn] dropping dead orchestrator model entries for ${repo}: ` +
+          resolvedModel.dropped.map((d) => `${d.key} (${d.reason})`).join(", "),
+      );
+    }
     const targetProvider = resolvedModel.provider;
     const targetModel = resolvedModel.model || undefined;
     const requestedMode = input.mode?.trim() || "yolo";
     const providerModeInfo = await this.getProviderModeInfo(targetProvider);
     const targetMode = resolveProviderSpawnMode(providerModeInfo, requestedMode);
     const title = `Orchestrator · ${canonicalKey}`;
-    const prompt = `You are the project orchestrator for ${repo}. Follow the orchestrator skill at ${getEffectiveSkillPath("orchestrator")} to coordinate tasks, supervise worker agents, and manage pull requests and issues.`;
+    const prompt = `You are the project orchestrator for ${repo}. Coordinate tasks, supervise worker agents, and manage pull requests and issues.\n\n${renderSkillDirective("orchestrator")}`;
     const labels: Record<string, string> = {
       role: "orchestrator",
       category: "orchestrator",
@@ -3929,6 +7322,79 @@ export class HookRouter {
     };
 
     let agentId: string | null = null;
+    let autoAcceptApplied: boolean | undefined;
+    let autoAllow:
+      | { allowed: boolean; permissionId?: string; scope?: string; reason?: string }
+      | undefined;
+
+    // Pre-spawn check against latest live agent roster (#993)
+    let preSpawnAgentMap: Map<string, WatchdogAgent> | null = null;
+    try {
+      preSpawnAgentMap = await this.fetchAgentMap();
+    } catch {
+      preSpawnAgentMap = null;
+    }
+
+    if (preSpawnAgentMap && !input.rotation) {
+      const existing = this.readOrchestrator(repo);
+      const matchingLive = findLiveOrchestratorAgents(
+        repo,
+        preSpawnAgentMap,
+        existing?.agentId,
+        resolved?.cwd ?? null,
+      );
+      if (!input.force) {
+        if (matchingLive.length > 0) {
+          const authoritative = matchingLive[0];
+          const extras = matchingLive.slice(1);
+          for (const extra of extras) {
+            try {
+              await this.archiveAgent(extra.id);
+              this.log(`[info] Pre-spawn deduplication: archived extra orchestrator ${extra.id} for ${repo}`);
+            } catch (err) {
+              this.log(`[warn] Failed to archive duplicate orchestrator ${extra.id}: ${err instanceof Error ? err.message : String(err)}`);
+            }
+          }
+          this.writeOrchestrator(repo, authoritative.id, existing?.agentId ? "authoritative" : "recovered");
+          this.log(`[info] Pre-spawn check adopted live orchestrator for ${repo}: ${authoritative.id}`);
+          return {
+            ok: true,
+            agentId: authoritative.id,
+            status: "existing",
+            repo: canonicalKey,
+          };
+        }
+      } else {
+        // If force is set, archive all existing matching live orchestrators before spawning
+        for (const existingAgent of matchingLive) {
+          try {
+            await this.archiveAgent(existingAgent.id);
+            this.log(`[info] Force provision: archived existing orchestrator ${existingAgent.id} for ${repo}`);
+          } catch (err) {
+            this.log(`[warn] Failed to archive existing orchestrator ${existingAgent.id}: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
+      }
+    }
+
+    // ── Per-provider concurrency limit guard (#1198) ─────────────────────
+    const settings = getUppidiFleetSettingsStorage().read();
+    const limits = settings.providerConcurrencyLimits ?? {};
+    const configuredLimit = limits[targetProvider];
+    if (configuredLimit && configuredLimit > 0 && preSpawnAgentMap) {
+      const activeCounts = getActiveAgentCountByProvider(
+        Array.from(preSpawnAgentMap.values())
+      );
+      const activeForProvider = activeCounts[targetProvider] ?? 0;
+      if (activeForProvider >= configuredLimit) {
+        return {
+          ok: false,
+          errorCode: "provider_concurrency_limit",
+          error: `Concurrency limit (${configuredLimit}) reached for provider "${targetProvider}"`,
+          repo: canonicalKey,
+        };
+      }
+    }
 
     // Custom test / injection hook
     if (typeof this.options?.spawnAgent === "function") {
@@ -3945,9 +7411,11 @@ export class HookRouter {
         });
         agentId = spawned?.id ?? null;
       } catch (err: any) {
-        return { ok: false, error: err?.message ?? String(err), repo };
+        return { ok: false, errorCode: "spawn_failed", error: err?.message ?? String(err), repo };
       }
     } else {
+      let spawnedViaCli = false;
+
       // Try SDK first
       const sdkPaseo = this.getPaseo();
       if (sdkPaseo?.agents && typeof (sdkPaseo.agents as any).create === "function") {
@@ -3979,6 +7447,7 @@ export class HookRouter {
           }
           const created = await (sdkPaseo.agents as any).create(createPayload);
           agentId = created?.id ?? (typeof created === "string" ? created : null);
+          if (agentId) autoAcceptApplied = true;
         } catch (err) {
           this.log(
             `[warn] SDK agent creation failed for ${repo}, falling back to CLI: ${err instanceof Error ? err.message : String(err)}`,
@@ -3992,17 +7461,26 @@ export class HookRouter {
           this.log(`[warn] CLI agent spawning is disabled in test mode for repository "${repo}"`);
           return {
             ok: false,
+            errorCode: "cli_disabled",
             error: `CLI agent spawning is disabled in test mode for repository "${repo}"`,
             repo,
           };
         }
         try {
+          spawnedViaCli = true;
+          // `paseo run` exposes no auto-accept/feature flag (verified against
+          // `paseo run --help`), so the SDK create payload is the only true
+          // pre-grant surface. The CLI fallback pre-grants best-effort after
+          // spawn below by allowing one workspace-scoped pending permission
+          // (#974).
           const args = ["run", "-d", "--title", title];
           if (targetProvider) args.push("--provider", targetProvider);
           if (targetModel) args.push("--model", targetModel);
           if (targetMode) args.push("--mode", targetMode);
-          if (resolved.workspaceId) args.push("--workspace", resolved.workspaceId);
+          // `--cwd` is the canonical placement: it lets the daemon attach or
+          // create the ambient workspace and avoids stale `--workspace` ids.
           if (resolved.cwd) args.push("--cwd", resolved.cwd);
+          else if (resolved.workspaceId) args.push("--workspace", resolved.workspaceId);
           for (const [k, v] of Object.entries(labels)) {
             args.push("--label", `${k}=${v}`);
           }
@@ -4023,13 +7501,18 @@ export class HookRouter {
           }
         } catch (err: any) {
           this.log(`[error] CLI agent run failed for ${repo}: ${err?.message ?? String(err)}`);
-          return { ok: false, error: err?.message ?? String(err), repo };
+          return { ok: false, errorCode: "spawn_failed", error: err?.message ?? String(err), repo };
         }
+      }
+
+      if (spawnedViaCli && agentId) {
+        autoAcceptApplied = false;
+        autoAllow = await this.autoAllowOrchestratorScope(agentId, resolved.cwd);
       }
     }
 
     if (!agentId) {
-      return { ok: false, error: "Failed to spawn orchestrator agent", repo };
+      return { ok: false, errorCode: "spawn_failed", error: "Failed to spawn orchestrator agent", repo };
     }
 
     // Explicitly configure autonomous execution mode when the provider exposes one
@@ -4057,9 +7540,8 @@ export class HookRouter {
     if (targetMode) metadata.mode = targetMode;
     await this.updateAgentMetadata(agentId, title, metadata).catch(() => {});
 
-    // Register in authoritative registry & enrolled repos
+    // Register in authoritative registry
     this.writeOrchestrator(repo, agentId, "spawn");
-    this.enrollRepo(repo);
 
     // Drain pending queues for repository
     for (const cand of candidateRepoKeys(repo)) {
@@ -4067,8 +7549,12 @@ export class HookRouter {
     }
 
     this.log(
-      `[info] Orchestrator provisioned for ${repo}: ${agentId} (workspace=${resolved.workspaceId ?? resolved.cwd}, mode=${targetMode ?? "none"})`,
+      `[info] Orchestrator provisioned for ${repo}: ${agentId} (workspace=${resolved.workspaceId ?? resolved.cwd}, mode=${targetMode ?? "none"}, model=${resolvedModel.key})`,
     );
+
+    // A successful spawn on the configured chain clears any stale exhaustion
+    // banner for this repo (#1011).
+    clearModelAlert(repo, this.options?.modelAlertsPath ?? defaultModelAlertsPath());
 
     return {
       ok: true,
@@ -4077,7 +7563,44 @@ export class HookRouter {
       repo,
       workspaceId: resolved.workspaceId,
       cwd: resolved.cwd,
+      autoAcceptApplied,
+      autoAllow,
+      resolvedModelKey: resolvedModel.key,
+      droppedModels: resolvedModel.dropped ?? [],
     };
+  }
+
+  /**
+   * Best-effort workspace-scoped pre-grant for a CLI-spawned orchestrator (#974).
+   *
+   * `paseo run` exposes no auto-accept/feature flag, so the SDK create payload
+   * (`config.featureValues.auto_accept`) is the only true pre-grant surface. The
+   * CLI fallback can only allow the first pending permission whose scope falls
+   * under the workspace root, mirroring `spawnPaseoAgent`'s `allowPaths` grant.
+   * Tests stay hermetic: without an injected `spawnAutoAllow`, the grant is a
+   * no-op under test.
+   */
+  private async autoAllowOrchestratorScope(
+    agentId: string,
+    workspaceRoot: string | undefined,
+  ): Promise<{ allowed: boolean; permissionId?: string; scope?: string; reason?: string } | undefined> {
+    const scope = workspaceRoot?.trim();
+    if (!agentId || !scope) return undefined;
+
+    const isTest = this.isTestMode || process.env.NODE_ENV === "test";
+    const injected = this.options?.spawnAutoAllow;
+    if (!injected && isTest) return undefined;
+    try {
+      if (injected) return await injected(agentId, [scope]);
+      const { autoAllowScopedPermission } = await import("./agents.js");
+      const paseo = this.getPaseo();
+      return await autoAllowScopedPermission(agentId, [scope], paseo ? { paseo } : undefined);
+    } catch (err) {
+      this.log(
+        `[warn] scoped auto-allow failed for ${agentId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return { allowed: false, reason: "auto-allow failed" };
+    }
   }
 
   public async getActiveAgentIds(): Promise<Set<string>> {
@@ -4122,6 +7645,22 @@ export class HookRouter {
     return Array.from(ids);
   }
 
+  /**
+   * One delivery target per orchestrator agent. A single registration is
+   * persisted under every candidate key (bare + forge-qualified), so records
+   * must be collapsed by agent id before notifying.
+   */
+  private listOrchestratorTargets(): Array<{ agentId: string; key: string }> {
+    const seen = new Set<string>();
+    const targets: Array<{ agentId: string; key: string }> = [];
+    for (const record of this.listOrchestratorRecords()) {
+      if (seen.has(record.agentId)) continue;
+      seen.add(record.agentId);
+      targets.push({ agentId: record.agentId, key: record.key });
+    }
+    return targets;
+  }
+
   public listOrchestratorRecords(): OrchestratorRecord[] {
     const recordsMap = new Map<string, OrchestratorRecord>();
     try {
@@ -4144,6 +7683,8 @@ export class HookRouter {
                 stale: Boolean(parsed.stale),
                 staleSince: parsed.staleSince ?? null,
                 staleReason: parsed.staleReason ?? null,
+                closedSweeps: typeof parsed.closedSweeps === "number" ? parsed.closedSweeps : 0,
+                firstClosedAt: parsed.firstClosedAt ?? null,
               };
               const canonical = canonicalRepoKey(rec.key) ?? rec.key;
               const existing = recordsMap.get(canonical);
@@ -4162,16 +7703,92 @@ export class HookRouter {
     return Array.from(recordsMap.values()).sort((a, b) => a.key.localeCompare(b.key));
   }
 
-  public deleteOrchestrator(repoOrKey: string): { ok: boolean; key?: string; error?: string; path?: string } {
+  /**
+   * Durable JSONL log for destructive state mutations (#1077). Defaults to a
+   * sibling of the router state dir so it lives inside plugin storage and is
+   * isolated by the same temp dir in tests. Override with HOOK_STATE_AUDIT_LOG.
+   */
+  public stateMutationLogPath(): string {
+    const override = process.env.HOOK_STATE_AUDIT_LOG?.trim();
+    if (override) return override;
+    return join(dirname(this.stateDir), "state-mutations.jsonl");
+  }
+
+  /** Append one mutation record; never throws, because auditing must not block a clear. */
+  private appendStateMutation(
+    entry: Omit<StateMutationRecord, "version" | "ts" | "stack"> & { stack?: string | null },
+  ): void {
+    const record: StateMutationRecord = {
+      version: 1,
+      ts: new Date().toISOString(),
+      stack: entry.stack ?? captureMutationStack(),
+      ...entry,
+    };
+    try {
+      const target = this.stateMutationLogPath();
+      mkdirSync(dirname(target), { recursive: true });
+      appendFileSync(target, `${JSON.stringify(record)}\n`, "utf8");
+    } catch (err) {
+      this.log(`[warn] state mutation audit append failed: ${err instanceof Error ? err.message : String(err)}`);
+    }
+    this.log(
+      `[audit] ${record.action} source=${record.source} key=${record.key ?? "-"} actor=${record.actor ?? "-"} reason=${record.reason ?? "-"}`,
+    );
+  }
+
+  /**
+   * Public audit hook for destructive mutations performed outside this class
+   * (e.g. the fleet-teardown file cleanup in agents.ts) (#1077).
+   */
+  public recordStateMutation(
+    entry: Omit<StateMutationRecord, "version" | "ts" | "stack"> & { stack?: string | null },
+  ): void {
+    this.appendStateMutation(entry);
+  }
+
+  /** Read back the durable mutation log (most recent last). Best-effort. */
+  public readStateMutations(limit = 100): StateMutationRecord[] {
+    const target = this.stateMutationLogPath();
+    if (!existsSync(target)) return [];
+    const out: StateMutationRecord[] = [];
+    try {
+      const lines = readFileSync(target, "utf8").split("\n");
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed) continue;
+        try {
+          out.push(JSON.parse(trimmed) as StateMutationRecord);
+        } catch {
+          // skip a torn write rather than fail the whole audit read
+        }
+      }
+    } catch {
+      return [];
+    }
+    return limit > 0 ? out.slice(-limit) : out;
+  }
+
+  public deleteOrchestrator(
+    repoOrKey: string,
+    opts: StateMutationOptions = {},
+  ): { ok: boolean; key?: string; error?: string; path?: string } {
     const candidates = candidateRepoKeys(repoOrKey);
     if (candidates.length === 0) return { ok: false, error: "invalid repo key" };
     let deletedCount = 0;
     let lastPath = "";
+    const removed: Array<{ key: string; path: string; record: OrchestratorRecord | null }> = [];
     for (const cand of candidates) {
       const target = join(this.stateDir, `${sanitizeKey(cand)}.json`);
       if (existsSync(target)) {
+        let prior: OrchestratorRecord | null = null;
+        try {
+          prior = JSON.parse(readFileSync(target, "utf8")) as OrchestratorRecord;
+        } catch {
+          prior = null;
+        }
         try {
           unlinkSync(target);
+          removed.push({ key: cand, path: target, record: prior });
           deletedCount++;
           lastPath = target;
         } catch (err) {
@@ -4180,8 +7797,26 @@ export class HookRouter {
       }
     }
     if (deletedCount > 0) {
+      this.appendStateMutation({
+        action: "deleteOrchestrator",
+        source: opts.source ?? "unspecified",
+        actor: opts.actor ?? null,
+        reason: opts.reason ?? null,
+        key: repoOrKey,
+        priorValue: removed,
+      });
       return { ok: true, key: repoOrKey, path: lastPath };
     }
+    // Record the attempted unlink too: an actor that repeatedly probes a key is
+    // part of the investigation trail even when nothing was present (#1077).
+    this.appendStateMutation({
+      action: "deleteOrchestrator",
+      source: opts.source ?? "unspecified",
+      actor: opts.actor ?? null,
+      reason: opts.reason ?? "not found",
+      key: repoOrKey,
+      priorValue: [],
+    });
     return { ok: false, error: "not found", key: repoOrKey };
   }
 
@@ -4197,11 +7832,19 @@ export class HookRouter {
             const a: any = entry?.agent ?? entry;
             if (a?.id) map.set(a.id, a);
           }
-          if (map.size > 0) return map;
         }
       } catch {
         // fall through to CLI
       }
+    }
+    const isTest = this.isTestMode || process.env.NODE_ENV === "test";
+    const hasCliStub =
+      execFileAsync !== defaultExecFileAsync ||
+      Boolean(process.env.PATH?.split(":")[0]?.includes("paseo-stub"));
+    if (!this.options?.allowCliSpawn && isTest && !hasCliStub) {
+      // Hermetic tests have no global roster; an SDK-only map is partial.
+      if (map.size > 0) partialAgentMaps.add(map);
+      return map.size > 0 ? map : null;
     }
     try {
       const { stdout } = await execFileAsync("paseo", ["ls", "--json", "--global"], { timeout: 5000 });
@@ -4213,8 +7856,82 @@ export class HookRouter {
       }
       return map;
     } catch {
+      // The global roster is the only completeness guarantee. Without it the
+      // SDK-derived entries are partial, so callers must avoid hard pruning.
+      if (map.size > 0) {
+        partialAgentMaps.add(map);
+        return map;
+      }
       return null;
     }
+  }
+
+  /**
+   * Reconcile a missing Front Desk registration from the live daemon roster.
+   * This mirrors orchestrator adoption and intentionally does not replace a
+   * persisted registration, even when another Front Desk-shaped agent exists.
+   */
+  public async reconcileFrontDesk(
+    agentMap?: Map<string, WatchdogAgent> | null,
+  ): Promise<{ ok: boolean; agentId?: string; recovered: boolean; error?: string }> {
+    if (this.readFrontDesk()?.agentId) {
+      return { ok: true, recovered: false };
+    }
+    let live = agentMap;
+    if (live === undefined) {
+      try {
+        live = await this.fetchAgentMap();
+      } catch (err) {
+        const error = err instanceof Error ? err.message : String(err);
+        this.log(`[warn] Front Desk live reconciliation failed: ${error}`);
+        return { ok: false, recovered: false, error };
+      }
+    }
+    const candidate = findLiveFrontDeskAgents(live)[0];
+    if (!candidate?.id) return { ok: true, recovered: false };
+
+    this.writeFrontDesk(candidate.id, "recovered");
+    await this.updateAgentMetadata(candidate.id, "Front Desk", {
+      role: "front-desk",
+      category: "front-desk",
+    });
+    this.log(`[info] Recovered lost Front Desk registration from live agent roster: ${candidate.id}`);
+    return { ok: true, agentId: candidate.id, recovered: true };
+  }
+
+  /**
+   * Reconcile missing orchestrator registrations for enrolled repositories from
+   * the live daemon roster (#1143). Prevents cold-start registry role divergence.
+   */
+  public async reconcileEnrolledOrchestrators(
+    agentMap?: Map<string, WatchdogAgent> | null,
+  ): Promise<{ reconciled: number; repos: string[] }> {
+    let live = agentMap;
+    if (live === undefined) {
+      try {
+        live = await this.fetchAgentMap();
+      } catch {
+        live = null;
+      }
+    }
+    const repos = this.getCanonicalEnrolledRepos();
+    const reconciledRepos: string[] = [];
+    for (const repo of repos) {
+      if (!repo || repo === "frontdesk") continue;
+      if (this.readOrchestrator(repo)?.agentId) continue;
+      try {
+        const active = await this.getActiveOrchestrator(repo, live);
+        if (active?.agentId) {
+          reconciledRepos.push(repo);
+        }
+      } catch (err) {
+        this.log(`[warn] Failed to reconcile orchestrator for ${repo}: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
+    if (reconciledRepos.length > 0) {
+      this.log(`[info] Reconciled ${reconciledRepos.length} orchestrator registration(s) from live agent roster: ${reconciledRepos.join(", ")}`);
+    }
+    return { reconciled: reconciledRepos.length, repos: reconciledRepos };
   }
 
   public canWatchdogAlert(alertKey: string, now = Date.now()): boolean {
@@ -4327,14 +8044,23 @@ export class HookRouter {
    * conservative 4-step recovery pipeline for eligible findings.
    */
   public async runWatchdogAudit(opts: WatchdogAuditOptions = {}): Promise<WatchdogAuditResult> {
+    if (this.isHaltedState) {
+      return {
+        ok: true,
+        timestamp: opts.now ?? Date.now(),
+        audited: { orchestrators: 0, agents: 0, queues: 0 },
+        anomalies: [],
+      };
+    }
     const now = opts.now ?? Date.now();
     const reloadFn = opts.reloadAgent ?? ((id: string) => this.reloadAgent(id));
     const stopFn = opts.stopAgent ?? ((id: string) => this.stopAgent(id));
-    const deliverFn = opts.deliver ?? ((id: string, msg: string, o?: any) => this.deliverMessage(id, msg, o));
+    const deliverFn = opts.deliver ?? ((id: string, msg: string, o?: DeliverOptions) => this.deliverMessage(id, msg, o));
     const steerFn = (id: string, msg: string) => deliverFn(id, msg, { noWait: true, steer: true });
     const recover = opts.recover ?? true;
     const steerMessage = opts.steerMessage ?? DEFAULT_WATCHDOG_STEER_MESSAGE;
     const anomalies: WatchdogAnomaly[] = [];
+    const deadSessions: DeadSessionVerdict[] = [];
 
     let agentMap = opts.agentMap ?? null;
     if (!agentMap) {
@@ -4375,7 +8101,31 @@ export class HookRouter {
     const frontDeskId = opts.frontDeskId ?? this.readFrontDesk()?.agentId ?? null;
     const orchRecords = opts.orchestratorRecords ?? this.listOrchestratorRecords();
 
+    // Fleet permission auto-adjudication (#1084): only registered fleet agents
+    // are eligible, and the default allow seam is skipped under test so the
+    // suites never shell out to `paseo permit allow`.
+    const isTestEnv = this.isTestMode || process.env.NODE_ENV === "test";
+    const fleetAgentIds = new Set(orchRecords.map((r) => r.agentId).filter((id): id is string => Boolean(id)));
+    const allowFleetPermission =
+      opts.allowFleetPermission ??
+      (isTestEnv
+        ? undefined
+        : async (agentId: string, permissionId: string) => {
+            const { allowPermission } = await import("./agents.js");
+            const paseo = this.getPaseo();
+            return allowPermission(agentId, permissionId, paseo ? { paseo } : undefined);
+          });
+    const adjudicationLogPath = opts.adjudicationLogPath ?? join(this.stateDir, "permission-decisions.jsonl");
+
+    let fleetAuditedAgents = 0;
+    // Agents whose pending permissions were auto-allowed in the first pass;
+    // PENDING_PERMISSION_BLOCKED must not fire for them.
+    const autoAllowedPerms = new Set<string>();
     if (agentMap) {
+      // Pending permissions and operator-attention stalls are surfaced for every
+      // live agent, fleet-owned or not: a wedged session still blocks its queue,
+      // and the operator needs to see it. Auto-allow remains fleet-gated inside
+      // `adjudicatePermission`, which escalates non-fleet agents instead (#1084).
       for (const agent of agentMap.values()) {
         // Legitimate teardown must not raise amnesia/lock/permission alerts
         // (#872): culled agents are suppressed even if a stale snapshot still
@@ -4385,18 +8135,59 @@ export class HookRouter {
           const perm = agent.pendingPermissions[0] || {};
           const reqId = perm.id || perm.requestId;
           const action = perm.title || perm.tool || perm.name || "tool permission";
-          anomalies.push({
-            type: "AGENT_PERMISSION_REQUIRED",
-            agentId: agent.id,
-            title: agent.title || agent.name,
-            permissions: agent.pendingPermissions,
-          });
-          const alertKey = `permission:${agent.id}:${reqId || "pending"}`;
-          if (frontDeskId && this.canWatchdogAlert(alertKey, now)) {
-            this.watchdogAlerts.set(alertKey, now);
-            const cmd = reqId ? `paseo permit allow ${agent.id} ${reqId}` : `paseo permit allow ${agent.id}`;
-            const alert = `[Fleet Watchdog] Agent ${agent.title || agent.id.slice(0, 7)} (${agent.id.slice(0, 7)}) requires permission: ${action}. Front Desk adjudication command: ${cmd}`;
-            this.deliverWatchdogAlert(frontDeskId, alert, { deliverFn, agentMap, isSos: false });
+
+          // Classify against the conservative allowlist once per permission (the
+          // cooldown bounds the durable log). A match is auto-allowed through
+          // the narrowest scope the seam supports (this one request); anything
+          // else falls through to the Front Desk escalation below with the full
+          // command so the prompt is never left invisible.
+          const adjudicationKey = `permission-adjudicate:${agent.id}:${reqId || "pending"}`;
+          let adjudication: Awaited<ReturnType<typeof adjudicatePermission>> | undefined;
+          if (this.canWatchdogAlert(adjudicationKey, now)) {
+            this.watchdogAlerts.set(adjudicationKey, now);
+            adjudication = await adjudicatePermission({
+              agent,
+              permission: perm,
+              context: { orchestratorAgentIds: fleetAgentIds, frontDeskId },
+              allow: allowFleetPermission,
+              logPath: adjudicationLogPath,
+            });
+          }
+
+          if (adjudication?.action === "auto-allow") {
+            anomalies.push({
+              type: "AGENT_PERMISSION_AUTO_ALLOWED",
+              agentId: agent.id,
+              title: agent.title || agent.name,
+              reason: adjudication.ruleId,
+              permissions: agent.pendingPermissions,
+            });
+            this.log(
+              `[info] permission auto-allow: ${agent.id} ${reqId} rule=${adjudication.ruleId} scope=${adjudication.scope ?? "n/a"}`,
+            );
+            autoAllowedPerms.add(agent.id);
+          } else {
+            anomalies.push({
+              type: "AGENT_PERMISSION_REQUIRED",
+              agentId: agent.id,
+              title: agent.title || agent.name,
+              reason: adjudication?.reason,
+              permissions: agent.pendingPermissions,
+            });
+            const alertKey = `permission:${agent.id}:${reqId || "pending"}`;
+            if (frontDeskId && this.canWatchdogAlert(alertKey, now)) {
+              this.watchdogAlerts.set(alertKey, now);
+              const cmd = reqId ? `paseo permit allow ${agent.id} ${reqId}` : `paseo permit allow ${agent.id}`;
+              const toolText = perm.tool ? ` tool=${perm.tool}` : "";
+              const commandText = adjudication?.command ? ` command=${JSON.stringify(adjudication.command)}` : "";
+              const alert = `[Fleet Watchdog] Agent ${agent.title || agent.id.slice(0, 7)} (${agent.id.slice(0, 7)}) requires permission: ${action}${toolText}.${commandText} Front Desk adjudication command: ${cmd}`;
+              this.deliverWatchdogAlert(frontDeskId, alert, {
+                deliverFn,
+                agentMap,
+                isSos: false,
+                repo: agentRepoKey(agent, orchRecords),
+              });
+            }
           }
         } else if (
           agent.requiresAttention === true &&
@@ -4414,7 +8205,12 @@ export class HookRouter {
           if (frontDeskId && this.canWatchdogAlert(alertKey, now)) {
             this.watchdogAlerts.set(alertKey, now);
             const alert = `[Fleet Watchdog] Agent ${agent.title || agent.id.slice(0, 7)} (${agent.id.slice(0, 7)}) requires attention (${agent.attentionReason || "stalled"}). Operator or Front Desk triage required.`;
-            this.deliverWatchdogAlert(frontDeskId, alert, { deliverFn, agentMap, isSos: false });
+            this.deliverWatchdogAlert(frontDeskId, alert, {
+              deliverFn,
+              agentMap,
+              isSos: false,
+              repo: agentRepoKey(agent, orchRecords),
+            });
           }
         }
       }
@@ -4424,15 +8220,40 @@ export class HookRouter {
       // contradictory double recovery.
       const taxonomyHandled = new Set<string>();
       for (const agent of agentMap.values()) {
+        // Restrict watchdog audits and hook management to fleet-owned agents only.
+        // Ad-hoc/user sessions are excluded.
+        // Deterministic fleet membership via roster + parentage — zero heuristics (#1151).
+        const roster: FleetRoster = { frontDeskId: frontDeskId ?? null, orchestratorIds: fleetAgentIds };
+        if (!_isFleetMember(agent, roster)) continue;
         if (agent.archivedAt) continue;
         if (this.isTeardownSuppressedAgent(agent.id)) continue;
-        const assessment = assessAgentHealth(agent.id, agent, diskMetadata?.get(agent.id), now, {
+        fleetAuditedAgents += 1;
+        // For agents whose permissions were auto-allowed, clear pendingPermissions
+        // so PENDING_PERMISSION_BLOCKED does not fire.
+        const taxonomyAgent = autoAllowedPerms.has(agent.id)
+          ? { ...agent, pendingPermissions: [] as import("./hook-router.js").WatchdogPermission[] }
+          : agent;
+        const assessment = assessAgentHealth(agent.id, taxonomyAgent, diskMetadata?.get(agent.id), now, {
           cancellations,
           cancellationRecencySeconds: opts.cancellationRecencySeconds,
           activeWorkers: countActiveWorkers(agentMap, agent.id, diskMetadata),
           assumePendingWork: opts.assumePendingWork,
           runningStaleSeconds: opts.runningStaleSeconds,
+          repetitiveToolLoopThreshold: opts.repetitiveToolLoopThreshold,
           timelineErrors,
+          isFrontDesk: frontDeskId ? isFrontDeskAgent(agent, frontDeskId) : false,
+          isOrchestrator: isOrchestratorAgent(agent),
+          queueDepth: (() => {
+            if (frontDeskId && isFrontDeskAgent(agent, frontDeskId)) {
+              return this.getQueue("frontdesk").length;
+            }
+            if (isOrchestratorAgent(agent)) {
+              const repo = agentRepoKey(agent, orchRecords);
+              const keys = candidateRepoKeys(repo);
+              return keys.reduce((n, key) => n + this.getQueue(key).length, 0);
+            }
+            return 0;
+          })(),
         });
         if (assessment.healthy) continue;
         taxonomyHandled.add(agent.id);
@@ -4511,13 +8332,28 @@ export class HookRouter {
         const label = assessment.name || assessment.agentId.slice(0, 7);
         if (assessment.taxonomy.includes("PROVIDER_QUOTA_EXHAUSTION")) {
           const alert = `[Fleet Watchdog] Agent ${label} (${assessment.agentId.slice(0, 7)}) hit provider/quota exhaustion: "${assessment.lastError}". Circuit-break: no auto-steer; operator required.`;
-          this.deliverWatchdogAlert(frontDeskId, alert, { deliverFn, agentMap, isSos: false });
+          this.deliverWatchdogAlert(frontDeskId, alert, {
+            deliverFn,
+            agentMap,
+            isSos: false,
+            repo: agentRepoKey(agent, orchRecords),
+          });
         } else if (recovery.steered) {
           const alert = `[Fleet Watchdog] Auto-recovered agent ${label} (${assessment.agentId.slice(0, 7)}) [${assessment.taxonomy.join(", ")}] via ${recovery.actions.join(" -> ")}.`;
-          this.deliverWatchdogAlert(frontDeskId, alert, { deliverFn, agentMap, isSos: false });
+          this.deliverWatchdogAlert(frontDeskId, alert, {
+            deliverFn,
+            agentMap,
+            isSos: false,
+            repo: agentRepoKey(agent, orchRecords),
+          });
         } else {
           const alert = `[Fleet Watchdog] Agent ${label} (${assessment.agentId.slice(0, 7)}) unhealthy [${assessment.taxonomy.join(", ")}]. Operator attention may be required.`;
-          this.deliverWatchdogAlert(frontDeskId, alert, { deliverFn, agentMap, isSos: false });
+          this.deliverWatchdogAlert(frontDeskId, alert, {
+            deliverFn,
+            agentMap,
+            isSos: false,
+            repo: agentRepoKey(agent, orchRecords),
+          });
         }
       }
 
@@ -4540,7 +8376,10 @@ export class HookRouter {
           if (!this.canWatchdogAlert(assessment.alertKey, now)) continue;
           this.watchdogAlerts.set(assessment.alertKey, now);
 
-          const message = formatChildWakeupMessage(child, assessment);
+          const message = withFleetEnvelope(
+            routerEnvelope({ repo: agentRepoKey(parent, orchRecords), kind: "steer" }),
+            formatChildWakeupMessage(child, assessment),
+          );
           void deliverFn(parentId, message, { noWait: true, steer: true });
           anomalies.push({
             type: "CHILD_WAKEUP",
@@ -4589,9 +8428,152 @@ export class HookRouter {
         }
       }
 
+      // -----------------------------------------------------------------
+      // Dead session detection (#1328)
+      //
+      // After taxonomy classification, derive explicit dead verdicts from
+      // named predicates and surface them alongside anomalies so the MCP
+      // tool `fleet_prune_dead_sessions` can act on them deterministically.
+      // -----------------------------------------------------------------
+      const allCandidates: Array<{ id: string; name?: string | null; title?: string | null; cwd?: string | null; createdAt?: number | string | null; labels?: Record<string, string> | null }> = [];
+      for (const agent of agentMap.values()) {
+        if (this.isTeardownSuppressedAgent(agent.id)) continue;
+        allCandidates.push({
+          id: agent.id,
+          name: agent.name ?? agent.title ?? null,
+          title: agent.title ?? agent.name ?? null,
+          cwd: agent.cwd ?? null,
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          createdAt: ((diskMetadata?.get(agent.id) as any)?.createdAt ?? (agent as any)?.createdAt) as string | number | null,
+          labels: agent.labels ?? diskMetadata?.get(agent.id)?.labels,
+        });
+      }
+
+      for (const agent of agentMap.values()) {
+        // Deterministic fleet membership via roster + parentage — zero heuristics (#1151).
+        const roster: FleetRoster = { frontDeskId: frontDeskId ?? null, orchestratorIds: fleetAgentIds };
+        if (!_isFleetMember(agent, roster)) continue;
+        if (agent.archivedAt) continue;
+        if (this.isTeardownSuppressedAgent(agent.id)) continue;
+
+        const disk = diskMetadata?.get(agent.id);
+        const livePresent = true;
+        const diskPresent = Boolean(disk);
+
+        // Collect registry registrations for this agent
+        const registrations: string[] = [];
+        if (frontDeskId === agent.id) registrations.push("frontdesk");
+        for (const rec of orchRecords) {
+          if (rec.agentId === agent.id && rec.key) registrations.push(rec.key);
+        }
+
+        // Check each dead predicate
+        const nowMs = opts.now ?? Date.now();
+        const staleSecs = opts.runningStaleSeconds ?? DEFAULT_RUNNING_STALE_SECONDS;
+        const lastActivityAt = disk?.lastActivityAt ?? agent.lastActivityAt ?? disk?.updatedAt ?? agent.updatedAt ?? null;
+
+        const deadPredicates: DeadPredicateType[] = [];
+
+        // 1. DEAD_ORPHANED_DISK_RECORD
+        if (!livePresent && diskPresent) deadPredicates.push("DEAD_ORPHANED_DISK_RECORD");
+
+        // 2. DEAD_TERMINAL_FATAL_ERROR
+        const ls = String(agent.status ?? "").toLowerCase();
+        if (["error", "closed"].includes(ls)) {
+          const le = String(agent.lastError ?? disk?.lastError ?? "");
+          if (le.trim() && !/fetch failed|econnreset|etimedout|connection refused|socket hang up|temporarily unavailable/i.test(le)) {
+            deadPredicates.push("DEAD_TERMINAL_FATAL_ERROR");
+          }
+        }
+
+        // 3. DEAD_WEDGED_RUNNING_TURN
+        if (ls === "running" && lastActivityAt) {
+          const activityTs = parseIsoTimestamp(lastActivityAt);
+          if (activityTs != null && (nowMs - activityTs) / 1000 >= staleSecs) {
+            // Exempt front-desk and registered orchestrators with empty queues (#1352).
+            const isFd = frontDeskId ? isFrontDeskAgent(agent, frontDeskId) : false;
+            const isOrch = isOrchestratorAgent(agent);
+            const qDepth = (() => {
+              if (isFd) return this.getQueue("frontdesk").length;
+              if (isOrch) {
+                const repo = agentRepoKey(agent, orchRecords);
+                const keys = candidateRepoKeys(repo);
+                return keys.reduce((n, key) => n + this.getQueue(key).length, 0);
+              }
+              return 0;
+            })();
+            const activeWorkers = countActiveWorkers(agentMap, agent.id, diskMetadata);
+            if ((isFd || isOrch) && qDepth === 0 && activeWorkers === 0) {
+              // Idle front-desk/orchestrator — not dead.
+            } else {
+              deadPredicates.push("DEAD_WEDGED_RUNNING_TURN");
+            }
+          }
+        }
+
+        // 4. DEAD_REGISTRY_WITHOUT_PROCESS
+        if (registrations.length > 0 && !livePresent) {
+          deadPredicates.push("DEAD_REGISTRY_WITHOUT_PROCESS");
+        }
+
+        // 5. DEAD_SUPERSEDED_BY_RETRY
+        if (["error", "closed"].includes(ls) && deadPredicates.includes("DEAD_TERMINAL_FATAL_ERROR")) {
+          const activeWorkers = countActiveWorkers(agentMap, agent.id, diskMetadata);
+          if (activeWorkers === 0 && registrations.length === 0) {
+            const agentInfo = allCandidates.find((c) => c.id === agent.id);
+            if (agentInfo) {
+              const successor = findSuccessorRetry(agentInfo, allCandidates.filter((c) => c.id !== agent.id));
+              if (successor) deadPredicates.push("DEAD_SUPERSEDED_BY_RETRY");
+            }
+          }
+        }
+
+        if (deadPredicates.length === 0) continue;
+
+        const guardReasons = computeKillGuardReasons(
+          { agentId: agent.id, liveStatus: ls, taxonomy: [], deadPredicates, activeWorkers: countActiveWorkers(agentMap, agent.id, diskMetadata), frontDeskId, selfId: null },
+          { frontDeskId },
+        );
+
+        // Find superseded-by agent
+        let supersededBy: string | null = null;
+        if (deadPredicates.includes("DEAD_SUPERSEDED_BY_RETRY")) {
+          const agentInfo = allCandidates.find((c) => c.id === agent.id);
+          if (agentInfo) {
+            const successor = findSuccessorRetry(agentInfo, allCandidates.filter((c) => c.id !== agent.id));
+            supersededBy = successor?.id ?? null;
+          }
+        }
+
+        deadSessions.push({
+          agentId: agent.id,
+          name: agent.name ?? agent.title ?? null,
+          liveStatus: ls,
+          deadPredicates,
+          deadReasons: deadPredicates.map((p) => `${p}: ${DEAD_PREDICATE_EVIDENCE[p] ?? ""}`),
+          registrations,
+          activeWorkers: countActiveWorkers(agentMap, agent.id, diskMetadata),
+          killAllowed: guardReasons.length === 0,
+          killBlockedReasons: guardReasons,
+          supersededBy,
+        });
+      }
+
+      // deadSessions collected above; added to return value below.
+
+      // When an orchestrator or worker is superseded/spawned, clean up dead sessions.
+      for (const ds of deadSessions) {
+        if (ds.deadPredicates.includes("DEAD_SUPERSEDED_BY_RETRY") && ds.supersededBy) {
+          // Log cleanup action; actual registry pruning is handled by fleet_prune_dead_sessions.
+          this.log(`[info] watchdog: dead session ${ds.agentId} superseded by ${ds.supersededBy}, ${ds.deadPredicates.join(", ")}`);
+        }
+      }
+
       for (const record of orchRecords) {
         const { key, agentId } = record;
         if (!agentId) continue;
+        // Skip orchestrator records for unenrolled repos (#1214)
+        if (!this.isEnrolledRepo(key)) continue;
         // Suppressed when the orchestrator was legitimately culled (#872).
         if (this.isTeardownSuppressedAgent(agentId)) continue;
         const agent = agentMap.get(agentId);
@@ -4601,7 +8583,7 @@ export class HookRouter {
           if (frontDeskId && this.canWatchdogAlert(alertKey, now)) {
             this.watchdogAlerts.set(alertKey, now);
             const alert = `[Fleet Watchdog] Registered orchestrator for ${key} (${agentId.slice(0, 7)}) was not found on daemon.`;
-            this.deliverWatchdogAlert(frontDeskId, alert, { deliverFn, agentMap, isSos: false });
+            this.deliverWatchdogAlert(frontDeskId, alert, { deliverFn, agentMap, isSos: false, repo: key });
           }
           continue;
         }
@@ -4627,7 +8609,7 @@ export class HookRouter {
                 this.watchdogAlerts.set(alertKey, now);
                 const reasonDesc = isTurnLock ? "clearing foreground turn lock" : "reloading agent";
                 const alert = `[Fleet Watchdog] Auto-recovered orchestrator for ${key} (${agentId.slice(0, 7)}) by ${reasonDesc}.`;
-                this.deliverWatchdogAlert(frontDeskId, alert, { deliverFn, agentMap, isSos: false });
+                this.deliverWatchdogAlert(frontDeskId, alert, { deliverFn, agentMap, isSos: false, repo: key });
               }
               continue;
             }
@@ -4637,7 +8619,7 @@ export class HookRouter {
           if (frontDeskId && this.canWatchdogAlert(alertKey, now)) {
             this.watchdogAlerts.set(alertKey, now);
             const alert = `[Fleet Watchdog] Orchestrator for ${key} (${agentId.slice(0, 7)}) is in status error: "${errMsg}". Operator attention may be required.`;
-            this.deliverWatchdogAlert(frontDeskId, alert, { deliverFn, agentMap, isSos: false });
+            this.deliverWatchdogAlert(frontDeskId, alert, { deliverFn, agentMap, isSos: false, repo: key });
           }
         }
       }
@@ -4645,50 +8627,122 @@ export class HookRouter {
 
     for (const [key, q] of this.queues.entries()) {
       if (key === "frontdesk" || q.length === 0) continue;
-      if (this.isRepoMuted(key) || this.isPaused(key)) continue;
-      const orch = this.readOrchestrator(key);
+      if (this.isRepoDispatchSuppressed(key) || this.isPaused(key)) continue;
+      let orch = this.readOrchestrator(key);
+      if (!orch) {
+        // Lost-registration recovery (#987): adopt a live labelled orchestrator
+        // before treating this queue as unorchestrated.
+        try {
+          const active = await this.getActiveOrchestrator(key, agentMap);
+          if (active) orch = active.record;
+        } catch {
+          // Liveness unknown: leave it unorchestrated rather than spawning.
+        }
+      }
       if (!orch) {
         anomalies.push({ type: "QUEUE_UNORCHESTRATED", key, queueDepth: q.length });
+        // Auto-provision an enrolled repo with pending work and no live
+        // orchestrator after recovery (#987). Muted/paused repos returned above,
+        // and `ensureUnstaffedEnrolledRepo` re-checks both.
+        let provisioned: EnsureOrchestratorResult | null = null;
+        try {
+          provisioned = await this.ensureUnstaffedEnrolledRepo(key, {
+            reason: "watchdog queued work",
+            agentMap,
+          });
+        } catch (err) {
+          this.log(
+            `[warn] watchdog auto-provision failed for ${key}: ${err instanceof Error ? err.message : String(err)}`,
+          );
+        }
+        if (provisioned?.ok) {
+          anomalies.push({
+            type: "ORCHESTRATOR_PROVISIONED",
+            key,
+            agentId: provisioned.agentId,
+            queueDepth: q.length,
+          });
+        }
         const alertKey = `unorchestrated:${key}`;
         if (frontDeskId && this.canWatchdogAlert(alertKey, now)) {
           this.watchdogAlerts.set(alertKey, now);
-          const alert = `[Fleet Watchdog] Queue for ${key} has ${q.length} pending message(s) but no orchestrator is registered.`;
-          this.deliverWatchdogAlert(frontDeskId, alert, { deliverFn, agentMap, isSos: false });
+          const alert = provisioned?.ok
+            ? `[Fleet Watchdog] Queue for ${key} has ${q.length} pending message(s); auto-provisioned orchestrator ${provisioned.agentId ?? ""}.`
+            : `[Fleet Watchdog] Queue for ${key} has ${q.length} pending message(s) but no orchestrator is registered.`;
+          this.deliverWatchdogAlert(frontDeskId, alert, { deliverFn, agentMap, isSos: false, repo: key });
         }
       }
     }
 
-    for (const [key, attempts] of this.busyAttempts.entries()) {
-      if (attempts >= this.watchdogBusyThreshold) {
-        const q = this.queues.get(key) ?? [];
-        if (q.length > 0) {
-          anomalies.push({ type: "QUEUE_WEDGED", key, attempts, queueDepth: q.length });
-          const orchId = orchRecords.find((r) => r.key === key)?.agentId;
-          let reloaded = false;
-          if (orchId && reloadFn) {
-            this.log(`[info] watchdog: attempting auto-recovery reload for wedged orchestrator ${orchId.slice(0, 7)} (${key})`);
-            const reloadRes = await reloadFn(orchId);
-            if (reloadRes.ok) {
-              this.busyAttempts.delete(key);
-              this.busyQueues.delete(key);
-              const timer = this.backoffTimers.get(key);
-              if (timer) {
-                clearTimeout(timer);
-                this.backoffTimers.delete(key);
-              }
-              reloaded = true;
-              void this.drain(key);
-            }
-          }
+    // Event-based wedge dedup (#1123): an episode ends when the queue drains or
+    // its delivery streak resets below the busy threshold. Reconcile from the
+    // current queue/busy state so a recovered queue re-arms for the next wedge
+    // instead of being silenced by a blanket time cooldown.
+    for (const key of Array.from(this.watchdogWedgeAlerts)) {
+      const q = this.queues.get(key) ?? [];
+      const attempts = this.busyAttempts.get(key) ?? 0;
+      if (q.length === 0 || attempts < this.watchdogBusyThreshold) {
+        this.watchdogWedgeAlerts.delete(key);
+      }
+    }
 
-          const alertKey = `queue_wedged:${key}`;
-          if (frontDeskId && this.canWatchdogAlert(alertKey, now)) {
-            this.watchdogAlerts.set(alertKey, now);
-            const alert = reloaded
-              ? `[Fleet Watchdog] Auto-recovered wedged queue for ${key} (${q.length} pending, ${attempts} failed attempts) by reloading orchestrator ${orchId?.slice(0, 7)}.`
-              : `[Fleet Watchdog] Queue for ${key} has ${q.length} pending message(s) and has failed delivery ${attempts} times.`;
-            this.deliverWatchdogAlert(frontDeskId, alert, { deliverFn, agentMap, isSos: false });
+    for (const [key, attempts] of this.busyAttempts.entries()) {
+      const q = this.queues.get(key) ?? [];
+      // A drained queue is not wedged. Clear the stale attempt counter so it
+      // cannot re-accumulate to the threshold and trigger a spurious reload when
+      // fresh work arrives (#1072).
+      if (q.length === 0) {
+        this.busyAttempts.delete(key);
+        this.busyQueues.delete(key);
+        this.busySince.delete(key);
+        continue;
+      }
+      if (attempts >= this.watchdogBusyThreshold) {
+        // Enforce a minimum elapsed duration before wedged reload so normal
+        // in-flight turns are not abruptly killed (#1344).
+        const busyStartedAt = this.busySince.get(key);
+        const minElapsedMs = this.watchdogMinBusyElapsedMs;
+        const eligibleForReload =
+          !busyStartedAt || (now - busyStartedAt) >= minElapsedMs;
+        if (!eligibleForReload) {
+          this.log(
+            `[info] watchdog: ${key} has reached busy threshold (${attempts} attempts) ` +
+              `but streak is only ${(now - busyStartedAt) / 1000 | 0}s old; ` +
+              `waiting ${minElapsedMs / 1000}s minimum before wedged reload`,
+          );
+          anomalies.push({ type: "QUEUE_WEDGED", key, attempts, queueDepth: q.length });
+          continue;
+        }
+        anomalies.push({ type: "QUEUE_WEDGED", key, attempts, queueDepth: q.length });
+        const orchId = orchRecords.find((r) => r.key === key)?.agentId;
+        let reloaded = false;
+        // Snapshot depth before drain so alerts report the real pre-drain count.
+        const initialDepth = q.length;
+        if (orchId && reloadFn) {
+          this.log(`[info] watchdog: attempting auto-recovery reload for wedged orchestrator ${orchId.slice(0, 7)} (${key})`);
+          const reloadRes = await reloadFn(orchId);
+          if (reloadRes.ok) {
+            this.busyAttempts.delete(key);
+            this.busyQueues.delete(key);
+            this.busySince.delete(key);
+            const timer = this.backoffTimers.get(key);
+            if (timer) {
+              clearTimeout(timer);
+              this.backoffTimers.delete(key);
+            }
+            reloaded = true;
+            void this.drain(key);
           }
+        }
+
+        const alertKey = `queue_wedged:${key}`;
+        if (frontDeskId && !this.watchdogWedgeAlerts.has(key)) {
+          this.watchdogWedgeAlerts.add(key);
+          this.watchdogAlerts.set(alertKey, now);
+          const alert = reloaded
+            ? `[Fleet Watchdog] Auto-recovered wedged queue for ${key} (${initialDepth} pending, ${attempts} failed attempts) by reloading orchestrator ${orchId?.slice(0, 7)}.`
+            : `[Fleet Watchdog] Queue for ${key} has ${initialDepth} pending message(s) and has failed delivery ${attempts} times.`;
+          this.deliverWatchdogAlert(frontDeskId, alert, { deliverFn, agentMap, isSos: false, repo: key });
         }
       }
     }
@@ -4698,10 +8752,11 @@ export class HookRouter {
       timestamp: now,
       audited: {
         orchestrators: orchRecords.length,
-        agents: agentMap ? agentMap.size : 0,
+        agents: agentMap ? fleetAuditedAgents : 0,
         queues: this.busyAttempts.size,
       },
       anomalies,
+      deadSessions: deadSessions.length > 0 ? deadSessions : undefined,
     };
   }
 
@@ -4723,6 +8778,8 @@ export class HookRouter {
     verifyAgentAbsent?: (agentId: string) => Promise<boolean>;
     /** Persisted metadata directory used by the default verifier (#889). */
     agentsDir?: string;
+    /** Archives a closed session before its registration is unlinked (#973). */
+    archiveAgent?: (agentId: string) => Promise<boolean>;
     now?: number;
   } = {}): Promise<PruneResult> {
     let agentMap = opts.agentMap ?? null;
@@ -4732,12 +8789,14 @@ export class HookRouter {
     if (!agentMap) {
       return { ok: false, error: "daemon unreachable", prunedCount: 0, pruned: [] };
     }
+    const agentMapPartial = isPartialAgentMap(agentMap);
 
     const graceSweeps = Math.max(1, opts.graceSweeps ?? ORCHESTRATOR_PRUNE_GRACE_SWEEPS);
     const nowIso = new Date(opts.now ?? Date.now()).toISOString();
     const verify = opts.verifyAgentAbsent ?? ((agentId: string) => this.verifyAgentAbsent(agentId, opts.agentsDir));
     const orchRecords = opts.orchestratorRecords ?? this.listOrchestratorRecords();
     const pruned: Array<{ key: string; agentId: string; reason: string }> = [];
+    const archived: Array<{ key: string; agentId: string; reason: string }> = [];
     const markedStale: StaleOrchestratorMark[] = [];
     const recovered: string[] = [];
     const seen = new Set<string>();
@@ -4747,10 +8806,128 @@ export class HookRouter {
       if (!key || seen.has(key) || !agentId) continue;
       seen.add(key);
 
+      // Unenrolled repositories: clean up dormant orchestrator records (#1214)
+      if (this.enrolledRepos.size > 0 && !this.isEnrolledRepo(key)) {
+        if (opts.dryRun) {
+          pruned.push({ key, agentId, reason: "unenrolled repo (dry-run)" });
+          continue;
+        }
+        const res = this.deleteOrchestrator(key, {
+          source: "prune:unenrolled-repo",
+          reason: "repo is not enrolled",
+          actor: "pruneOrchestrators",
+        });
+        if (res.ok) {
+          pruned.push({ key, agentId, reason: "unenrolled repo unlinked" });
+        }
+        continue;
+      }
+
       if (agentMap.has(agentId)) {
-        // The agent is back: clear the stale bookkeeping so a transient outage
-        // never accumulates toward a prune (#889).
-        if ((record.missCount ?? 0) > 0 || record.stale) {
+        const agent = agentMap.get(agentId)!;
+        const status = String(agent.status ?? "").toLowerCase();
+        const isClosed = status === "closed" || status === "terminated" || status === "archived";
+        const hasArchivedEvidence = Boolean(agent.archivedAt);
+
+        // A closed orchestrator session is dead but still listed by the daemon,
+        // so it never reaches the absent-agent path. Archive it and unlink the
+        // registration once the closure is sticky or has persisted across the
+        // grace window (#973, #1077).
+        if (isClosed || hasArchivedEvidence) {
+          if (opts.dryRun) {
+            pruned.push({ key, agentId, reason: "closed session (dry-run)" });
+            continue;
+          }
+
+          // A partial roster omits live agents in other workspaces, and a stale
+          // workspace-scoped record can misreport one as closed. Never archive
+          // or unlink from a partial roster unless disk carries an archivedAt
+          // marker (#1068/#1077).
+          if (agentMapPartial && !hasArchivedEvidence) {
+            const updated: OrchestratorRecord = {
+              ...record,
+              stale: true,
+              staleSince: record.staleSince ?? nowIso,
+              staleReason: "session reported closed on a partial daemon roster (verification skipped)",
+            };
+            this.persistOrchestratorRecord(updated);
+            markedStale.push({ key, agentId, missCount: record.missCount ?? 0, reason: updated.staleReason! });
+            continue;
+          }
+
+          // `archivedAt` is durable evidence on disk: unlink immediately.
+          if (hasArchivedEvidence) {
+            const res = this.deleteOrchestrator(key, {
+              source: "prune:archived-session",
+              reason: "archived session unlinked",
+              actor: "pruneOrchestrators",
+            });
+            if (res.ok) {
+              const reason = "archived session unlinked";
+              archived.push({ key, agentId, reason });
+              pruned.push({ key, agentId, reason });
+            }
+            continue;
+          }
+
+          // Ephemeral `closed`/`terminated` status can flap at a turn boundary.
+          // Require it to persist across `graceSweeps` sweeps before unlinking.
+          const closedSweeps = (record.closedSweeps ?? 0) + 1;
+          if (closedSweeps < graceSweeps) {
+            const updated: OrchestratorRecord = {
+              ...record,
+              closedSweeps,
+              firstClosedAt: record.firstClosedAt ?? nowIso,
+              stale: true,
+              staleSince: record.staleSince ?? nowIso,
+              staleReason: `session closed (grace ${closedSweeps}/${graceSweeps})`,
+            };
+            this.persistOrchestratorRecord(updated);
+            markedStale.push({ key, agentId, missCount: closedSweeps, reason: updated.staleReason! });
+            continue;
+          }
+
+          let didArchive = false;
+          const archive = opts.archiveAgent ?? ((id: string) => this.archiveAgent(id));
+          try {
+            didArchive = await archive(agentId);
+          } catch (err) {
+            this.log(
+              `[warn] prune archive failed for ${agentId}: ${err instanceof Error ? err.message : String(err)}`,
+            );
+            didArchive = false;
+          }
+          if (didArchive) {
+            const res = this.deleteOrchestrator(key, {
+              source: "prune:closed-session",
+              reason: "closed session archived and unlinked",
+              actor: "pruneOrchestrators",
+            });
+            if (res.ok) {
+              const reason = "closed session archived and unlinked";
+              archived.push({ key, agentId, reason });
+              pruned.push({ key, agentId, reason });
+            }
+          } else {
+            // Archival failed: keep the record and retry on a later sweep (#973).
+            const updated: OrchestratorRecord = {
+              ...record,
+              closedSweeps,
+              firstClosedAt: record.firstClosedAt ?? nowIso,
+              stale: true,
+              staleSince: record.staleSince ?? nowIso,
+              staleReason: "closed session archival failed (retry pending)",
+            };
+            this.persistOrchestratorRecord(updated);
+            markedStale.push({ key, agentId, missCount: closedSweeps, reason: updated.staleReason! });
+          }
+          continue;
+        }
+
+        // The agent is back: clear the stale/closed bookkeeping so a transient
+        // outage or turn-boundary close never accumulates toward a prune
+        // (#889/#1077).
+        if ((record.missCount ?? 0) > 0 || record.stale || (record.closedSweeps ?? 0) > 0) {
           if (!opts.dryRun) {
             this.persistOrchestratorRecord({
               ...record,
@@ -4760,6 +8937,8 @@ export class HookRouter {
               stale: false,
               staleSince: null,
               staleReason: null,
+              closedSweeps: 0,
+              firstClosedAt: null,
             });
           }
           recovered.push(key);
@@ -4787,6 +8966,24 @@ export class HookRouter {
         continue;
       }
 
+      if (agentMapPartial) {
+        // The roster lacks the global `paseo ls --global` source, so a missing
+        // entry is not proof of absence: an orchestrator in another workspace
+        // can be omitted. Never verify or unlink from a partial roster; keep
+        // the registration stale until a complete sweep confirms (#1068).
+        const updated: OrchestratorRecord = {
+          ...record,
+          missCount: graceSweeps,
+          firstMissAt: record.firstMissAt ?? nowIso,
+          stale: true,
+          staleSince: record.staleSince ?? nowIso,
+          staleReason: "agent absent from partial daemon roster (verification skipped)",
+        };
+        this.persistOrchestratorRecord(updated);
+        markedStale.push({ key, agentId, missCount: graceSweeps, reason: updated.staleReason! });
+        continue;
+      }
+
       // Grace exhausted: require positive confirmation before unlinking.
       let absent = false;
       try {
@@ -4797,7 +8994,11 @@ export class HookRouter {
       }
 
       if (absent) {
-        const res = this.deleteOrchestrator(key);
+        const res = this.deleteOrchestrator(key, {
+          source: "prune:verified-absent",
+          reason: "agent verified absent on daemon",
+          actor: "pruneOrchestrators",
+        });
         if (res.ok) {
           pruned.push({ key, agentId, reason: "agent verified absent on daemon" });
         }
@@ -4819,6 +9020,7 @@ export class HookRouter {
       ok: true,
       prunedCount: pruned.length,
       pruned,
+      archived,
       markedStale,
       recovered,
       ...(opts.dryRun ? { dryRun: true } : {}),
@@ -4953,23 +9155,27 @@ export class HookRouter {
     await this.updateAgentMetadata(id, "Front Desk", { role: "front-desk" });
     if (previous && previous !== id) {
       await this.updateAgentMetadata(previous, "Front Desk (retired)", { role: "retired-front-desk" });
+      await this.deliverStandDown(previous, "frontdesk", FRONT_DESK_REPO, id);
     }
 
     const updatedAt = new Date().toISOString();
     this.writeFrontDesk(id, "frontdesk-handoff");
     void this.drain("frontdesk");
 
-    const onboarding =
+    const onboarding = withFleetEnvelope(
+      routerEnvelope({ repo: FRONT_DESK_REPO, kind: "handoff" }),
       `You are now the Front Desk agent. Read the active handoff snapshot at ${this.handoffPath()}. ` +
-      `Handoff snapshot:\n${String(snapshot).slice(0, 4000)}`;
+        `Handoff snapshot:\n${String(snapshot).slice(0, 4000)}`,
+    );
     await this.deliverMessage(id, onboarding, { noWait: true, steer: true });
 
-    const orchestrators = this.listOrchestratorAgentIds();
+    const orchestrators = this.listOrchestratorTargets();
     const notice = `Front Desk handover: ${id} is now Front Desk (handoff at ${this.handoffPath()}). Route operator escalations to it via 'paseo send --no-wait ${id} <msg>'.`;
     let notified = 0;
-    for (const orchId of orchestrators) {
-      if (orchId !== id) {
-        const ok = await this.deliverMessage(orchId, notice, { noWait: true, steer: true });
+    for (const target of orchestrators) {
+      if (target.agentId !== id) {
+        const message = withFleetEnvelope(routerEnvelope({ repo: target.key, kind: "handoff" }), notice);
+        const ok = await this.deliverMessage(target.agentId, message, { noWait: true, steer: true });
         if (ok) notified++;
       }
     }
@@ -4998,14 +9204,16 @@ export class HookRouter {
       const role = String(agent.role ?? "").toLowerCase();
       const title = String(agent.title ?? "");
       const isWorker =
+        role === "coding-agent" ||
         role === "worker" ||
         role === "coding_worker" ||
+        title.toLowerCase().startsWith("coding-agent:") ||
         title.toLowerCase().startsWith("worker:") ||
         Boolean(agent.labels?.["paseo.parent-agent-id"]);
       if (isWorker) {
         activeWorkers.push({
           id,
-          title: title || "(untitled worker)",
+          title: title || "(untitled coding-agent)",
           status: String(agent.status ?? "unknown"),
           parentAgentId: agent.labels?.["paseo.parent-agent-id"],
         });
@@ -5145,6 +9353,397 @@ export class HookRouter {
   }
 
   // -------------------------------------------------------------------------
+  // Long-lived role rotation (#1019)
+  // -------------------------------------------------------------------------
+
+  /** Effective rotation policy from fleet settings (hot-applied). */
+  public readRotationPolicy(): RotationPolicy {
+    try {
+      const stored = getUppidiFleetSettingsStorage().read() as { rotationPolicy?: RotationPolicy };
+      return stored?.rotationPolicy ?? DEFAULT_ROTATION_POLICY;
+    } catch {
+      return DEFAULT_ROTATION_POLICY;
+    }
+  }
+
+  private saveRotationPolicy(policy: RotationPolicy): void {
+    const storage = getUppidiFleetSettingsStorage();
+    storage.update((prev) => ({ ...prev, rotationPolicy: policy }));
+  }
+
+  public getRotationPolicyFor(role: string, repo?: string | null): Required<RotationRolePolicy> {
+    return resolveRotationPolicy(this.readRotationPolicy(), role, repo);
+  }
+
+  public setRotationPolicyRole(role: string, repo: string | undefined, patch: RotationRolePolicy): RotationPolicy {
+    const current = this.readRotationPolicy();
+    const next: RotationPolicy = {
+      roles: { ...(current.roles ?? {}) },
+      byRepo: { ...(current.byRepo ?? {}) },
+    };
+    if (repo) {
+      const repoKey = canonicalRepoKey(repo) ?? repo;
+      next.byRepo[repoKey] = { ...(next.byRepo[repoKey] ?? {}), [role]: { ...(next.byRepo[repoKey]?.[role] ?? {}), ...patch } };
+    } else {
+      next.roles[role] = { ...(next.roles[role] ?? {}), ...patch };
+    }
+    this.saveRotationPolicy(next);
+    return next;
+  }
+
+  private rotationBriefPath(role: string, repo?: string | null): string {
+    const key = repo ? sanitizeKey(canonicalRepoKey(repo) ?? repo) : role;
+    return join(dirname(this.stateDir), `rotation-brief-${key}.md`);
+  }
+
+  private writeRotationBriefFile(role: string, repo: string | null | undefined, text: string): string {
+    const target = this.rotationBriefPath(role, repo);
+    mkdirSync(dirname(target), { recursive: true });
+    const tmp = `${target}.${process.pid}.${Date.now()}.tmp`;
+    writeFileSync(tmp, String(text ?? ""), "utf8");
+    renameSync(tmp, target);
+    return target;
+  }
+
+  /**
+   * Epoch ms when the incumbent's active turn started, when the live snapshot
+   * carries it. Used to distinguish a healthy in-flight turn from a stalled
+   * runaway that has outlived the mid-turn immunity window (#1265).
+   */
+  private turnStartedAtMsFor(live: WatchdogAgent | null | undefined): number | null {
+    const anyLive = live as any;
+    const raw = anyLive?.activeTurn?.startedAt ?? anyLive?.metrics?.activeTurnStartedAt ?? null;
+    return raw != null ? coerceEpochMs(raw) : null;
+  }
+
+  private observationForRole(role: string, repo: string | null, live: WatchdogAgent | null): RotationObservation {
+    const anyLive = live as any;
+    return {
+      role,
+      repo,
+      spawnedAtMs: anyLive?.updatedAt ? Date.parse(String(anyLive.updatedAt)) || null : null,
+      turns: typeof anyLive?.turns === "number" ? anyLive.turns : typeof anyLive?.turnCount === "number" ? anyLive.turnCount : null,
+      contextWindowUsedTokens:
+        live?.lastUsage?.contextWindowUsedTokens ?? live?.metrics?.contextUsedTokens ?? null,
+      contextWindowMaxTokens:
+        live?.lastUsage?.contextWindowMaxTokens ?? live?.metrics?.contextMaxTokens ?? null,
+      failureTimestampsMs: [],
+    };
+  }
+
+  private async buildRotationBriefForRole(
+    role: string,
+    repo: string | null,
+    opts: { reason?: string | null; previousAgentId?: string | null; io?: IssuesCheckIo },
+  ): Promise<string> {
+    const activeTickets: RotationBriefTicket[] = [];
+    const pendingAttention: RotationBriefTicket[] = [];
+    if (repo) {
+      try {
+        const check = await this.runBoardCheck(repo, undefined, opts.io);
+        if (check.ok && Array.isArray(check.candidates)) {
+          for (const c of check.candidates) {
+            const labels = Array.isArray(c.labels) ? c.labels : [];
+            const isWip = labels.includes("state/1-wip");
+            const isReview = labels.some((l: string) => l.startsWith("review/") || l === "state/2-review");
+            const needsAttention = labels.some(
+              (l: string) =>
+                l.startsWith("dep/blocked") ||
+                l === "priority/0-sos" ||
+                l === "flag/stop-work" ||
+                l === "attention/2-user" ||
+                l === "attention/frontdesk",
+            );
+            if (isWip || isReview) activeTickets.push({ number: c.number, title: c.title, reason: c.reason });
+            if (needsAttention) pendingAttention.push({ number: c.number, title: c.title, reason: c.reason });
+          }
+        }
+      } catch {
+        // Board is rediscoverable by the replacement; a failed read must not block rotation.
+      }
+    }
+    const queueDepth = repo ? candidateRepoKeys(repo).reduce((n, key) => n + this.getQueue(key).length, 0) : 0;
+    const hookTail = repo
+      ? candidateRepoKeys(repo)
+          .map((key) => this.getQueue(key).at(-1)?.msg)
+          .filter(Boolean)
+          .join(" | ")
+      : "";
+    const input: RotationBriefInput = {
+      role,
+      repo,
+      reason: opts.reason ?? null,
+      previousAgentId: opts.previousAgentId ?? null,
+      generatedAt: new Date().toISOString(),
+      skillPath: getEffectiveSkillPath(role === "orchestrator" ? "orchestrator" : role === "front-desk" ? "front-desk" : "coding-agent"),
+      skillText: getEffectiveSkillContent(role === "orchestrator" ? "orchestrator" : role === "front-desk" ? "front-desk" : "coding-agent"),
+      activeTickets,
+      pendingAttention,
+      queueDepth,
+      lastHookDigest: hookTail ? this.handoffSummary(hookTail, 220) : null,
+      lastSweepDigest: this.lastSweepDigests.get(repo ?? FRONT_DESK_REPO) ?? null,
+    };
+    return buildRotationBrief(input);
+  }
+
+  private async spawnRotationReplacement(
+    role: string,
+    repo: string | null,
+    brief: string,
+  ): Promise<{ ok: boolean; agentId?: string; error?: string }> {
+    if (role === "orchestrator" && repo) {
+      const res = await this.ensureOrchestrator({ repo, rotation: true });
+      return { ok: res.ok, agentId: res.agentId, error: res.error };
+    }
+    if (role === "front-desk") {
+      const injected = this.options?.spawnFrontDesk;
+      if (injected) {
+        const spawned = await injected({ title: "Front Desk", prompt: brief });
+        if (!spawned?.id) return { ok: false, error: spawned?.error || "Failed to spawn Front Desk replacement" };
+        this.writeFrontDesk(spawned.id, "rotation");
+        return { ok: true, agentId: spawned.id };
+      }
+      try {
+        const { handleUppidiCreateFrontDesk } = await import("./agents.js");
+        const res = await handleUppidiCreateFrontDesk(
+          { title: "Front Desk", prompt: brief },
+          { paseo: this.getPaseo() } as any,
+        );
+        return { ok: res.ok, agentId: res.agentId, error: res.error };
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
+      }
+    }
+    return { ok: false, error: `role ${role} does not support rotation` };
+  }
+
+  private async verifyRotationReplacement(
+    role: string,
+    repo: string | null,
+    agentId: string,
+  ): Promise<{ ok: boolean; reason?: string }> {
+    const registered = role === "orchestrator" && repo ? this.readOrchestrator(repo)?.agentId : this.readFrontDesk()?.agentId;
+    if (registered !== agentId) {
+      return { ok: false, reason: `replacement ${agentId} not registered for ${role}` };
+    }
+    const map = await this.fetchAgentMap().catch(() => null);
+    if (map && map.size > 0) {
+      const live = map.get(agentId);
+      if (!live) return { ok: false, reason: `replacement ${agentId} missing from live roster` };
+      // Authoritative verification only: explicit spawn metadata (role/labels),
+      // never the display title (#1143). Rotation spawns stamp `role`, so a
+      // replacement without it is not verified.
+      const liveRole = String(
+        live.role ?? live.labels?.role ?? live.labels?.category ?? "",
+      )
+        .trim()
+        .toLowerCase();
+      const expected =
+        role === "front-desk" ? ["front-desk", "frontdesk"] : [role.toLowerCase()];
+      if (!expected.includes(liveRole)) {
+        return { ok: false, reason: `replacement ${agentId} registered without ${role} role metadata` };
+      }
+    }
+    return { ok: true };
+  }
+
+  /**
+   * Rotate one long-lived role. Contract: spawn replacement, verify it
+   * registered, deliver the rotation brief, then archive the incumbent. On
+   * spawn/verify failure the incumbent is left untouched and the replacement
+   * (if any) is archived. Manual triggers bypass policy/cooldown/mid-turn but
+   * never overlap an in-flight rotation.
+   */
+  public async rotateRole(input: {
+    role: string;
+    repo?: string;
+    reason?: string;
+    force?: boolean;
+    io?: IssuesCheckIo;
+  }): Promise<UppidiRotateRoleOutput> {
+    const role = String(input.role ?? "").trim();
+    if (!isRotationRole(role)) {
+      return { ok: false, role, triggers: [], errorCode: "invalid", error: `unknown rotation role: ${role}` };
+    }
+    const repo = role === "orchestrator" ? (input.repo?.trim() ? canonicalRepoKey(input.repo.trim()) ?? input.repo.trim() : "") : null;
+    if (role === "orchestrator" && !repo) {
+      return { ok: false, role, triggers: [], errorCode: "invalid", error: "repo is required for orchestrator rotation" };
+    }
+
+    const lockKey = RotationLock.key(role, repo);
+    if (!this.rotationLock.acquire(role, repo)) {
+      return { ok: false, role, repo: repo ?? undefined, triggers: [], errorCode: "in_flight", error: `rotation already in progress for ${role}` };
+    }
+
+    try {
+      const policy = this.getRotationPolicyFor(role, repo);
+      if (!input.force && !policy.enabled) {
+        return { ok: false, role, repo: repo ?? undefined, triggers: [], errorCode: "disabled", error: `rotation disabled for ${role}` };
+      }
+
+      const oldAgentId = role === "orchestrator" ? this.readOrchestrator(repo!)?.agentId ?? null : this.readFrontDesk()?.agentId ?? null;
+      const reasons: RotationTriggerReason[] = input.force ? ["manual"] : [];
+      if (!input.force) {
+        const map = await this.fetchAgentMap().catch(() => null);
+        const live = oldAgentId ? map?.get(oldAgentId) ?? null : null;
+        const decision = evaluateRotationTrigger(
+          this.observationForRole(role, repo, live),
+          {
+            nowMs: Date.now(),
+            lastRotationAtMs: this.lastRotationAt.get(lockKey) ?? null,
+            midTurn: oldAgentId ? this.isAgentBusy(oldAgentId, map) : false,
+            turnStartedAtMs: this.turnStartedAtMsFor(live),
+            inFlight: false,
+          },
+          this.readRotationPolicy(),
+        );
+        if (!decision.shouldRotate) {
+          return {
+            ok: false,
+            role,
+            repo: repo ?? undefined,
+            triggers: [],
+            errorCode: decision.blocked === "cooldown" ? "in_flight" : "disabled",
+            error: decision.blocked ? `rotation blocked: ${decision.blocked}` : "no rotation trigger fired",
+          };
+        }
+        reasons.push(...decision.triggers);
+      }
+
+      const brief = await this.buildRotationBriefForRole(role, repo, {
+        reason: input.reason ?? (reasons.length ? reasons.join(", ") : "manual"),
+        previousAgentId: oldAgentId,
+        io: input.io,
+      });
+
+      const spawn = await this.spawnRotationReplacement(role, repo, brief);
+      if (!spawn.ok || !spawn.agentId) {
+        return { ok: false, role, repo: repo ?? undefined, oldAgentId: oldAgentId ?? undefined, triggers: reasons, errorCode: "spawn_failed", error: spawn.error || "spawn failed" };
+      }
+
+      const verify = await this.verifyRotationReplacement(role, repo, spawn.agentId);
+      if (!verify.ok) {
+        await this.archiveAgent(spawn.agentId).catch(() => {});
+        if (oldAgentId) {
+          if (role === "orchestrator") this.writeOrchestrator(repo!, oldAgentId, "rotation-abort");
+          else this.writeFrontDesk(oldAgentId, "rotation-abort");
+        }
+        return { ok: false, role, repo: repo ?? undefined, oldAgentId: oldAgentId ?? undefined, agentId: spawn.agentId, triggers: reasons, errorCode: "verify_failed", error: verify.reason || "verification failed" };
+      }
+
+      const briefPath = this.writeRotationBriefFile(role, repo, brief);
+      const envelope = withFleetEnvelope(routerEnvelope({ repo: repo ?? FRONT_DESK_REPO, kind: "handoff" }), brief);
+      await this.deliverMessage(spawn.agentId, envelope, { noWait: true, steer: true }).catch(() => {});
+
+      if (oldAgentId && oldAgentId !== spawn.agentId) {
+        await this.archiveAgent(oldAgentId).catch(() => {});
+      }
+      this.lastRotationAt.set(lockKey, Date.now());
+      this.log(`[info] rotated ${role}${repo ? ` for ${repo}` : ""}: ${oldAgentId?.slice(0, 7) ?? "none"} -> ${spawn.agentId.slice(0, 7)} (${reasons.join(", ") || "manual"})`);
+      return {
+        ok: true,
+        role,
+        repo: repo ?? undefined,
+        oldAgentId: oldAgentId ?? undefined,
+        agentId: spawn.agentId,
+        reason: reasons.join(", ") || "manual",
+        triggers: reasons,
+        briefPath,
+      };
+    } finally {
+      this.rotationLock.release(role, repo);
+    }
+  }
+
+  public rotationStatus(input?: { role?: string; repo?: string }): UppidiRotationStatusOutput {
+    const filterRole = input?.role;
+    const statuses: UppidiRotationStatusOutput["statuses"] = [];
+    const now = Date.now();
+    for (const role of ROTATION_ROLES) {
+      if (filterRole && role !== filterRole) continue;
+      if (role === "orchestrator") {
+        const records = this.listOrchestratorRecords();
+        const repos = input?.repo ? [canonicalRepoKey(input.repo) ?? input.repo] : records.map((r) => r.key);
+        for (const repo of repos.length ? repos : [null]) {
+          const key = RotationLock.key(role, repo);
+          statuses.push({
+            role,
+            repo,
+            enabled: this.getRotationPolicyFor(role, repo).enabled,
+            agentId: repo ? this.readOrchestrator(repo)?.agentId ?? null : null,
+            lastRotationAt: this.lastRotationAt.has(key) ? new Date(this.lastRotationAt.get(key)!).toISOString() : null,
+            cooldownRemainingMs: this.cooldownRemaining(role, repo, now),
+            inProgress: this.rotationLock.isLocked(role, repo),
+            policy: this.getRotationPolicyFor(role, repo),
+          });
+        }
+      } else {
+        statuses.push({
+          role,
+          repo: null,
+          enabled: this.getRotationPolicyFor(role, null).enabled,
+          agentId: role === "front-desk" ? this.readFrontDesk()?.agentId ?? null : null,
+          lastRotationAt: this.lastRotationAt.has(role) ? new Date(this.lastRotationAt.get(role)!).toISOString() : null,
+          cooldownRemainingMs: this.cooldownRemaining(role, null, now),
+          inProgress: this.rotationLock.isLocked(role),
+          policy: this.getRotationPolicyFor(role, null),
+        });
+      }
+    }
+    return { ok: true, statuses };
+  }
+
+  private cooldownRemaining(role: string, repo: string | null, now: number): number {
+    const last = this.lastRotationAt.get(RotationLock.key(role, repo));
+    if (last == null) return 0;
+    return Math.max(0, this.getRotationPolicyFor(role, repo).cooldownMs - (now - last));
+  }
+
+  /**
+   * Evaluate and apply automatic rotations for every registered live role.
+   * Called from the periodic board sweep; a no-op unless `rotationAutoEnabled`.
+   */
+  public async evaluateAutomaticRotations(): Promise<UppidiRotateRoleOutput[]> {
+    if (!this.rotationAutoEnabled || this.isHaltedState) return [];
+    const agentMap = await this.fetchAgentMap().catch(() => null);
+    const out: UppidiRotateRoleOutput[] = [];
+    for (const record of this.listOrchestratorRecords()) {
+      const live = agentMap?.get(record.agentId) ?? null;
+      out.push(await this.maybeRotateFromObservation("orchestrator", record.key, live, agentMap));
+    }
+    const frontDeskId = this.readFrontDesk()?.agentId ?? null;
+    if (frontDeskId) {
+      const live = agentMap?.get(frontDeskId) ?? null;
+      out.push(await this.maybeRotateFromObservation("front-desk", null, live, agentMap));
+    }
+    return out.filter((r) => r.ok || r.errorCode !== "disabled");
+  }
+
+  private async maybeRotateFromObservation(
+    role: string,
+    repo: string | null,
+    live: WatchdogAgent | null,
+    agentMap: Map<string, WatchdogAgent> | null,
+  ): Promise<UppidiRotateRoleOutput> {
+    const lockKey = RotationLock.key(role, repo);
+    const decision = evaluateRotationTrigger(
+      this.observationForRole(role, repo, live),
+      {
+        nowMs: Date.now(),
+        lastRotationAtMs: this.lastRotationAt.get(lockKey) ?? null,
+        midTurn: live ? this.isAgentBusy(live.id, agentMap) : false,
+        turnStartedAtMs: this.turnStartedAtMsFor(live),
+        inFlight: this.rotationLock.isLocked(role, repo),
+      },
+      this.readRotationPolicy(),
+    );
+    if (!decision.shouldRotate) {
+      return { ok: false, role, repo: repo ?? undefined, triggers: [], errorCode: decision.blocked === "disabled" ? "disabled" : "in_flight", error: decision.blocked ? `blocked: ${decision.blocked}` : decision.reasons.join(", ") || "no trigger" };
+    }
+    return await this.rotateRole({ role, repo: repo ?? undefined, reason: decision.reason ?? "auto" });
+  }
+
+  // -------------------------------------------------------------------------
   // Deterministic board sweep
   // -------------------------------------------------------------------------
 
@@ -5172,6 +9771,33 @@ export class HookRouter {
    * checker instead; it is not the primary path and must not be set in
    * production.
    */
+  /**
+   * Projects a repository's automation tier onto its board candidates (#1282).
+   * `kanban-only` bars every candidate from dispatch, `paused` buffers only the
+   * ones that would otherwise dispatch, and `full-active` is untouched.
+   */
+  private applyRepoAutomationTier(repoKey: string, candidates: BoardCandidate[]): BoardCandidate[] {
+    const tier = this.getRepoAutomationTier(repoKey);
+    if (tier === "full-active") return candidates;
+    return candidates.map((candidate) => {
+      if (tier === "kanban-only") {
+        return {
+          ...candidate,
+          is_dispatchable: false,
+          reason: "Kanban-only passive repository (automation barred)",
+        };
+      }
+      if (candidate.is_dispatchable) {
+        return {
+          ...candidate,
+          is_dispatchable: false,
+          reason: "Repository dispatch is paused (queue buffered)",
+        };
+      }
+      return candidate;
+    });
+  }
+
   public async runBoardCheck(
     repo: string,
     hostname = "forge.mrs.uppidi.com",
@@ -5189,10 +9815,14 @@ export class HookRouter {
           timeout: 30000,
           maxBuffer: 5 * 1024 * 1024,
         });
-        return { repo, ok: true, candidates: this.parseExternalCheckerStdout(stdout) ?? [] };
+        return {
+          repo,
+          ok: true,
+          candidates: this.applyRepoAutomationTier(repo, this.parseExternalCheckerStdout(stdout) ?? []),
+        };
       } catch (err: any) {
         const fromStdout = err?.stdout ? this.parseExternalCheckerStdout(String(err.stdout)) : null;
-        if (fromStdout) return { repo, ok: true, candidates: fromStdout };
+        if (fromStdout) return { repo, ok: true, candidates: this.applyRepoAutomationTier(repo, fromStdout) };
         return { repo, ok: false, candidates: [], error: err instanceof Error ? err.message : String(err) };
       }
     }
@@ -5207,106 +9837,245 @@ export class HookRouter {
     return {
       repo,
       ok: true,
-      candidates: outcome.rankedCandidates,
+      candidates: this.applyRepoAutomationTier(repo, outcome.rankedCandidates),
       staleWipRecovery: outcome.staleWipRecovery,
     };
   }
 
-  public async runBoardSweep(repos?: string[], io?: IssuesCheckIo): Promise<BoardSweepResult> {
+  /**
+   * Deterministic SHA256 digest of a repo's actionable candidate set (#1181).
+   * The tuple is sorted and stable so the same board produces the same digest
+   * regardless of API ordering.
+   */
+  private actionableDigest(candidates: readonly BoardCandidate[]): string {
+    const parts = candidates
+      .map(
+        (c) => {
+          // Cast to access optional metadata fields for delta detection (#1352).
+          const extra = c as unknown as Record<string, unknown>;
+          return `${c.number}|${(c.labels ?? []).slice().sort().join(",")}|${c.is_dispatchable ? 1 : 0}|${c.category ?? ""}|${extra.comments ?? 0}|${extra.updated_at ?? extra.created_at ?? ""}`;
+        },
+      )
+      .sort();
+    return createHash("sha256").update(parts.join("\n")).digest("hex");
+  }
+
+  public async runBoardSweep(
+    repos?: string[],
+    io?: IssuesCheckIo,
+    opts: { explicit?: boolean; now?: number } = {},
+  ): Promise<BoardSweepResult> {
+    if (this.isHaltedState) {
+      return { ok: true, swept: 0, actionable: [], staleWipRecovered: [], errors: [], prunedCount: 0, autoEnsured: [], notified: 0 };
+    }
+    const liveAgentMap = await this.fetchAgentMap().catch(() => null);
+    await this.reconcileFrontDesk(liveAgentMap);
     const rawTargets = (repos ?? this.getEnrolledRepos()).filter((k) => {
       if (!k || k === "frontdesk") return false;
       const parts = k.split("/").filter(Boolean);
       return parts.length >= 2;
     });
     const targets = Array.from(new Set(rawTargets.map((k) => canonicalRepoKey(k) ?? k)));
-    const actionable: BoardSweepResult["actionable"] = [];
-    const staleWipRecovered: StaleWipResult[] = [];
-    const errors: Array<{ repo: string; error: string }> = [];
-    const pruneResult = await this.pruneOrchestrators();
-    const prunedCount = pruneResult.prunedCount;
-    if (!pruneResult.ok) {
-      this.log(`[warn] Board sweep could not prune orchestrator records: ${pruneResult.error ?? "unknown error"}`);
-    }
-    for (const repo of targets) {
-      let res: BoardCheckResult;
-      try {
-        res = await this.runBoardCheck(repo, undefined, io);
-      } catch (err) {
-        // A failed check is loud: logged, returned, and reported to Front
-        // Desk, because an unreported failure looks exactly like a clean board.
-        const error = err instanceof Error ? err.message : String(err);
-        errors.push({ repo, error });
-        this.log(`[error] board check failed for ${repo}: ${error}`);
-        continue;
-      }
-      if (res.staleWipRecovery && res.staleWipRecovery.length > 0) {
-        staleWipRecovered.push(...res.staleWipRecovery);
-      }
-      if (!res.ok || res.candidates.length === 0) continue;
-      const dispatchable = res.candidates.filter((c) => c.is_dispatchable).length;
-      actionable.push({ repo, count: res.candidates.length, dispatchable });
+    const sweepKey = targets.slice().sort().join(",");
+    const inFlight = this.inFlightBoardSweep.get(sweepKey);
+    if (inFlight) {
+      return await inFlight;
     }
 
-    // Self-heal staffing (#889): an enrolled repo with actionable board work but
-    // no active orchestrator gets one provisioned before the notification.
-    const autoEnsured: Array<{ repo: string; agentId?: string; status?: string; error?: string }> = [];
-    for (const item of actionable) {
-      try {
-        const ensured = await this.ensureUnstaffedEnrolledRepo(item.repo, { reason: "board sweep actionable" });
-        if (ensured) {
-          autoEnsured.push({ repo: item.repo, agentId: ensured.agentId, status: ensured.status, error: ensured.error });
+    const promise = (async (): Promise<BoardSweepResult> => {
+      // Full reconciliation (#1263): the delta gate below suppresses
+      // re-delivery of an unchanged actionable set, which strands a candidate
+      // whose notification was never consumed (orchestrator busy, rotated, or
+      // missed). Every `boardReconciliationIntervalMs` the sweep forces the
+      // notification through even when the digest is unchanged, so the
+      // board-state cache can never hide an actionable ticket forever.
+      const nowMs = opts.now ?? Date.now();
+      const reconciliationDue =
+        this.boardReconciliationIntervalMs > 0 &&
+        (this.lastBoardReconciliationAt === null ||
+          nowMs - this.lastBoardReconciliationAt >= this.boardReconciliationIntervalMs);
+      if (reconciliationDue) {
+        this.lastBoardReconciliationAt = nowMs;
+        this.log("[info] Board sweep full reconciliation due; re-emitting unchanged candidates");
+      }
+      const actionable: BoardSweepResult["actionable"] = [];
+      const staleWipRecovered: StaleWipResult[] = [];
+      const errors: Array<{ repo: string; error: string }> = [];
+      // Per-repo actionable-set digest for the delta gate (#1181).
+      const sweepDigests = new Map<string, string>();
+      const pruneResult = await this.pruneOrchestrators();
+      const prunedCount = pruneResult.prunedCount;
+      if (!pruneResult.ok) {
+        this.log(`[warn] Board sweep could not prune orchestrator records: ${pruneResult.error ?? "unknown error"}`);
+      }
+      for (const repo of targets) {
+        let res: BoardCheckResult;
+        try {
+          res = await this.runBoardCheck(repo, undefined, io);
+        } catch (err) {
+          // A failed check is loud: logged, returned, and reported to Front
+          // Desk, because an unreported failure looks exactly like a clean board.
+          const error = err instanceof Error ? err.message : String(err);
+          errors.push({ repo, error });
+          sweepDigests.set(repo, "#board-check-error");
+          this.log(`[error] board check failed for ${repo}: ${error}`);
+          continue;
         }
-      } catch (err) {
-        this.log(`[warn] Auto-ensure failed for ${item.repo}: ${err instanceof Error ? err.message : String(err)}`);
-      }
-    }
-
-    let notified = 0;
-    const frontDeskId = this.readFrontDesk()?.agentId ?? null;
-    if (frontDeskId && (actionable.length > 0 || errors.length > 0)) {
-      const sections: string[] = [];
-      if (actionable.length > 0) {
-        const lines = actionable.map((a) => {
-          return `- ${a.repo}: ${a.count} actionable (${a.dispatchable} dispatchable)`;
-        });
-        sections.push(`[Fleet Board Sweep] ${actionable.length} repo(s) with actionable tickets:\n${lines.join("\n")}`);
-      }
-      if (errors.length > 0) {
-        const failureLines = errors.map((e) => `- ${e.repo}: check failed (${e.error})`);
-        sections.push(
-          `[Fleet Board Sweep] ${errors.length} repo(s) FAILED board check - actionable tickets may be missed:\n${failureLines.join("\n")}`,
+        if (res.staleWipRecovery && res.staleWipRecovery.length > 0) {
+          staleWipRecovered.push(...res.staleWipRecovery);
+        }
+        sweepDigests.set(repo, res.ok ? this.actionableDigest(res.candidates) : "#board-check-error");
+        if (!res.ok || res.candidates.length === 0) continue;
+        const dispatchable = res.candidates.filter((c) => c.is_dispatchable).length;
+        // Count tickets that require explicit Front Desk attention (#1354, #1357).
+        // Front Desk attention requires explicit targeting (attention/frontdesk)
+        // or fleet-wide emergency (category === "sos"). Routine orchestrator
+        // feedback or untargeted new tickets are delivered directly to the
+        // repository orchestrators via webhooks and must not wake Front Desk.
+        let totalFrontDeskAttention = 0;
+        for (const c of res.candidates) {
+          if (
+            c.labels?.includes("attention/frontdesk") ||
+            c.category === "sos"
+          ) {
+            totalFrontDeskAttention++;
+          }
+        }
+        actionable.push({ repo, count: res.candidates.length, dispatchable, totalFrontDeskAttention });
+        this.lastSweepDigests.set(
+          repo,
+          `${res.candidates.length} candidate(s), ${dispatchable} dispatchable at ${new Date().toISOString()}`,
         );
       }
-      const alertMsg = sections.join("\n\n");
-      const isBusy = this.isAgentBusy(frontDeskId);
-      if (isBusy) {
-        this.log(`[info] Front Desk ${frontDeskId} is busy; queueing board sweep notification`);
-        this.enqueue("frontdesk", alertMsg, false);
-        notified = 1;
-      } else {
-        const ok = await this.deliverMessage(frontDeskId, alertMsg, { noWait: true, steer: false });
-        if (ok) {
-          this.lastDeliveryTimes.set(frontDeskId, Date.now());
-          notified = 1;
+
+      // Delta gate (#1181): only deliver when the actionable set or the error
+      // state actually changed, an operator asked explicitly, or a full
+      // reconciliation is due (#1263). An unchanged board must not wake Front
+      // Desk on the rigid sweep interval, but the periodic pass must.
+      const forceDelivery = opts.explicit === true || reconciliationDue;
+      let actionableChanged = forceDelivery;
+      for (const repo of targets) {
+        const digest = sweepDigests.get(repo) ?? "";
+        if (this.lastSweepActionDigests.get(repo) !== digest) actionableChanged = true;
+      }
+      const errorSignature = errors
+        .map((e) => `${e.repo}:${e.error}`)
+        .sort()
+        .join("|");
+      const errorStateChanged = forceDelivery || errorSignature !== this.lastSweepErrorSignature;
+      for (const repo of targets) {
+        this.lastSweepActionDigests.set(repo, sweepDigests.get(repo) ?? "");
+      }
+      this.lastSweepErrorSignature = errorSignature;
+      // Persist updated digests atomically (#1352).
+      if (!this.isTestMode) {
+        try {
+          const sdStorage = getSweepDigestStorage();
+          const payload: SweepDigestsPayload = {
+            digests: {},
+            errorSignature: this.lastSweepErrorSignature,
+            lastBoardReconciliationAt: this.lastBoardReconciliationAt,
+          };
+          for (const [repo, digest] of this.lastSweepActionDigests.entries()) {
+            payload.digests[repo] = digest;
+          }
+          sdStorage.write(payload);
+        } catch {
+          // Non-fatal: disk write failure should not block the sweep.
         }
       }
+      const hasWork = actionable.length > 0 || errors.length > 0;
+      // Dispatchable gate (#1354): suppress routine Front Desk sweep notifications
+      // only when there are zero dispatchable items AND zero Front Desk attention.
+      // Front Desk attention includes: attention/frontdesk label, feedback/sos
+      // categories, and newly seen (is_new) tickets.
+      const totalDispatchable = actionable.reduce((sum, a) => sum + a.dispatchable, 0);
+      const totalFrontDeskAttention = actionable.reduce(
+        (sum, a) => sum + (a.totalFrontDeskAttention ?? 0),
+        0,
+      );
+      const dispatchableGateClosed = totalDispatchable === 0 && totalFrontDeskAttention === 0;
+      const shouldNotify = hasWork && !dispatchableGateClosed && (actionableChanged || errorStateChanged);
+
+
+      // Self-heal staffing (#889): an enrolled repo with actionable board work but
+      // no active orchestrator gets one provisioned before the notification.
+      const autoEnsured: Array<{ repo: string; agentId?: string; status?: string; error?: string }> = [];
+      for (const item of actionable) {
+        try {
+          const ensured = await this.ensureUnstaffedEnrolledRepo(item.repo, { reason: "board sweep actionable" });
+          if (ensured) {
+            autoEnsured.push({ repo: item.repo, agentId: ensured.agentId, status: ensured.status, error: ensured.error });
+          }
+        } catch (err) {
+          this.log(`[warn] Auto-ensure failed for ${item.repo}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
+
+      let notified = 0;
+      const frontDeskId = this.readFrontDesk()?.agentId ?? null;
+      if (frontDeskId && shouldNotify) {
+        const sections: string[] = [];
+        if (actionable.length > 0) {
+          const lines = actionable.map((a) => {
+            return `- ${a.repo}: ${a.count} actionable (${a.dispatchable} dispatchable)`;
+          });
+          sections.push(`[Fleet Board Sweep] ${actionable.length} repo(s) with actionable tickets:\n${lines.join("\n")}`);
+        }
+        if (errors.length > 0) {
+          const failureLines = errors.map((e) => `- ${e.repo}: check failed (${e.error})`);
+          sections.push(
+            `[Fleet Board Sweep] ${errors.length} repo(s) FAILED board check - actionable tickets may be missed:\n${failureLines.join("\n")}`,
+          );
+        }
+        const alertMsg = sections.join("\n\n");
+        const isBusy = this.isAgentBusy(frontDeskId);
+        if (isBusy) {
+          this.log(`[info] Front Desk ${frontDeskId} is busy; queueing board sweep notification`);
+          this.enqueue("frontdesk", alertMsg, false);
+          notified = 1;
+        } else {
+          const ok = await this.deliverMessage(frontDeskId, alertMsg, { noWait: true, steer: false });
+          if (ok) {
+            this.lastDeliveryTimes.set(frontDeskId, Date.now());
+            notified = 1;
+          }
+        }
+      } else if (frontDeskId && hasWork && !shouldNotify) {
+        const reason = dispatchableGateClosed
+          ? "zero dispatchable items; suppressing Front Desk notification"
+          : "actionable set unchanged; suppressing Front Desk notification";
+        this.log(`Board sweep ${reason}`);
+      }
+      this.log(
+        `[info] Board sweep complete: ${targets.length} repo(s) swept, ${actionable.length} actionable, ${prunedCount} orchestrator record(s) pruned, ${autoEnsured.length} auto-staffed, ${errors.length} failed`,
+      );
+      // Re-evaluate dormancy with this sweep's roster so a quiet fleet enters
+      // quiescent mode (and an actionable board re-wakes it) (#1181).
+      this.refreshDormancy(liveAgentMap);
+      await this.evaluateAutomaticRotations().catch(() => []);
+      return {
+        ok: true,
+        swept: targets.length,
+        actionable,
+        ...(staleWipRecovered.length > 0 ? { staleWipRecovered } : {}),
+        notified,
+        prunedCount,
+        ...(errors.length > 0 ? { errors } : {}),
+        ...(autoEnsured.length > 0 ? { autoEnsured } : {}),
+      };
+    })();
+
+    this.inFlightBoardSweep.set(sweepKey, promise);
+    try {
+      return await promise;
+    } finally {
+      this.inFlightBoardSweep.delete(sweepKey);
     }
-    this.log(
-      `[info] Board sweep complete: ${targets.length} repo(s) swept, ${actionable.length} actionable, ${prunedCount} orchestrator record(s) pruned, ${autoEnsured.length} auto-staffed, ${errors.length} failed`,
-    );
-    return {
-      ok: true,
-      swept: targets.length,
-      actionable,
-      ...(staleWipRecovered.length > 0 ? { staleWipRecovered } : {}),
-      notified,
-      prunedCount,
-      ...(errors.length > 0 ? { errors } : {}),
-      ...(autoEnsured.length > 0 ? { autoEnsured } : {}),
-    };
   }
 
   public startBackgroundLoops(): void {
+    if (this.isHaltedState) return;
     if (this.watchdogIntervalMs > 0 && !this.watchdogTimer) {
       this.watchdogTimer = setInterval(() => {
         void this.runWatchdogAudit().catch(() => {});
@@ -5332,7 +10101,7 @@ export class HookRouter {
     }
   }
 
-  private queueFilePath(key: string): string {
+  public queueFilePath(key: string): string {
     return join(this.queueDir, `${sanitizeKey(key)}.json`);
   }
 
@@ -5433,10 +10202,10 @@ export class HookRouter {
     this.queues.set(key, list);
     this.persistQueue(key);
     this.log(`[info] Enqueued message ${entry.id} for ${key} (total depth: ${list.length}, sos: ${Boolean(isSos)})`);
-    if (!this.isRepoMuted(key)) {
+    if (!this.isRepoDispatchSuppressed(key)) {
       void this.drain(key);
     } else {
-      this.log(`[info] Drain suppressed for muted repository ${key}`);
+      this.log(`[info] Drain suppressed for paused or kanban-only repository ${key}`);
     }
     return entry;
   }
@@ -5444,6 +10213,22 @@ export class HookRouter {
   public getQueue(key: string): QueueEntry[] {
     return [...(this.queues.get(key) ?? [])];
   }
+
+  /**
+   * Remove a specific queue entry by id and persist the updated queue.
+   * Returns true if an entry was found and removed (#1118).
+   */
+  public removeQueueEntry(key: string, entryId: string): boolean {
+    const list = this.queues.get(key);
+    if (!list || list.length === 0) return false;
+    const idx = list.findIndex((e) => e.id === entryId);
+    if (idx === -1) return false;
+    list.splice(idx, 1);
+    this.persistQueue(key);
+    this.log(`[info] Removed message ${entryId} from queue ${key} (remaining depth: ${list.length})`);
+    return true;
+  }
+
 
   public pause(key?: string): string[] {
     if (!key || key === "all") {
@@ -5466,12 +10251,17 @@ export class HookRouter {
   }
 
   public resume(key?: string): string[] {
+    if (this.teardownInProgress) {
+      this.log("[warn] resume ignored: fleet teardown in progress");
+      return Array.from(this.pausedQueues);
+    }
     if (!key || key === "all") {
+      this.isHaltedState = false;
       this.allQueuesPaused = false;
       this.pausedQueues.clear();
       this.log("[info] All queues resumed");
       for (const k of this.queues.keys()) {
-        if (!this.isRepoMuted(k)) {
+        if (!this.isRepoDispatchSuppressed(k)) {
           void this.drain(k);
         }
       }
@@ -5489,7 +10279,7 @@ export class HookRouter {
       }
       this.pausedQueues.delete(key);
       this.log(`[info] Queue ${key} resumed`);
-      if (!this.isRepoMuted(key)) {
+      if (!this.isRepoDispatchSuppressed(key)) {
         void this.drain(key);
       }
     }
@@ -5497,21 +10287,107 @@ export class HookRouter {
   }
 
   public isPaused(key: string): boolean {
+    if (this.isHaltedState) return true;
     if (key === "all") return this.allQueuesPaused || this.pausedQueues.has(key);
     return this.allQueuesPaused || this.pausedQueues.has(key);
   }
 
   /** True while a global `pause('all')` is in effect (#877). */
   public isAllPaused(): boolean {
-    return this.allQueuesPaused;
+    return this.isHaltedState || this.allQueuesPaused;
   }
 
   /**
-   * True when every drain target owned by `agentId` is paused (#877).
-   * A global pause-all suppresses all drains; an agent with no drain targets
-   * is never suppressed so the turn_ended log keeps its existing wording.
+   * Canonical ALL HALT method (#994): pauses all queue ingress and processing,
+   * stops background loops (watchdog and board sweep), and suppresses all
+   * auto-provisioning (orchestrators, unstaffed repos, front desk).
+   */
+  public halt(): void {
+    this._mode = "HALT";
+    this.isHaltedState = true;
+    this.pause("all");
+    this.stopBackgroundLoops();
+    this.saveConfigState();
+    this.log("[warn] HookRouter canonical ALL HALT engaged: background loops stopped, ingress paused, auto-provisioning disabled");
+  }
+
+  /** Returns true when the canonical ALL HALT state is engaged (#994). */
+  public isHalted(): boolean {
+    return this.isHaltedState;
+  }
+
+  // ── Unified fleet control (§1034) ────────────────────────────────────────
+
+  /** Current fleet mode. */
+  public get mode(): FleetMode {
+    return this._mode;
+  }
+
+  /** Set fleet mode, coercing `HOLD` → `HALT` per §4.3. Persists to config. */
+  public setMode(mode: string): void {
+    const resolved = coerceFleetMode(mode);
+    if (resolved !== this._mode) {
+      this._mode = resolved;
+      this.saveConfigState();
+      this.log(`[info] Fleet mode changed → ${resolved}`);
+    }
+  }
+
+  /** Per-class delivery overrides; undefined means "use mode defaults". */
+  public get eventClassPolicy(): Record<string, string> | undefined {
+    return this._eventClassPolicy;
+  }
+
+  /** Set per-class delivery overrides and persist. */
+  public setEventClassPolicy(policy: Record<string, string>): void {
+    this._eventClassPolicy = policy;
+    this.saveConfigState();
+  }
+
+  /**
+   * Marks the start of a fleet teardown window (#1013). While a teardown is
+   * mid-flight `resume()`/`resumeAll()` must not clear the halt, otherwise
+   * ingress and auto-provisioning would race the archiving work.
+   */
+  public markTeardownStart(): void {
+    this.teardownInProgress = true;
+  }
+
+  /** Clears the teardown window once teardown finishes (success or error). */
+  public markTeardownEnd(): void {
+    this.teardownInProgress = false;
+  }
+
+  /** True while a fleet teardown is running (#1013). */
+  public isTeardownInProgress(): boolean {
+    return this.teardownInProgress;
+  }
+
+  /**
+   * Thin operator-facing wrapper over `resume("all")` (#1013). Refuses while a
+   * teardown is mid-flight and reports whether the halt was actually cleared.
+   */
+  public resumeAll(): { ok: boolean; resumed: boolean; error?: string } {
+    if (this.teardownInProgress) {
+      return {
+        ok: false,
+        resumed: false,
+        error: "Fleet teardown in progress; halt cannot be resumed until it completes",
+      };
+    }
+    this.resume("all");
+    return { ok: true, resumed: true };
+  }
+
+  /**
+   * True when every drain target owned by `agentId` is paused (#877, #1116).
+   * A global pause-all or halt suppresses all drains globally regardless of whether
+   * the agent has a registered target (#1116, #1119). When not globally paused,
+   * an agent with no drain targets is never suppressed so the turn_ended log keeps
+   * its existing wording.
    */
   private isAgentDrainSuppressed(agentId: string): boolean {
+    if (this.isAllPaused()) return true;
     let hasTarget = false;
     const frontDesk = this.readFrontDesk();
     if (frontDesk?.agentId === agentId) {
@@ -5551,6 +10427,7 @@ export class HookRouter {
     }
     this.queues.delete(key);
     this.busyQueues.delete(key);
+    this.busySince.delete(key);
     this.busyAttempts.delete(key);
     this.draining.delete(key);
     this.droppedCount.delete(key);
@@ -5577,19 +10454,19 @@ export class HookRouter {
     return count;
   }
 
-  public clearFrontDesk(): number {
+  public clearFrontDesk(opts: StateMutationOptions = {}): number {
     let count = 0;
-    const parentDir = dirname(this.stateDir);
-    const candidates = [
-      join(this.stateDir, "frontdesk.json"),
-      join(parentDir, "frontdesk.json"),
-      join(this.queueDir, "frontdesk.json"),
-    ];
+    const candidates = this.frontDeskCandidatePaths();
+    // Capture the registration before unlinking so the audit log records the
+    // prior value and the in-memory delivery state is released (#1077).
+    const frontDesk = this.readFrontDesk();
+    const removedPaths: string[] = [];
 
     for (const p of candidates) {
       if (existsSync(p)) {
         try {
           unlinkSync(p);
+          removedPaths.push(p);
           count++;
         } catch (err) {
           this.log(`[warn] file purge/delete failed (hook-router.ts:4151): ${err}`);
@@ -5597,7 +10474,6 @@ export class HookRouter {
       }
     }
 
-    const frontDesk = this.readFrontDesk();
     if (frontDesk?.agentId) {
       this.lastDeliveryTimes.delete(frontDesk.agentId);
     }
@@ -5605,18 +10481,41 @@ export class HookRouter {
     count += this.clearQueue("frontdesk");
     this.coalesceBuffers.delete("frontdesk");
     this.sosStates.delete("frontdesk");
+    if (removedPaths.length > 0 || frontDesk?.agentId) {
+      this.appendStateMutation({
+        action: "clearFrontDesk",
+        source: opts.source ?? "unspecified",
+        actor: opts.actor ?? null,
+        reason: opts.reason ?? null,
+        key: FRONT_DESK_REPO,
+        priorValue: { record: frontDesk, paths: removedPaths },
+      });
+    } else {
+      // A deliberate clear attempt with no registration is still an actor event.
+      this.appendStateMutation({
+        action: "clearFrontDesk",
+        source: opts.source ?? "unspecified",
+        actor: opts.actor ?? null,
+        reason: opts.reason ?? "no registration present",
+        key: FRONT_DESK_REPO,
+        priorValue: null,
+      });
+    }
     this.log(`[info] Cleared frontdesk registration and queues (${count} state file(s) removed)`);
     return count;
   }
 
-  public clearAllOrchestrators(): number {
+  public clearAllOrchestrators(opts: StateMutationOptions = {}): number {
     let count = 0;
-    // Capture registered keys before unlinking so in-memory locks for those
-    // scopes can be released as well (#872: no stale locks).
+    // Capture registered records before unlinking so the audit log records the
+    // prior values and in-memory locks for those scopes can be released (#872/#1077).
     let registeredKeys: string[] = [];
+    let priorRecords: OrchestratorRecord[] = [];
     try {
-      registeredKeys = this.listOrchestratorRecords().map((r) => r.key);
+      priorRecords = this.listOrchestratorRecords();
+      registeredKeys = priorRecords.map((r) => r.key);
     } catch {}
+    const removedFiles: string[] = [];
     try {
       if (existsSync(this.stateDir)) {
         const files = readdirSync(this.stateDir);
@@ -5624,6 +10523,7 @@ export class HookRouter {
           if (!file.endsWith(".json") || file === "frontdesk.json") continue;
           try {
             unlinkSync(join(this.stateDir, file));
+            removedFiles.push(file);
             count++;
           } catch (err) {
             this.log(`[warn] file purge/delete failed (hook-router.ts:4177): ${err}`);
@@ -5635,6 +10535,7 @@ export class HookRouter {
     }
     for (const key of registeredKeys) {
       this.busyQueues.delete(key);
+      this.busySince.delete(key);
       this.busyAttempts.delete(key);
       this.draining.delete(key);
       this.droppedCount.delete(key);
@@ -5656,6 +10557,16 @@ export class HookRouter {
           this.sosStates.delete(skey);
         }
       }
+    }
+    if (count > 0) {
+      this.appendStateMutation({
+        action: "clearAllOrchestrators",
+        source: opts.source ?? "unspecified",
+        actor: opts.actor ?? null,
+        reason: opts.reason ?? null,
+        key: null,
+        priorValue: { records: priorRecords, files: removedFiles },
+      });
     }
     this.log(`[info] Purged all orchestrators (${count} file(s) removed)`);
     return count;
@@ -5769,9 +10680,15 @@ export class HookRouter {
           // ephemeral and already removed above when culled.
           if (!liveOrchestratorIds.has(cachedId)) {
             const entry = this.latestAgentMap.get(cachedId);
-            const role = String((entry as any)?.role ?? "").toLowerCase();
-            const title = String((entry as any)?.title ?? (entry as any)?.name ?? "").toLowerCase();
-            if (role === "orchestrator" || title.includes("orchestrator") || title.includes("front desk")) {
+            // Authoritative role scope only: explicit role/label metadata, never
+            // display-title substrings (#1143).
+            const entryLabels = ((entry as any)?.labels ?? {}) as Record<string, unknown>;
+            const role = String(
+              (entry as any)?.role ?? entryLabels.role ?? entryLabels.category ?? "",
+            )
+              .trim()
+              .toLowerCase();
+            if (role === "orchestrator" || role === "front-desk" || role === "frontdesk") {
               this.latestAgentMap.delete(cachedId);
             }
           }
@@ -5817,25 +10734,39 @@ export class HookRouter {
     const includeFrontDesk = !targetSet.has("frontdesk");
     const includeOrchestrators = !targetSet.has("orchestrators");
     if (includeFrontDesk && frontDesk?.agentId) {
+      let entryId: string | null = null;
       try {
-        this.enqueue("frontdesk", notice, true);
+        const entry = this.enqueue("frontdesk", notice, true);
+        entryId = entry.id;
         if (!queuedKeys.includes("frontdesk")) queuedKeys.push("frontdesk");
       } catch {}
       try {
         const ok = await this.deliverMessage(frontDesk.agentId, notice, { noWait: true, steer: true });
-        if (ok) delivered++;
+        if (ok) {
+          delivered++;
+          if (entryId) {
+            this.removeQueueEntry("frontdesk", entryId);
+          }
+        }
       } catch {}
     }
     if (includeOrchestrators) {
       for (const rec of orchestrators) {
         if (!rec.agentId || !rec.key) continue;
+        let entryId: string | null = null;
         try {
-          this.enqueue(rec.key, notice, true);
+          const entry = this.enqueue(rec.key, notice, true);
+          entryId = entry.id;
           if (!queuedKeys.includes(rec.key)) queuedKeys.push(rec.key);
         } catch {}
         try {
           const ok = await this.deliverMessage(rec.agentId, notice, { noWait: true, steer: true });
-          if (ok) delivered++;
+          if (ok) {
+            delivered++;
+            if (entryId) {
+              this.removeQueueEntry(rec.key, entryId);
+            }
+          }
         } catch {}
       }
     }
@@ -5873,6 +10804,7 @@ export class HookRouter {
       }
       this.busyQueues.delete(key);
       this.draining.delete(key);
+      this.busySince.delete(key);
       this.busyAttempts.delete(key);
       this.droppedCount.delete(key);
 
@@ -5932,6 +10864,7 @@ export class HookRouter {
     const frontDesk = this.readFrontDesk();
     if (frontDesk?.agentId === agentId) {
       this.busyQueues.delete("frontdesk");
+      this.busySince.delete("frontdesk");
       this.busyAttempts.delete("frontdesk");
       this.lastDeliveryTimes.delete(agentId);
       const timer = this.backoffTimers.get("frontdesk");
@@ -5939,7 +10872,7 @@ export class HookRouter {
         clearTimeout(timer);
         this.backoffTimers.delete("frontdesk");
       }
-      if (triggerDrain && !this.isRepoMuted("frontdesk") && !this.isPaused("frontdesk")) {
+      if (triggerDrain && !this.isRepoDispatchSuppressed("frontdesk") && !this.isPaused("frontdesk")) {
         void this.drain("frontdesk");
       }
     }
@@ -5949,13 +10882,14 @@ export class HookRouter {
       const orch = this.readOrchestrator(key);
       if (orch?.agentId === agentId) {
         this.busyQueues.delete(key);
+        this.busySince.delete(key);
         this.busyAttempts.delete(key);
         const timer = this.backoffTimers.get(key);
         if (timer) {
           clearTimeout(timer);
           this.backoffTimers.delete(key);
         }
-        if (triggerDrain && items.length > 0 && !this.isRepoMuted(key) && !this.isPaused(key)) {
+        if (triggerDrain && items.length > 0 && !this.isRepoDispatchSuppressed(key) && !this.isPaused(key)) {
           void this.drain(key);
         }
       }
@@ -5966,6 +10900,7 @@ export class HookRouter {
       const orch = this.readOrchestrator(key);
       if (orch?.agentId === agentId) {
         this.busyQueues.delete(key);
+        this.busySince.delete(key);
         this.busyAttempts.delete(key);
         const timer = this.backoffTimers.get(key);
         if (timer) {
@@ -6066,15 +11001,15 @@ export class HookRouter {
     if (this.isClosed) return;
     if (!key) {
       for (const k of this.queues.keys()) {
-        if (!this.isRepoMuted(k)) {
+        if (!this.isRepoDispatchSuppressed(k)) {
           void this.drain(k);
         }
       }
       return;
     }
 
-    if (this.isRepoMuted(key)) {
-      this.log(`[info] Drain suppressed for muted repository ${key}`);
+    if (this.isRepoDispatchSuppressed(key)) {
+      this.log(`[info] Drain suppressed for paused or kanban-only repository ${key}`);
       return;
     }
 
@@ -6082,9 +11017,19 @@ export class HookRouter {
     if (this.draining.has(key)) return;
 
     const list = this.queues.get(key);
-    if (!list || list.length === 0) return;
+    if (!list || list.length === 0) {
+      // No pending work: drop any stale busy counter so it cannot leak into the
+      // next burst of traffic and look like a wedged queue (#1072).
+      this.busyAttempts.delete(key);
+      this.busySince.delete(key);
+      this.busyQueues.delete(key);
+      return;
+    }
 
     this.draining.add(key);
+
+    let forceSteer = false;
+    let forceInterrupt = false;
 
     try {
       let targetAgentId: string | null = null;
@@ -6145,6 +11090,7 @@ export class HookRouter {
                     entry.activeTurn = null;
                   }
                   this.busyAttempts.delete(key);
+                  this.busySince.delete(key);
                   this.busyQueues.delete(key);
                 }
               }
@@ -6239,6 +11185,7 @@ export class HookRouter {
                   entry.activeTurn = null;
                 }
                 this.busyAttempts.delete(key);
+                this.busySince.delete(key);
                 this.busyQueues.delete(key);
               }
             } else {
@@ -6250,36 +11197,67 @@ export class HookRouter {
 
         if (isBusy) {
           this.busyQueues.add(key);
+          // Track when the busy streak started so the watchdog can enforce a
+          // minimum elapsed duration before wedged reload (#1344).
+          if (!this.busySince.has(key)) {
+            this.busySince.set(key, Date.now());
+          }
+          // The streak is intentionally not capped at the steer threshold: it
+          // keeps counting while the incumbent stays busy so a steer that never
+          // lands eventually escalates to an interrupt (#1265).
           const attempts = (this.busyAttempts.get(key) ?? 0) + 1;
           this.busyAttempts.set(key, attempts);
-          this.log(`[info] Agent ${targetAgentId} busy for ${key}, retry scheduled (attempt ${attempts})`);
+          if (attempts >= this.drainInterruptAttemptLimit) {
+            forceInterrupt = true;
+            this.log(
+              `[warn] Agent ${targetAgentId} remained busy for ${key} across ${attempts} drain checks; ` +
+                "interrupting the active turn to break the deadlock",
+            );
+          } else if (attempts >= this.drainBusyAttemptLimit) {
+            forceSteer = true;
+            this.log(
+              `[warn] Agent ${targetAgentId} remained busy for ${key} across ${attempts} drain checks; ` +
+                "steering queued work into the active turn",
+            );
+          } else {
+            this.log(`[info] Agent ${targetAgentId} busy for ${key}, retry scheduled (attempt ${attempts})`);
 
-          // Schedule a backoff retry in case turn_ended was missed
-          if (!this.backoffTimers.has(key)) {
-            const delay = Math.min(30000, 3000 * Math.pow(1.5, Math.min(attempts, 5)));
-            const timer = setTimeout(() => {
-              this.backoffTimers.delete(key);
-              void this.drain(key);
-            }, delay);
-            timer.unref?.();
-            this.backoffTimers.set(key, timer);
+            // Schedule a backoff retry in case turn_ended was missed
+            if (!this.backoffTimers.has(key)) {
+              const delay = Math.min(30000, 3000 * Math.pow(1.5, Math.min(attempts, 5)));
+              const timer = setTimeout(() => {
+                this.backoffTimers.delete(key);
+                void this.drain(key);
+              }, delay);
+              timer.unref?.();
+              this.backoffTimers.set(key, timer);
+            }
+            return;
           }
-          return;
         }
       }
 
-      this.busyQueues.delete(key);
-      this.busyAttempts.delete(key);
+      // While a steer is still escalating, keep the busy streak so the next
+      // busy drain advances toward the interrupt threshold. The interrupt (or a
+      // verified idle turn) ends the streak.
+      if (!forceSteer || forceInterrupt) {
+        this.busyQueues.delete(key);
+        this.busySince.delete(key);
+        this.busyAttempts.delete(key);
+      }
 
-      // Deliver queued messages: batch if multiple entries, or single entry with appropriate steering
+      // Deliver queued messages: batch if multiple entries, or single entry with
+      // appropriate steering. An interrupt overrides steer so the active turn
+      // is canceled rather than fed work it will never reach (#1265).
+      const deliverSteer = (requested: boolean): boolean => (forceInterrupt ? false : requested);
       if (list.length > 1) {
         const isAnySos = list.some((e) => Boolean(e.isSos));
         const batchCount = list.length;
         const combinedMsg = `[forgejo-hook] Batch notification (${batchCount} events):\n\n` +
           list.map((e, idx) => `### Event ${idx + 1}\n${e.msg}`).join("\n\n---\n\n");
         const ok = await this.deliverMessage(targetAgentId, combinedMsg, {
-          steer: isAnySos,
-          noWait: false,
+          steer: deliverSteer(isAnySos || forceSteer),
+          noWait: true,
         });
         if (ok) {
           this.lastDeliveryTimes.set(targetAgentId, Date.now());
@@ -6292,8 +11270,8 @@ export class HookRouter {
       } else if (list.length === 1) {
         const entry = list[0];
         const ok = await this.deliverMessage(targetAgentId, entry.msg, {
-          steer: Boolean(entry.isSos),
-          noWait: false,
+          steer: deliverSteer(Boolean(entry.isSos) || forceSteer),
+          noWait: true,
         });
         if (ok) {
           this.lastDeliveryTimes.set(targetAgentId, Date.now());
@@ -6317,6 +11295,14 @@ export class HookRouter {
     const allKeys = new Set<string>(enrolledRepos);
     for (const k of this.queues.keys()) allKeys.add(k);
 
+    // Derive `halted` from mode for backward compatibility (§8.2)
+    const halted = this._mode === "HALT" || this.isHaltedState;
+    // Merge per-class overrides with the mode defaults (§5.2)
+    const modeDefaults = defaultEventClassPolicyByMode[this._mode as keyof typeof defaultEventClassPolicyByMode];
+    const eventClassPolicy = this._eventClassPolicy
+      ? { ...modeDefaults, ...this._eventClassPolicy }
+      : modeDefaults;
+
     return {
       ok: true,
       service: "uppidi-fleet-hook-router",
@@ -6332,6 +11318,10 @@ export class HookRouter {
           }
         : null,
       paused: Array.from(this.pausedQueues),
+      mode: this._mode,
+      eventClassPolicy,
+      halted,
+      teardownInProgress: this.teardownInProgress,
       totalQueued,
       repoCount: allKeys.size,
       teardown: { at: this.lastTeardownAt, targets: [...this.lastTeardownTargets] },
@@ -6402,7 +11392,25 @@ export class HookRouter {
     };
   }
 
-  public start(): Promise<void> {
+  public async start(): Promise<void> {
+    const isHalted = this._mode === "HALT" || this._mode === "STOP" || this.isHaltedState;
+    if (isHalted) {
+      this.log(`[info] HookRouter started in ${this._mode} mode; background loops and auto-provisioning suspended until resume`);
+    } else {
+      try {
+        await this.reconcileFrontDesk();
+      } catch (err) {
+        this.log(`[warn] Front Desk startup reconciliation failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+      // Eagerly reconcile enrolled repository orchestrators from the live roster
+      // before serving traffic, so a cold start never demotes live orchestrators
+      // to workers with false divergence warnings (#1143).
+      try {
+        await this.reconcileEnrolledOrchestrators();
+      } catch (err) {
+        this.log(`[warn] Orchestrator startup reconciliation failed: ${err instanceof Error ? err.message : String(err)}`);
+      }
+    }
     return new Promise((resolve, reject) => {
       this.isClosed = false;
       this.bindLifecycleEvents();
@@ -6618,21 +11626,23 @@ export class HookRouter {
           await this.updateAgentMetadata(previous, "Front Desk (retired)", {
             role: "retired-front-desk",
           });
+          await this.deliverStandDown(previous, "frontdesk", FRONT_DESK_REPO, agentId);
         }
 
-        const orchestrators = this.listOrchestratorAgentIds();
         const activeAgents = await this.getActiveAgentIds();
-        const targetOrchestrators = orchestrators.filter(
-          (id) => id !== agentId && (activeAgents.size === 0 || activeAgents.has(id)),
+        const targetOrchestrators = this.listOrchestratorTargets().filter(
+          (target) =>
+            target.agentId !== agentId && (activeAgents.size === 0 || activeAgents.has(target.agentId)),
         );
 
         const notice =
           instruction ||
-          `Front Desk registered: ${agentId}. Orchestrators must maintain composer silence and route all operator-escalation requests (attention/2-user) to Front Desk (${agentId}) via 'paseo send --steer --no-wait ${agentId} <msg>'.`;
+          `Front Desk registered: ${agentId}. Orchestrators must maintain composer silence and route all operator-escalation requests (attention/2-user) to Front Desk (${agentId}) via 'paseo send --no-wait ${agentId} <msg>'.`;
 
         let notified = 0;
-        for (const orchId of targetOrchestrators) {
-          const ok = await this.deliverMessage(orchId, notice, { noWait: true, steer: true });
+        for (const target of targetOrchestrators) {
+          const message = withFleetEnvelope(routerEnvelope({ repo: target.key, kind: "handoff" }), notice);
+          const ok = await this.deliverMessage(target.agentId, message, { noWait: true, steer: true });
           if (ok) notified++;
         }
 
@@ -6679,6 +11689,54 @@ export class HookRouter {
         return;
       }
 
+      if (req.method === "POST" && pathname === "/orchestrator-rotate") {
+        const body = await this.readJsonBody(req).catch(() => ({}));
+        try {
+          const out = await this.rotateRole({
+            role: typeof body?.role === "string" ? body.role : "orchestrator",
+            repo: typeof body?.repo === "string" ? body.repo : undefined,
+            reason: typeof body?.reason === "string" ? body.reason : undefined,
+            force: body?.force === undefined ? true : Boolean(body.force),
+          });
+          this.sendJson(res, out.ok ? 200 : 409, out);
+        } catch (err: any) {
+          this.sendJson(res, 500, { ok: false, error: err?.message ?? String(err) });
+        }
+        return;
+      }
+
+      if (req.method === "GET" && pathname === "/orchestrator-rotation") {
+        const role = url.searchParams.get("role") ?? undefined;
+        const repo = url.searchParams.get("repo") ?? undefined;
+        this.sendJson(res, 200, this.rotationStatus({ role, repo }));
+        return;
+      }
+
+      if (req.method === "GET" && pathname === "/rotation-policy") {
+        this.sendJson(res, 200, { ok: true, policy: this.readRotationPolicy() });
+        return;
+      }
+
+      if (req.method === "POST" && pathname === "/rotation-policy") {
+        const body = await this.readJsonBody(req).catch(() => ({}));
+        const role = typeof body?.role === "string" ? body.role.trim() : "";
+        if (!role || typeof body?.policy !== "object" || body.policy === null) {
+          this.sendJson(res, 400, { ok: false, error: "role and policy are required" });
+          return;
+        }
+        try {
+          const policy = this.setRotationPolicyRole(
+            role,
+            typeof body.repo === "string" ? body.repo : undefined,
+            body.policy,
+          );
+          this.sendJson(res, 200, { ok: true, policy });
+        } catch (err: any) {
+          this.sendJson(res, 400, { ok: false, error: err?.message ?? String(err) });
+        }
+        return;
+      }
+
       if (req.method === "POST" && pathname === "/orchestrators/prune") {
         try {
           const result = await this.pruneOrchestrators();
@@ -6695,7 +11753,7 @@ export class HookRouter {
           const repos = Array.isArray(body?.repos)
             ? body.repos.filter((r: unknown) => typeof r === "string")
             : undefined;
-          const result = await this.runBoardSweep(repos);
+          const result = await this.runBoardSweep(repos, undefined, { explicit: true });
           this.sendJson(res, 200, result);
         } catch (err: any) {
           this.sendJson(res, 500, { ok: false, error: err?.message ?? String(err) });
@@ -6738,10 +11796,13 @@ export class HookRouter {
             mode: typeof body?.mode === "string" ? body.mode.trim() : undefined,
             force: Boolean(body?.force),
           });
+          // Genuinely bad input stays 400 (handled above); a failed provision
+          // stays 500. A missing workspace is a resolvable configuration gap,
+          // so it is surfaced as 422 with the probed registry in `error` (#973).
           const statusCode = result.ok
             ? 200
-            : result.error?.includes("No workspace found")
-              ? 404
+            : result.errorCode === "workspace_not_found" || result.error?.includes("No workspace found")
+              ? 422
               : 500;
           this.sendJson(res, statusCode, result);
         } catch (err: any) {
@@ -6763,6 +11824,118 @@ export class HookRouter {
           void this.drain(cand);
         }
         this.sendJson(res, 200, { ok: true, repo, agentId });
+        return;
+      }
+
+      // ---------------------------------------------------------------------------
+      // Unified agent spawn endpoints (#1215)
+      // ---------------------------------------------------------------------------
+
+      // POST /agents/spawn — unified entry point for all role spawns
+      if (req.method === "POST" && pathname === "/agents/spawn") {
+        const body = await this.readJsonBody(req).catch(() => ({}));
+        const role = typeof body?.role === "string" ? body.role.trim().toLowerCase() : "";
+        const validRoles = new Set(["frontdesk", "orchestrator", "worker"]);
+        if (!validRoles.has(role)) {
+          this.sendJson(res, 400, { ok: false, error: `Invalid role '${role}'. Must be one of: frontdesk, orchestrator, worker` });
+          return;
+        }
+        const repo = typeof body?.repo === "string" ? body.repo.trim() : undefined;
+        const issueIndex = typeof body?.issueIndex === "number" ? body.issueIndex : undefined;
+        const model = typeof body?.model === "string" ? body.model.trim() || undefined : undefined;
+        const workspace = typeof body?.workspace === "string" ? body.workspace.trim() || undefined : undefined;
+
+        try {
+          const result = await handleSpawnAgent(
+            { role, repo, issueIndex, model, workspace },
+            {
+              paseo: this.getPaseo() ?? undefined,
+              spawnAgent: this.options?.spawnAgent,
+              spawnAutoAllow: this.options?.spawnAutoAllow,
+              archiveAgent: this.options?.archiveAgent,
+              queueDir: this.options?.queueDir,
+              stateDir: this.options?.stateDir,
+            },
+          );
+          if (!result.ok) {
+            this.sendJson(res, 400, result);
+            return;
+          }
+          // Register in router state
+          if (result.role === "orchestrator" && result.repo) {
+            this.writeOrchestrator(result.repo, result.agentId!, "spawn-router");
+          }
+          if (result.role === "frontdesk") {
+            this.writeFrontDesk(result.agentId!, "spawn-router");
+          }
+          this.log(`[info] Spawned ${role} agent ${result.agentId} (model: ${result.model})`);
+          this.sendJson(res, 200, result);
+        } catch (err: any) {
+          this.sendJson(res, 500, { ok: false, error: err?.message ?? String(err) });
+        }
+        return;
+      }
+
+      // POST /frontdesk/spawn — dedicated Front Desk spawn
+      if (req.method === "POST" && pathname === "/frontdesk/spawn") {
+        const body = await this.readJsonBody(req).catch(() => ({}));
+        const model = typeof body?.model === "string" ? body.model.trim() || undefined : undefined;
+        try {
+          const result = await handleSpawnAgent(
+            { role: "frontdesk", model },
+            {
+              paseo: this.getPaseo() ?? undefined,
+              spawnAgent: this.options?.spawnAgent,
+              spawnAutoAllow: this.options?.spawnAutoAllow,
+              archiveAgent: this.options?.archiveAgent,
+              queueDir: this.options?.queueDir,
+              stateDir: this.options?.stateDir,
+            },
+          );
+          if (!result.ok) {
+            this.sendJson(res, 400, result);
+            return;
+          }
+          this.writeFrontDesk(result.agentId!, "spawn-router");
+          this.log(`[info] Spawned frontdesk agent ${result.agentId} (model: ${result.model})`);
+          this.sendJson(res, 200, result);
+        } catch (err: any) {
+          this.sendJson(res, 500, { ok: false, error: err?.message ?? String(err) });
+        }
+        return;
+      }
+
+      // POST /workers/spawn — dedicated Worker spawn with skill directive + labels
+      if (req.method === "POST" && pathname === "/workers/spawn") {
+        const body = await this.readJsonBody(req).catch(() => ({}));
+        const repo = typeof body?.repo === "string" ? body.repo.trim() : "";
+        if (!repo) {
+          this.sendJson(res, 400, { ok: false, error: "repo is required for worker spawns" });
+          return;
+        }
+        const issueIndex = typeof body?.issueIndex === "number" ? body.issueIndex : undefined;
+        const model = typeof body?.model === "string" ? body.model.trim() || undefined : undefined;
+        try {
+          const result = await handleSpawnAgent(
+            { role: "worker", repo, issueIndex, model },
+            {
+              paseo: this.getPaseo() ?? undefined,
+              spawnAgent: this.options?.spawnAgent,
+              spawnAutoAllow: this.options?.spawnAutoAllow,
+              archiveAgent: this.options?.archiveAgent,
+              queueDir: this.options?.queueDir,
+              stateDir: this.options?.stateDir,
+            },
+          );
+          if (!result.ok) {
+            this.sendJson(res, 400, result);
+            return;
+          }
+          this.log(`[info] Spawned worker agent ${result.agentId} for ${repo}${issueIndex ? ` #${issueIndex}` : ""} (model: ${result.model})`);
+          this.sendJson(res, 200, result);
+        } catch (err: any) {
+          this.sendJson(res, 500, { ok: false, error: err?.message ?? String(err) });
+        }
         return;
       }
 
@@ -6807,6 +11980,70 @@ export class HookRouter {
         }
         const outcome = this.purgeQueue(target);
         this.sendJson(res, 200, outcome);
+        return;
+      }
+
+      // Audit receipt gateway (platform#348 Phase A / #1172): append, check
+      // and server-side projection over the durable append-only JSONL store.
+      if (req.method === "POST" && pathname === "/audits") {
+        const body = await this.readJsonBody(req);
+        const parsed = UppidiAuditRecordInputSchema.safeParse(body);
+        if (!parsed.success) {
+          const details = parsed.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ");
+          this.sendJson(res, 400, { ok: false, auditId: "", recordedAt: "", error: details });
+          return;
+        }
+        const result = appendAuditReceipt(parsed.data, { filePath: this.auditsFilePath });
+        if (!result.ok) {
+          this.sendJson(res, 500, {
+            ok: false,
+            auditId: result.receipt.auditId,
+            recordedAt: "",
+            error: result.error,
+          });
+          return;
+        }
+        this.log(
+          `[info] audit receipt recorded ${result.receipt.auditId} for ${result.receipt.repo}#${result.receipt.pr} (${result.receipt.verdict})`,
+        );
+        this.sendJson(res, 201, {
+          ok: true,
+          auditId: result.receipt.auditId,
+          recordedAt: result.receipt.timestamp,
+        });
+        return;
+      }
+
+      if (req.method === "GET" && pathname === "/audits/check") {
+        const repo = (url.searchParams.get("repo") ?? "").trim();
+        const prRaw = url.searchParams.get("pr");
+        const commit = (url.searchParams.get("commit") ?? "").trim();
+        const pr = prRaw === null ? Number.NaN : Number(prRaw);
+        if (!repo || !commit || !Number.isInteger(pr) || pr <= 0) {
+          this.sendJson(res, 400, {
+            ok: false,
+            error: "repo, pr (positive integer) and commit query params are required",
+          });
+          return;
+        }
+        const out = auditCheck(
+          { repo, pr, commit },
+          { filePath: this.auditsFilePath },
+        );
+        this.sendJson(res, 200, out);
+        return;
+      }
+
+      if (req.method === "GET" && pathname === "/audits/summary") {
+        const input: UppidiAuditSummaryInput = {
+          repo: url.searchParams.get("repo")?.trim() || undefined,
+          since: url.searchParams.get("since")?.trim() || undefined,
+        };
+        const out = projectAuditSummary(input, {
+          filePath: this.auditsFilePath,
+          reconciliationsPath: this.auditReconciliationsFilePath,
+        });
+        this.sendJson(res, 200, out);
         return;
       }
 
@@ -6889,8 +12126,26 @@ export function getActiveHookRouter(): HookRouter | null {
   return activeRouter;
 }
 
+let activePaseoInstance: PaseoApi | null = null;
+
 export function setActiveHookRouter(router: HookRouter | null): void {
   activeRouter = router;
+  if (router) {
+    if (activePaseoInstance && !router.getPaseo()) {
+      router.setActivePaseo(activePaseoInstance);
+    }
+    setActiveDiskLogger(router.diskLogger);
+  } else {
+    setActiveDiskLogger(null);
+  }
+}
+
+export function setActivePaseo(paseo: PaseoApi | null): void {
+  activePaseoInstance = paseo;
+  const router = getActiveHookRouter();
+  if (router) {
+    router.setActivePaseo(paseo);
+  }
 }
 
 export function getOrCreateHookRouter(
@@ -7118,8 +12373,11 @@ export function startHookRouter(
 ): () => Promise<void> {
   const router = new HookRouter(server, options);
   setActiveHookRouter(router);
-  void router.start();
+  const startPromise = router.start();
   return async () => {
+    try {
+      await startPromise;
+    } catch {}
     await router.stop();
     if (getActiveHookRouter() === router) {
       setActiveHookRouter(null);
@@ -7129,36 +12387,17 @@ export function startHookRouter(
 
 export function getFleetRosterInfo(): {
   enrolledRepos: string[];
-  mutedRepos: string[];
+  pausedRepos: string[];
+  kanbanOnlyRepos: string[];
   repoQueuedHooks: Record<string, number>;
 } {
   const router = getActiveHookRouter();
-  const home = process.env.HOME ?? os.homedir();
+  const home = resolveHostHome();
   const config = loadRouterConfig();
-  const mutedRepos = router ? router.getMutedRepos() : (config.mutedRepos ?? []);
+  const pausedRepos = router ? router.getPausedRepos() : (config.pausedRepos ?? []);
+  const kanbanOnlyRepos = router ? router.getKanbanOnlyRepos() : (config.kanbanOnlyRepos ?? []);
 
   const enrolledSet = new Set<string>(router ? router.getEnrolledRepos() : (config.enrolledRepos ?? []));
-
-  const stateDir = process.env.HOOK_STATE_DIR ?? join(home, ".paseo", "forgejo-hook", "orchestrators");
-  if (existsSync(stateDir)) {
-    try {
-      const files = readdirSync(stateDir);
-      for (const f of files) {
-        if (!f.endsWith(".json") || f === "frontdesk.json") continue;
-        try {
-          const raw = readFileSync(join(stateDir, f), "utf8");
-          const parsed = JSON.parse(raw);
-          if (parsed && typeof parsed.key === "string" && parsed.key.trim()) {
-            enrolledSet.add(parsed.key.trim());
-          }
-        } catch (err) {
-          console.warn(`[uppidi-fleet:hook-router] state read/parse failed (hook-router.ts:5516): ${err}`);
-        }
-      }
-    } catch (err) {
-      console.warn(`[uppidi-fleet:hook-router] state read/parse failed (hook-router.ts:5518): ${err}`);
-    }
-  }
 
   const repoQueuedHooks: Record<string, number> = {};
   if (router) {
@@ -7183,7 +12422,6 @@ export function getFleetRosterInfo(): {
             if (Array.isArray(parsed)) {
               const key = parsed[0]?.key || f.replace(/\.json$/, "");
               repoQueuedHooks[key] = parsed.length;
-              enrolledSet.add(key);
             }
           } catch (err) {
             console.warn(`[uppidi-fleet:hook-router] state read/parse failed (hook-router.ts:5546): ${err}`);
@@ -7197,7 +12435,8 @@ export function getFleetRosterInfo(): {
 
   return {
     enrolledRepos: Array.from(enrolledSet),
-    mutedRepos,
+    pausedRepos,
+    kanbanOnlyRepos,
     repoQueuedHooks,
   };
 }

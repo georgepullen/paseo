@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync, mkdirSync, renameSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
 import { execFile } from "node:child_process";
@@ -26,17 +26,123 @@ export function setExecFileAsyncForTest(fn: ExecFileAsyncFn | null): void {
   execFileAsync = (fn || defaultExecFileAsync) as typeof execFileAsync;
 }
 
-const CONFIG_BASENAME = "uppidi-fleet-role-models.json";
+const SCOPED_CONFIG_FILENAME = "role-models.json";
+const LEGACY_CONFIG_BASENAME = "uppidi-fleet-role-models.json";
+
+const AGENT_MUX_PROFILE_HOME_RE = /(?:^|[\\/])\.agent-mux[\\/]profiles[\\/]/;
+
+/**
+ * Resolve the real user home even when `HOME` points into an agent-mux profile.
+ * In a profile session `HOME` is `~/.agent-mux/profiles/<provider>/<profile>`
+ * while the live Paseo state stays on the host home. agent-mux exports
+ * `REAL_HOME` for every profile session, so prefer it; otherwise strip the
+ * profile prefix so paths under `~/.paseo` still resolve to the host (#973).
+ */
+export function resolveHostHome(env: NodeJS.ProcessEnv = process.env): string {
+  const home = (env.HOME || homedir() || "").trim();
+  if (!home || !AGENT_MUX_PROFILE_HOME_RE.test(home)) {
+    return home;
+  }
+  const realHome = (env.REAL_HOME || "").trim();
+  if (realHome) return realHome;
+  const marker = home.match(AGENT_MUX_PROFILE_HOME_RE);
+  if (marker && typeof marker.index === "number" && marker.index > 0) {
+    return home.slice(0, marker.index);
+  }
+  return home;
+}
+
+/** Scoped role-model config path under the plugin data dir (#1012). */
+export function defaultRoleModelsConfigPath(home?: string): string {
+  if (home !== undefined) {
+    return join(home, ".paseo", "plugin-data", "xpufx", "uppidi-fleet", SCOPED_CONFIG_FILENAME);
+  }
+  const custom = (process.env.PASEO_HOME || "").trim();
+  const root = custom || join(resolveHostHome(), ".paseo");
+  return join(root, "plugin-data", "xpufx", "uppidi-fleet", SCOPED_CONFIG_FILENAME);
+}
+
+/**
+ * Legacy unscoped role-model config paths in migration priority order: the
+ * pre-#1012 home path introduced by #945, then the original `.paseo` location,
+ * each with its `.bak` sibling.
+ */
+export function legacyRoleModelsConfigPaths(home: string = resolveHostHome()): string[] {
+  const homeConfig = join(home, LEGACY_CONFIG_BASENAME);
+  const paseoConfig = join(home, ".paseo", LEGACY_CONFIG_BASENAME);
+  return [homeConfig, `${homeConfig}.bak`, paseoConfig, `${paseoConfig}.bak`];
+}
 
 // Resolved per call rather than at import time so an override set after the
 // module loads still takes effect, and so an absolute override is honored
 // instead of being re-rooted under the operator's home (#945).
-function getRoleModelsConfigPath(): string {
+function roleModelsConfigOverride(): string | null {
   const override = process.env.UPPIDI_FLEET_ROLE_MODELS_CONFIG?.trim();
-  if (override) {
-    return isAbsolute(override) ? override : join(homedir(), override);
+  if (!override) return null;
+  return isAbsolute(override) ? override : join(resolveHostHome(), override);
+}
+
+export function getRoleModelsConfigPath(): string {
+  return roleModelsConfigOverride() ?? defaultRoleModelsConfigPath();
+}
+
+/**
+ * One-time migration of a legacy unscoped role-model config into the scoped
+ * plugin data dir. Copies the first readable legacy file only when the scoped
+ * file does not exist yet, atomically, and leaves the original in place.
+ * Returns true when a migration was performed.
+ */
+export function migrateLegacyRoleModelsConfig(
+  configPath: string = defaultRoleModelsConfigPath(),
+  legacyPaths: readonly string[] = legacyRoleModelsConfigPaths(),
+): boolean {
+  try {
+    if (existsSync(configPath)) return false;
+    for (const legacyPath of legacyPaths) {
+      if (!legacyPath || legacyPath === configPath || !existsSync(legacyPath)) continue;
+      let raw: string;
+      try {
+        raw = readFileSync(legacyPath, "utf-8");
+        const parsed = JSON.parse(raw);
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) continue;
+      } catch {
+        continue;
+      }
+      try {
+        const dir = dirname(configPath);
+        if (!existsSync(dir)) {
+          mkdirSync(dir, { recursive: true });
+        }
+        const tmp = `${configPath}.${process.pid}.${Date.now()}.tmp`;
+        writeFileSync(tmp, raw, "utf-8");
+        renameSync(tmp, configPath);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+  } catch {
+    // Ignore migration errors and fall through to defaults.
   }
-  return join(homedir(), CONFIG_BASENAME);
+  return false;
+}
+
+/** Roles that may be resolved from `role-models.json` (#1126). */
+export type RoleModelKey = "front-desk" | "orchestrator" | "coding-agent";
+
+/**
+ * Maps a spawn/agent category onto its `role-models.json` key (#1126).
+ *
+ * The fleet has a single delegated-coding category, canonicalised to
+ * `coding-agent`; the legacy `worker` spelling (and the TUI-style `coding_worker`
+ * alias) resolve to the same role model instead of silently falling through to
+ * `orchestrator`.
+ */
+export function resolveRoleModelKey(category?: string | null): RoleModelKey {
+  const normalized = String(category ?? "").trim().toLowerCase();
+  if (normalized === "front-desk" || normalized === "frontdesk") return "front-desk";
+  if (normalized === "orchestrator") return "orchestrator";
+  return "coding-agent";
 }
 
 export const DEFAULT_ROLE_MODELS: Record<string, RoleModelConfig> = {
@@ -51,11 +157,13 @@ export const DEFAULT_ROLE_MODELS: Record<string, RoleModelConfig> = {
   },
   orchestrator: {
     role: "orchestrator",
-    primaryModel: "antigravity-acp/gemini-3.8-flash-low",
+    // Enabled-provider defaults (#987): the orchestrator spawn path must never
+    // resolve to a disabled provider (antigravity-acp/codex) out of the box.
+    primaryModel: "pi/commandcode/deepseek/deepseek-v4-flash",
     fallbackGroup: [
-      "antigravity-acp/gemini-3.8-flash-low",
-      "codex/gpt-5.6-luna",
-      "uppidi/opencode-go/deepseek-v4.1-flash",
+      "pi/commandcode/deepseek/deepseek-v4-flash",
+      "pi/commandcode/deepseek/deepseek-v4.1-flash",
+      "antigravity/gemini-3.8-flash-low",
     ],
   },
   "coding-agent": {
@@ -79,12 +187,25 @@ export const DEFAULT_ROLE_MODELS: Record<string, RoleModelConfig> = {
 
 export function loadSavedRoleModels(): Record<string, RoleModelConfig> {
   try {
-    const configPath = getRoleModelsConfigPath();
+    const override = roleModelsConfigOverride();
+    const configPath = override ?? defaultRoleModelsConfigPath();
+    // Only the default scoped path auto-migrates: an explicit override (tests,
+    // custom deployments) owns its own file lifecycle.
+    if (!override) {
+      migrateLegacyRoleModelsConfig(configPath);
+    }
     if (existsSync(configPath)) {
       const raw = readFileSync(configPath, "utf-8");
       const parsed = JSON.parse(raw);
       if (typeof parsed === "object" && parsed !== null) {
-        return { ...DEFAULT_ROLE_MODELS, ...parsed };
+        const saved = { ...(parsed as Record<string, RoleModelConfig>) };
+        // #1126: honour a pre-rename `worker` override by folding it onto the
+        // canonical `coding-agent` key, unless the canonical key is present.
+        if (saved.worker && !saved["coding-agent"]) {
+          saved["coding-agent"] = saved.worker;
+          delete saved.worker;
+        }
+        return { ...DEFAULT_ROLE_MODELS, ...saved };
       }
     }
   } catch {
@@ -157,7 +278,7 @@ export async function discoverAvailableModels(
   return Array.from(models).sort();
 }
 
-async function listEnabledProviders(): Promise<string[]> {
+export async function listEnabledProviders(): Promise<string[]> {
   const { stdout } = await execFileAsync("paseo", ["provider", "ls", "--json"], {
     timeout: 5000,
     encoding: "utf-8",

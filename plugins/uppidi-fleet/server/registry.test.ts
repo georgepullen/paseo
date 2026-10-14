@@ -23,7 +23,6 @@ describe("uppidi-fleet server registration (issue #761)", () => {
       "forge.open-issues",
       "forge.search-issues",
       "forge.context",
-      "forge.forge-context",
       "forge.issue-detail",
       "forge.set-label",
       "forge.add-comment",
@@ -35,5 +34,11 @@ describe("uppidi-fleet server registration (issue #761)", () => {
 
   it("does not register operator-only forge.install-labels", () => {
     assert.equal(registeredContractNames().includes("forge.install-labels"), false);
+  });
+
+  it("registers the fleet HALT / RESUME contracts (#1013)", () => {
+    const names = registeredContractNames();
+    assert.ok(names.includes("uppidi-fleet.fleet-halt"), "fleet-halt should be registered");
+    assert.ok(names.includes("uppidi-fleet.fleet-resume"), "fleet-resume should be registered");
   });
 });

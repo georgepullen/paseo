@@ -1,0 +1,403 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import {
+  parseForgeRemote,
+  resolveForgeTarget,
+  activeForgeForDirectory,
+  forgeCapabilityFromRepo,
+  parseAgentEnvelope,
+  stripAgentEnvelopeFooter,
+  buildPaseoAgentLink,
+  buildHappierAgentLink,
+  buildDashboardAgentLink,
+  createAgentLinkResolver,
+  primaryAgentLink,
+  AgentEnvelopeSchema,
+  parseMarkdownLite,
+  parseMarkdownLiteInline,
+  rankIssues,
+  scopeOfLabel,
+  liveScopesFromLabels,
+  validateCreateIssueInput,
+  getIssueKanbanColumn,
+  getColumnTransitions,
+  isRepoMatching,
+  isBackwardKanbanTransition,
+  AUTOMATION_TIERS,
+  AUTOMATION_TIER_META,
+  DEFAULT_REPO_GROUP_ID,
+  isKnownAutomationTier,
+  nextAutomationTier,
+  repoGroupMatches,
+  resolveRepoAutomationTier,
+  type ForgeIssue,
+  type RepoGroup,
+} from "../shared/index.js";
+import {
+  ForgeGuard,
+  NEGATIVE_PROBE_TTL_MS,
+  ForgeClient,
+  parseOriginUrl,
+  parseGitDirPointer,
+} from "../server/index.js";
+
+describe("Taxonomy & Labels", () => {
+  it("extracts scope from scoped label", () => {
+    expect(scopeOfLabel("state/wip")).toBe("state");
+    expect(scopeOfLabel("priority/1-high")).toBe("priority");
+    expect(scopeOfLabel("plain-label")).toBeNull();
+  });
+
+  it("extracts live scopes from label list", () => {
+    const labels = ["state/wip", "kind/bug", "state/done", "priority/urgent"];
+    expect(liveScopesFromLabels(labels)).toEqual(["state", "kind", "priority"]);
+  });
+
+  it("ranks issues by priority and state", () => {
+    const issues: ForgeIssue[] = [
+      { number: 1, title: "Normal low", state: "open", labels: ["priority/low", "state/triage"], labelDetails: [], comments: 0 },
+      { number: 2, title: "SOS wip", state: "open", labels: ["priority/sos", "state/wip"], labelDetails: [], comments: 0 },
+      { number: 3, title: "High triage", state: "open", labels: ["priority/high", "state/triage"], labelDetails: [], comments: 0 },
+    ];
+    const ranked = rankIssues(issues);
+    expect(ranked.map((i) => i.number)).toEqual([2, 3, 1]);
+  });
+
+  it("validates create issue input", () => {
+    expect(validateCreateIssueInput({ title: "" })).toBe("Issue title must not be empty");
+    expect(validateCreateIssueInput({ title: "Valid" })).toBeNull();
+    expect(validateCreateIssueInput({ title: "Valid", labels: ["good", ""] })).toBe("Label must not be empty");
+  });
+});
+
+describe("Agent Envelopes", () => {
+  it("parses valid envelope footer", () => {
+    const body = "Turn completed.\n\n---\n<sub>🤖 **Coding Agent** (`abc1234`) · `gpt-4o` · `owner/repo:main` · _2026-10-12T10:00:00Z_</sub>";
+    const parsed = parseAgentEnvelope(42, body);
+    expect(parsed).not.toBeNull();
+    expect(parsed?.commentId).toBe(42);
+    expect(parsed?.sessionTitle).toBe("Coding Agent");
+    expect(parsed?.agentShortId).toBe("abc1234");
+    expect(parsed?.model).toBe("gpt-4o");
+    expect(parsed?.repo).toBe("owner/repo");
+    expect(parsed?.branch).toBe("main");
+  });
+
+  it("strips envelope footer cleanly", () => {
+    const body = "Turn completed.\n\n---\n<sub>🤖 **Coding Agent** (`abc1234`) · `gpt-4o` · `owner/repo:main` · _2026-10-12T10:00:00Z_</sub>";
+    expect(stripAgentEnvelopeFooter(body)).toBe("Turn completed.");
+  });
+
+  it("parses historical paseo:// links into agentLinks with a paseoLinks alias", () => {
+    const body = "Done. See paseo://agent/abc1234 for the session.\n\n---\n<sub>🤖 **Coding Agent** (`abc1234`) · `gpt-4o` · `owner/repo:main` · _2026-10-12T10:00:00Z_</sub>";
+    const parsed = parseAgentEnvelope(7, body);
+    expect(parsed?.agentLinks).toEqual(["paseo://agent/abc1234"]);
+    expect(parsed?.paseoLinks).toEqual(parsed?.agentLinks);
+    expect(primaryAgentLink(parsed)).toBe("paseo://agent/abc1234");
+  });
+
+  it("extracts server ids from hosted paseo:// links", () => {
+    const body = "Done. See paseo://h/server-1/agent/abc1234 for the session.\n\n---\n<sub>🤖 **Coding Agent** (`abc1234`) · `gpt-4o` · `owner/repo:main` · _2026-10-12T10:00:00Z_</sub>";
+    const parsed = parseAgentEnvelope(8, body);
+    expect(parsed?.agentLinks).toEqual(["paseo://h/server-1/agent/abc1234"]);
+    expect(parsed?.serverId).toBe("server-1");
+  });
+
+  it("parses happier:// and dashboard agent links", () => {
+    const body = "Done. happier://agent/abc1234 and https://dash.example.com/agents/abc1234\n\n---\n<sub>🤖 **Coding Agent** (`abc1234`) · `gpt-4o` · `owner/repo:main` · _2026-10-12T10:00:00Z_</sub>";
+    const parsed = parseAgentEnvelope(9, body);
+    expect(parsed?.agentLinks).toEqual([
+      "happier://agent/abc1234",
+      "https://dash.example.com/agents/abc1234",
+    ]);
+    expect(parsed?.paseoLinks).toEqual(parsed?.agentLinks);
+  });
+
+  it("accepts a custom link pattern from host clients", () => {
+    const body = "Done. See myapp://sessions/abc1234 for details.\n\n---\n<sub>🤖 **Coding Agent** (`abc1234`) · `gpt-4o` · `owner/repo:main` · _2026-10-12T10:00:00Z_</sub>";
+    expect(parseAgentEnvelope(10, body)?.agentLinks).toEqual([]);
+    const custom = parseAgentEnvelope(10, body, { linkPattern: /myapp:\/\/[^\s)>\]]+/ });
+    expect(custom?.agentLinks).toEqual(["myapp://sessions/abc1234"]);
+  });
+
+  it("builds configurable agent links for every supported template", () => {
+    expect(buildPaseoAgentLink({ agentId: "a1" })).toBe("paseo://agent/a1");
+    expect(buildPaseoAgentLink({ agentId: "a1", workspaceId: "ws-9" })).toBe(
+      "paseo://agent/a1?workspace=ws-9",
+    );
+    expect(buildPaseoAgentLink({ agentId: "a1", serverId: "h1" })).toBe(
+      "paseo://h/h1/agent/a1",
+    );
+    expect(buildHappierAgentLink({ agentId: "a1" })).toBe("happier://agent/a1");
+    expect(buildDashboardAgentLink({ agentId: "a1", dashboardHost: "dash.example.com" })).toBe(
+      "https://dash.example.com/agents/a1",
+    );
+    expect(createAgentLinkResolver()({ agentId: "a1" })).toBe("paseo://agent/a1");
+    expect(createAgentLinkResolver({ scheme: "happier" })({ agentId: "a1" })).toBe(
+      "happier://agent/a1",
+    );
+    expect(
+      createAgentLinkResolver({ scheme: "https", dashboardHost: "dash.example.com" })({ agentId: "a1" }),
+    ).toBe("https://dash.example.com/agents/a1");
+    expect(
+      createAgentLinkResolver({ scheme: "paseo", workspaceId: "ws-9" })({ agentId: "a1" }),
+    ).toBe("paseo://agent/a1?workspace=ws-9");
+  });
+
+  it("normalizes historical paseoLinks-only payloads to agentLinks", () => {
+    const parsed = AgentEnvelopeSchema.parse({
+      commentId: 11,
+      sessionTitle: "Coding Agent",
+      agentShortId: "abc1234",
+      paseoLinks: ["paseo://agent/abc1234"],
+    });
+    expect(parsed.agentLinks).toEqual(["paseo://agent/abc1234"]);
+    expect(parsed.paseoLinks).toEqual(["paseo://agent/abc1234"]);
+  });
+});
+
+describe("MarkdownLite", () => {
+  it("parses headings, paragraphs, and inline spans", () => {
+    const md = "# Heading 1\n\nThis has **bold** and `code` and [link](https://example.com).";
+    const blocks = parseMarkdownLite(md);
+    expect(blocks.length).toBe(2);
+    expect(blocks[0].kind).toBe("heading");
+    expect(blocks[1].kind).toBe("paragraph");
+  });
+
+  it("parses fenced code blocks", () => {
+    const md = "```ts\nconst x = 1;\n```";
+    const blocks = parseMarkdownLite(md);
+    expect(blocks).toEqual([
+      { kind: "code", language: "ts", text: "const x = 1;" },
+    ]);
+  });
+});
+
+describe("Remote coordinates", () => {
+  it("parses HTTPS and SSH remote URLs", () => {
+    const https = parseForgeRemote("https://forge.example.com/org/repo.git");
+    expect(https).toEqual({ host: "forge.example.com", owner: "org", repo: "repo" });
+
+    const scp = parseForgeRemote("git@forge.example.com:org/repo.git");
+    expect(scp).toEqual({ host: "forge.example.com", owner: "org", repo: "repo" });
+
+    const ssh = parseForgeRemote("ssh://git@forge.example.com:222/org/repo.git");
+    expect(ssh).toEqual({ host: "forge.example.com", owner: "org", repo: "repo" });
+  });
+
+  it("resolves forge targets from explicit and derived sources", () => {
+    const derived = resolveForgeTarget(undefined, "https://forge.example.com/org/repo.git");
+    expect(derived).toEqual({ ok: true, host: "forge.example.com", repo: "org/repo", source: "derived" });
+
+    const explicit = resolveForgeTarget("https://custom.forge/other/repo.git", "https://forge.example.com/org/repo.git");
+    expect(explicit).toEqual({ ok: true, host: "custom.forge", repo: "other/repo", source: "explicit" });
+
+    const bare = resolveForgeTarget("org/other-repo", "https://forge.example.com/org/repo.git");
+    expect(bare).toEqual({ ok: true, host: "forge.example.com", repo: "org/other-repo", source: "explicit" });
+  });
+
+  it("reads stored forge selection for directory", () => {
+    const settings = {
+      activeForgeByDirectory: {
+        "/workspaces/app": "https://forge.example.com/org/app.git",
+      },
+    };
+    expect(activeForgeForDirectory(settings, "/workspaces/app")).toBe("https://forge.example.com/org/app.git");
+    expect(activeForgeForDirectory(settings, "/workspaces/unknown")).toBeNull();
+  });
+
+  it("checks write capability from repo permissions payload", () => {
+    expect(forgeCapabilityFromRepo({ permissions: { push: true } })).toBe(true);
+    expect(forgeCapabilityFromRepo({ permissions: { push: false, admin: false } })).toBe(false);
+    expect(forgeCapabilityFromRepo({ access_level: 30 })).toBe(true);
+    expect(forgeCapabilityFromRepo({ access_level: 20 })).toBe(false);
+    expect(forgeCapabilityFromRepo({})).toBeNull();
+  });
+});
+
+describe("Server: Git Origin parsing", () => {
+  it("parses origin url from config string", () => {
+    const config = `[core]\n\tbare = false\n[remote "origin"]\n\turl = ssh://git@forge.example.com/org/repo.git\n`;
+    expect(parseOriginUrl(config)).toBe("ssh://git@forge.example.com/org/repo.git");
+    expect(parseOriginUrl(`[remote "upstream"]\n\turl = foo`)).toBeNull();
+  });
+
+  it("parses gitdir pointer from worktree .git file", () => {
+    expect(parseGitDirPointer("gitdir: /path/to/.git/worktrees/wt1\n")).toBe("/path/to/.git/worktrees/wt1");
+    expect(parseGitDirPointer("random content")).toBeNull();
+  });
+});
+
+describe("Server: ForgeGuard", () => {
+  it("caches positive verdicts indefinitely and negative verdicts with TTL", () => {
+    let clock = 1000;
+    const guard = new ForgeGuard({ now: () => clock });
+    expect(guard.cachedProbe("host.com")).toBeNull();
+
+    guard.recordProbe("host.com", false);
+    expect(guard.cachedProbe("host.com")).toBe(false);
+
+    clock += NEGATIVE_PROBE_TTL_MS + 1;
+    expect(guard.cachedProbe("host.com")).toBeNull();
+
+    guard.recordProbe("host.com", true);
+    clock += 10_000_000;
+    expect(guard.cachedProbe("host.com")).toBe(true);
+  });
+
+  it("logs quietly with backoff", () => {
+    const guard = new ForgeGuard();
+    expect(guard.skipLogLevel("host.com")).toBe("info");
+    expect(guard.skipLogLevel("host.com")).toBe("debug");
+
+    expect(guard.failureLogLevel("host.com", "repo")).toBe("warn");
+    expect(guard.failureLogLevel("host.com", "repo")).toBe("debug");
+    guard.noteSuccess("host.com", "repo");
+    expect(guard.failureLogLevel("host.com", "repo")).toBe("warn");
+  });
+});
+
+describe("Server: ForgeClient", () => {
+  const originalFetch = globalThis.fetch;
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+  });
+
+  function stubFetch(response: (url: string, init?: RequestInit) => Response | Promise<Response>) {
+    globalThis.fetch = ((input: string | URL | Request, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+      return Promise.resolve(response(url, init));
+    }) as typeof fetch;
+  }
+
+  it("probes forge host version", async () => {
+    stubFetch((url) => {
+      expect(url).toBe("https://forge.example.com/api/v1/version");
+      return new Response(JSON.stringify({ version: "1.21.0+forgejo" }), { status: 200 });
+    });
+    const client = new ForgeClient({ host: "forge.example.com" });
+    expect(await client.isForgeHost()).toBe(true);
+  });
+
+  it("lists issues with label normalization", async () => {
+    stubFetch((url) => {
+      expect(url).toContain("/api/v1/repos/org/repo/issues");
+      return new Response(
+        JSON.stringify([
+          {
+            number: 10,
+            title: "Issue 10",
+            state: "open",
+            labels: [{ name: "priority/high", color: "ff0000" }],
+          },
+        ]),
+        { status: 200 },
+      );
+    });
+    const client = new ForgeClient({ host: "forge.example.com" });
+    const result = await client.listIssues("org/repo");
+    expect(result?.issues.length).toBe(1);
+    expect(result?.issues[0].title).toBe("Issue 10");
+    expect(result?.issues[0].labels).toEqual(["priority/high"]);
+    expect(result?.issues[0].labelDetails).toEqual([{ name: "priority/high", color: "ff0000" }]);
+  });
+});
+
+describe("Kanban & Repo Matching", () => {
+  it("determines correct kanban column by status, state, or labels", () => {
+    expect(getIssueKanbanColumn({ status: "Done" })).toBe("done");
+    expect(getIssueKanbanColumn({ state: "closed" })).toBe("done");
+    expect(getIssueKanbanColumn({ labels: ["state/done"] })).toBe("done");
+    expect(getIssueKanbanColumn({ labels: ["state/4-done"] })).toBe("done");
+
+    expect(getIssueKanbanColumn({ status: "Review" })).toBe("review");
+    expect(getIssueKanbanColumn({ labels: ["state/review"] })).toBe("review");
+    expect(getIssueKanbanColumn({ labels: ["state/verify"] })).toBe("review");
+    expect(getIssueKanbanColumn({ labels: ["review/needed"] })).toBe("review");
+
+    expect(getIssueKanbanColumn({ status: "In progress" })).toBe("in_progress");
+    expect(getIssueKanbanColumn({ labels: ["state/wip"] })).toBe("in_progress");
+    expect(getIssueKanbanColumn({ labels: ["state/1-wip"] })).toBe("in_progress");
+
+    expect(getIssueKanbanColumn({ status: "Backlog" })).toBe("backlog");
+    expect(getIssueKanbanColumn({ labels: ["state/triage"] })).toBe("backlog");
+    expect(getIssueKanbanColumn({})).toBe("backlog");
+  });
+
+  it("provides column transitions", () => {
+    const backlogTrans = getColumnTransitions("backlog");
+    expect(backlogTrans.map((t) => t.targetState)).toEqual(["in_progress", "review"]);
+
+    const wipTrans = getColumnTransitions("in_progress");
+    expect(wipTrans.map((t) => t.targetState)).toEqual(["backlog", "review"]);
+
+    const reviewTrans = getColumnTransitions("review");
+    expect(reviewTrans.map((t) => t.targetState)).toEqual(["in_progress", "done"]);
+
+    const doneTrans = getColumnTransitions("done");
+    expect(doneTrans.map((t) => t.targetState)).toEqual(["backlog", "in_progress"]);
+  });
+
+  it("matches repo strings correctly", () => {
+    expect(isRepoMatching("xpufx/paseo", "xpufx/paseo")).toBe(true);
+    expect(isRepoMatching("https://forge.mrs.uppidi.com/xpufx-org/paseo.git", "xpufx-org/paseo")).toBe(true);
+    expect(isRepoMatching("git@forge.mrs.uppidi.com:222/xpufx-org/paseo.git", "xpufx-org/paseo")).toBe(true);
+    expect(isRepoMatching("xpufx-org/paseo", "https://github.com/xpufx-org/paseo")).toBe(true);
+    expect(isRepoMatching("xpufx/other", "xpufx/paseo")).toBe(false);
+    expect(isRepoMatching(null, "xpufx/paseo")).toBe(false);
+  });
+
+  it("flags backward column walks", () => {
+    expect(isBackwardKanbanTransition("review", "in_progress")).toBe(true);
+    expect(isBackwardKanbanTransition("done", "review")).toBe(true);
+    expect(isBackwardKanbanTransition("done", "backlog")).toBe(true);
+    expect(isBackwardKanbanTransition("backlog", "in_progress")).toBe(false);
+    expect(isBackwardKanbanTransition("in_progress", "review")).toBe(false);
+    expect(isBackwardKanbanTransition("review", "review")).toBe(false);
+  });
+});
+
+describe("Automation tiers & repo groups (#1282)", () => {
+  const CORE: RepoGroup = {
+    id: "core",
+    name: "Core",
+    repos: ["xpufx-org/paseo", "xpufx-org/platform"],
+  };
+  const ALL: RepoGroup = { id: DEFAULT_REPO_GROUP_ID, name: "All", repos: [] };
+
+  it("names the three canonical tiers with presentation metadata", () => {
+    expect(AUTOMATION_TIERS).toEqual(["full-active", "paused", "kanban-only"]);
+    expect(AUTOMATION_TIER_META["full-active"].tone).toBe("success");
+    expect(AUTOMATION_TIER_META.paused.tone).toBe("warning");
+    expect(AUTOMATION_TIER_META["kanban-only"].tone).toBe("info");
+    expect(AUTOMATION_TIER_META["kanban-only"].label).toBe("Kanban-Only");
+  });
+
+  it("validates and cycles tiers deterministically", () => {
+    expect(isKnownAutomationTier("full-active")).toBe(true);
+    expect(isKnownAutomationTier("bogus")).toBe(false);
+    expect(nextAutomationTier("full-active")).toBe("paused");
+    expect(nextAutomationTier("paused")).toBe("kanban-only");
+    expect(nextAutomationTier("kanban-only")).toBe("full-active");
+  });
+
+  it("matches groups by id or repo coordinates and treats All as universal", () => {
+    expect(repoGroupMatches(ALL, "anything/at-all")).toBe(true);
+    expect(repoGroupMatches(CORE, "xpufx-org/paseo")).toBe(true);
+    expect(repoGroupMatches(CORE, "https://forge.mrs.uppidi.com/xpufx-org/platform.git")).toBe(true);
+    expect(repoGroupMatches(CORE, "xpufx-org/other")).toBe(false);
+    expect(repoGroupMatches(CORE, null)).toBe(false);
+  });
+
+  it("resolves tiers across key forms and defaults to full-active", () => {
+    const tiers = {
+      "forge.mrs.uppidi.com/xpufx-org/paseo": "paused" as const,
+      "xpufx-org/platform": "kanban-only" as const,
+    };
+    expect(resolveRepoAutomationTier(tiers, "xpufx-org/paseo")).toBe("paused");
+    expect(resolveRepoAutomationTier(tiers, "https://forge.mrs.uppidi.com/xpufx-org/paseo.git")).toBe("paused");
+    expect(resolveRepoAutomationTier(tiers, "xpufx-org/platform")).toBe("kanban-only");
+    expect(resolveRepoAutomationTier(tiers, "xpufx-org/unknown")).toBe("full-active");
+    expect(resolveRepoAutomationTier(undefined, "xpufx-org/unknown")).toBe("full-active");
+  });
+});

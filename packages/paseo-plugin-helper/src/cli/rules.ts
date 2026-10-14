@@ -1,5 +1,21 @@
 import type { AuditRule } from "./types.js";
 
+/**
+ * The only client files permitted to contain raw color literals: a plugin's own
+ * appearance module, where a literal palette is the file's reason to exist and
+ * is not host-theme-driven by design. Keyed by plugin directory name, values are
+ * plugin-relative POSIX paths. This is the structural exemption the
+ * `no-raw-color-literal` rule uses for xpufx-org/paseo#629 / T10
+ * (`worktree-install` deliberately ships its own palette). `addTheme`
+ * contributions are exempted inside the scanner by call span, not by path.
+ *
+ * A `conformance.json` exemption for `no-raw-color-literal` is deliberately
+ * ignored: the theme seam must not be no-op-able from a manifest.
+ */
+export const RAW_COLOR_APPEARANCE_MODULES: Record<string, readonly string[]> = {
+  "worktree-install": ["client/theme.ts"],
+};
+
 export const AUDIT_RULES: Record<string, AuditRule> = {
   "no-manual-agent-subscription": {
     id: "no-manual-agent-subscription",
@@ -133,5 +149,30 @@ export const AUDIT_RULES: Record<string, AuditRule> = {
     severity: "warn",
     description: "Forced scrollable={false} on host Modal.Content with a helper-owned replacement scroller.",
     replacement: "HostModalContent (modal contexts) or HostScroll (host surfaces) from 'paseo-plugin-helper/ui'",
+  },
+  "no-raw-color-literal": {
+    id: "no-raw-color-literal",
+    severity: "warn",
+    description: "Raw color literal (#hex / rgb / hsl / named) in plugin client code.",
+    replacement:
+      "Read the host `theme.colors.*` tokens (or a helper color utility) instead; keep literals only in the documented appearance module or an `addTheme` contribution",
+    docUrl: "https://github.com/xpufx/paseo-plugin-helper/blob/main/docs/cli.md#no-raw-color-literal",
+  },
+  "no-class-in-client-bundle": {
+    id: "no-class-in-client-bundle",
+    severity: "error",
+    description:
+      "`class` in client/shared code. Hermes eval of plugin client bundles binds class expressions as undefined (\"Cannot read property 'prototype' of undefined\").",
+    replacement:
+      "Use a closure factory (createX()) plus an interface, and plain Error objects with a name brand instead of `extends Error`. Error boundaries are host-provided",
+    docUrl: "https://github.com/xpufx/paseo-plugin-helper/blob/main/docs/client-migration.md",
+  },
+  "no-modal-scroll-pinning": {
+    id: "no-modal-scroll-pinning",
+    severity: "warn",
+    description: "Pinned flex: 1 or minHeight: 0 detected on modal container or modalColumn.",
+    replacement:
+      "Use fluid layout (width: '100%') without flex: 1 or minHeight: 0 so host scroller (BottomSheetScrollView) measures full content height",
+    docUrl: "https://github.com/xpufx/paseo-plugin-helper/blob/main/docs/client-migration.md",
   },
 };

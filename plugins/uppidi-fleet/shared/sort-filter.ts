@@ -13,27 +13,24 @@ import { extractAgentProject, extractAgentWorktree, agentRequiresAttention } fro
 
 // --- Agent Status Lights (#410) ---
 
-export const STATUS_LIGHT_GREEN = "#10b981";
-export const STATUS_LIGHT_ORANGE = "#f59e0b";
-export const STATUS_LIGHT_RED = "#ef4444";
-
-export const STATUS_LIGHT_COLORS = {
-  GREEN: STATUS_LIGHT_GREEN,
-  ORANGE: STATUS_LIGHT_ORANGE,
-  RED: STATUS_LIGHT_RED,
-} as const;
+/**
+ * Status-light tone, resolved to a host theme token by the caller
+ * (`colors.statusSuccess` / `statusWarning` / `statusDanger`). The taxonomy
+ * itself carries no literal color.
+ */
+export type StatusLightTone = "success" | "warning" | "danger";
 
 /**
- * Resolves status light color for an agent according to taxonomy:
- * - Green (#10b981): working / running / executing
- * - Orange / Amber (#f59e0b): idle / waiting / paused / ready / non-failure mode
- * - Red (#ef4444): error / failed / timeout / failure mode
+ * Resolves the status-light tone for an agent according to taxonomy:
+ * - `success` (host `statusSuccess`): working / running / executing
+ * - `warning` (host `statusWarning`): idle / waiting / paused / ready / non-failure mode
+ * - `danger` (host `statusDanger`): error / failed / timeout / failure mode
  */
-export function getStatusLightColor(agent?: {
+export function getStatusLightTone(agent?: {
   status?: string | null;
   deterministicState?: DeterministicAgentState | string | null;
-} | null): string {
-  if (!agent) return STATUS_LIGHT_ORANGE;
+} | null): StatusLightTone {
+  if (!agent) return "warning";
 
   // Partial/legacy payloads can carry non-string state or status; coerce rather
   // than calling `.toLowerCase()` on whatever arrived (#510).
@@ -50,7 +47,7 @@ export function getStatusLightColor(agent?: {
     status.includes("error") ||
     status.includes("fail")
   ) {
-    return STATUS_LIGHT_RED;
+    return "danger";
   }
 
   // 2. Orange / Amber: idle / waiting / paused / ready / sleeping / blocked (#534)
@@ -65,7 +62,7 @@ export function getStatusLightColor(agent?: {
     status === "ready" ||
     status === "standby"
   ) {
-    return STATUS_LIGHT_ORANGE;
+    return "warning";
   }
 
   // 3. Green: working / running / executing
@@ -77,11 +74,11 @@ export function getStatusLightColor(agent?: {
     status === "working" ||
     status === "executing"
   ) {
-    return STATUS_LIGHT_GREEN;
+    return "success";
   }
 
-  // Fallback: non-failure mode defaults to Orange
-  return STATUS_LIGHT_ORANGE;
+  // Fallback: non-failure mode defaults to warning
+  return "warning";
 }
 
 // --- Compact Agent Health Gauge (#560) ---
@@ -217,6 +214,22 @@ export type IssueSortField =
 
 export type SortDirection = "asc" | "desc";
 
+// Dual-read label aliases (platform#247): legacy numeric -> canonical numberless.
+const ATTENTION_ALIASES: Record<string, string> = {
+  "attention/0-orchestrator": "attention/orchestrator",
+  "attention/1-agent": "attention/agent",
+  "attention/2-user": "attention/user",
+};
+const STATE_ALIASES: Record<string, string> = {
+  "state/0-triage": "state/triage",
+  "state/1-wip": "state/wip",
+  "state/2-review": "state/review",
+  "state/3-verify": "state/verify",
+  "state/4-done": "state/done",
+};
+const canonicalAttention = (label: string): string => ATTENTION_ALIASES[label] ?? label;
+const canonicalState = (label: string): string => STATE_ALIASES[label] ?? label;
+
 export function filterIssues(
   issues: UppidiIssue[],
   preset: IssuePreset,
@@ -227,32 +240,33 @@ export function filterIssues(
     if (!issue) return false;
     // Partial RPC payloads may omit fields the client relies on. Normalize once
     // here so the presets and search below never dereference undefined (#510).
-    const attention = typeof issue.attention === "string" ? issue.attention : "";
+    const attention = canonicalAttention(typeof issue.attention === "string" ? issue.attention : "");
     const labels = Array.isArray(issue.labels) ? issue.labels : [];
+    const states = labels.map((l) => canonicalState(String(l)));
     let matchesPreset = true;
     switch (preset) {
       case "needs-you":
-        matchesPreset = attention === "attention/2-user";
+        matchesPreset = attention === "attention/user";
         break;
       case "needs-attention":
         matchesPreset =
-          attention.startsWith("attention/0-") ||
-          attention.startsWith("attention/1-") ||
-          attention.startsWith("attention/2-");
+          attention === "attention/orchestrator" ||
+          attention === "attention/agent" ||
+          attention === "attention/user";
         break;
       case "triage-review":
         matchesPreset =
           issue.status === "Review" ||
-          labels.some((l) => l.includes("state/0-triage") || l.includes("state/2-review"));
+          states.some((l) => l === "state/triage" || l === "state/review");
         break;
       case "in-progress":
         matchesPreset =
-          (issue.status === "In progress" && !labels.some((l) => l.includes("state/3-verify") || l.includes("state/4-done"))) ||
-          labels.some((l) => l.includes("state/1-wip"));
+          (issue.status === "In progress" && !states.some((l) => l === "state/verify" || l === "state/done")) ||
+          states.some((l) => l === "state/wip");
         break;
       case "verify":
         matchesPreset =
-          labels.some((l) => l.includes("state/3-verify"));
+          states.some((l) => l === "state/verify");
         break;
       case "all":
       default:
@@ -733,7 +747,7 @@ export interface ProjectAgentGroup {
   runningCount: number;
   totalCount: number;
   isEnrolled?: boolean;
-  isMuted?: boolean;
+  isPaused?: boolean;
   hasOrchestrator?: boolean;
   queuedHooksCount?: number;
   isDetached?: boolean;
@@ -753,7 +767,7 @@ export type ProjectGroupSortField = ProjectSortField;
 
 export interface BuildProjectGroupsOptions {
   enrolledRepos?: string[];
-  mutedRepos?: string[];
+  pausedRepos?: string[];
   repoQueuedHooks?: Record<string, number>;
   /**
    * Agent id of the Front Desk currently registered with the hook daemon
@@ -761,6 +775,12 @@ export interface BuildProjectGroupsOptions {
    * session is elevated as the authoritative primary Front Desk.
    */
   registeredFrontDeskAgentId?: string | null;
+  /**
+   * True when the hook router registry was reachable, so only a registered
+   * Front Desk may be elevated. A name-derived front-desk session is then not
+   * canonical and moves to the orphaned list instead (#1078).
+   */
+  registryAuthoritative?: boolean;
   /**
    * Field to sort repository/project groups by (#796).
    * Defaults to 'alphabetical' for a stable presentation order across polling refreshes.
@@ -850,7 +870,8 @@ function isFrontDeskAgentActive(agent: UppidiAgent): boolean {
  */
 export function selectPrimaryFrontDeskNode(
   frontDeskNodes: UppidiAgentTreeNode[],
-  registeredAgentId?: string | null
+  registeredAgentId?: string | null,
+  registryAuthoritative?: boolean
 ): { primary: UppidiAgentTreeNode | null; stale: UppidiAgentTreeNode[] } {
   const nodes = (Array.isArray(frontDeskNodes) ? frontDeskNodes : []).filter((n) => n?.agent);
   if (nodes.length === 0) {
@@ -865,6 +886,13 @@ export function selectPrimaryFrontDeskNode(
         stale: nodes.filter((n) => n !== registered),
       };
     }
+  }
+
+  // When the registry is authoritative but names no registered desk (or names a
+  // different one), nothing here is canonical. Never promote a name heuristic
+  // to the Front Desk card; route every candidate to the orphaned list (#1078).
+  if (registryAuthoritative) {
+    return { primary: null, stale: nodes };
   }
 
   if (nodes.length === 1) {
@@ -991,7 +1019,7 @@ export function buildProjectGroups(
 
   // If enrolled repos provided, ensure all enrolled repos exist in projectMap (Fleet Roster)
   const enrolledRepos = Array.isArray(options?.enrolledRepos) ? options!.enrolledRepos : [];
-  const mutedRepos = Array.isArray(options?.mutedRepos) ? options!.mutedRepos : [];
+  const pausedRepos = Array.isArray(options?.pausedRepos) ? options!.pausedRepos : [];
   if (enrolledRepos.length > 0) {
     for (const repo of enrolledRepos) {
       const existingKey = Array.from(projectMap.keys()).find((k) => isRepoMatching(k, repo));
@@ -1022,8 +1050,8 @@ export function buildProjectGroups(
     const isDetached = !isEnrolled;
     const hasOrchestrator = data.orchestrators.length > 0;
 
-    const isMuted = Boolean(
-      mutedRepos.some((r) => isRepoMatching(r, projectName))
+    const isPaused = Boolean(
+      pausedRepos.some((r) => isRepoMatching(r, projectName))
     );
 
     let queuedHooksCount = 0;
@@ -1043,7 +1071,7 @@ export function buildProjectGroups(
       runningCount,
       totalCount: data.allAgents.length,
       isEnrolled,
-      isMuted,
+      isPaused,
       hasOrchestrator,
       queuedHooksCount,
       isDetached,
@@ -1061,7 +1089,8 @@ export function buildProjectGroups(
 
   const { primary, stale } = selectPrimaryFrontDeskNode(
     frontDeskCandidates,
-    options?.registeredFrontDeskAgentId
+    options?.registeredFrontDeskAgentId,
+    options?.registryAuthoritative
   );
 
   return {

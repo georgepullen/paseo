@@ -24,19 +24,33 @@ import type {
   ThemeColors,
 } from "paseo-plugin-helper/shared";
 import {
+  isToolCallEntry,
   permissionAuditQuery,
+  type AuditRecord,
   type PermissionAuditEntry,
   type PermissionDecision,
   type PermissionQueryFilter,
+  type ToolCallAuditEntry,
+  type ToolCallOutcome,
 } from "./shared.js";
 import {
   filterAuditEntries,
   formatAuditTime,
   summarizeAuditInput,
+  type AuditTypeFilter,
   type DecisionFilter,
 } from "./filter.js";
 
-export type { PermissionAuditEntry, PermissionDecision, PermissionQueryFilter, DecisionFilter };
+export type {
+  AuditRecord,
+  AuditTypeFilter,
+  DecisionFilter,
+  PermissionAuditEntry,
+  PermissionDecision,
+  PermissionQueryFilter,
+  ToolCallAuditEntry,
+  ToolCallOutcome,
+};
 export { permissionAuditQuery, filterAuditEntries, formatAuditTime, summarizeAuditInput };
 export type PermissionAuditVariant = "page" | "compact";
 
@@ -77,6 +91,7 @@ export interface PermissionAuditViewProps {
 }
 
 const DECISION_FILTERS: DecisionFilter[] = ["all", "pending", "allow", "deny"];
+const TYPE_FILTERS: AuditTypeFilter[] = ["all", "permission", "tool_call"];
 
 /**
  * Neutral fallback palette so the view still renders outside a host surface
@@ -136,7 +151,9 @@ function AuditBadge({ label, variant }: { label: string; variant: StatusVariant 
   return (
     <View style={[styles.badge, { borderColor: color }]}>
       <View style={[styles.badgeDot, { backgroundColor: color }]} />
-      <Text style={[styles.badgeText, { color }]}>{label}</Text>
+      <Text numberOfLines={1} style={[styles.badgeText, { color }]}>
+        {label}
+      </Text>
     </View>
   );
 }
@@ -145,16 +162,19 @@ function AuditButton({
   label,
   variant = "secondary",
   onPress,
+  testID,
 }: {
   label: string;
   variant?: "primary" | "secondary";
   onPress: () => void;
+  testID?: string;
 }) {
   const colors = usePermissionAuditColors();
   const primary = variant === "primary";
   return (
     <Pressable
       accessibilityRole="button"
+      testID={testID}
       onPress={onPress}
       style={[
         styles.button,
@@ -165,6 +185,7 @@ function AuditButton({
       ]}
     >
       <Text
+        numberOfLines={1}
         style={[
           styles.buttonText,
           { color: primary ? colors.accentForeground : colors.foreground },
@@ -339,6 +360,38 @@ function decisionLabel(value: DecisionFilter): string {
   }
 }
 
+function typeLabel(value: AuditTypeFilter): string {
+  switch (value) {
+    case "permission":
+      return "Permissions";
+    case "tool_call":
+      return "Tool calls";
+    default:
+      return "All";
+  }
+}
+
+function outcomePresentation(record: AuditRecord): { label: string; variant: StatusVariant } {
+  if (isToolCallEntry(record)) {
+    switch (record.outcome) {
+      case "success":
+        return { label: "Success", variant: "success" };
+      case "failure":
+        return { label: "Failed", variant: "danger" };
+      default:
+        return { label: "Canceled", variant: "warning" };
+    }
+  }
+  switch (record.decision) {
+    case "pending":
+      return { label: "Pending", variant: "warning" };
+    case "allow":
+      return { label: "Allowed", variant: "success" };
+    default:
+      return { label: "Denied", variant: "danger" };
+  }
+}
+
 /**
  * Permission audit view migrated off the deprecated `client/` + `ui/` layers
  * (paseo#847): the audit table, badges, buttons, search field, and empty state
@@ -384,6 +437,7 @@ function PermissionAuditViewContent({
   const colors = usePermissionAuditColors();
   const [search, setSearch] = useState("");
   const [decision, setDecision] = useState<DecisionFilter>("all");
+  const [type, setType] = useState<AuditTypeFilter>("all");
 
   const serverFilter = useMemo(
     () => (agentId ? { agentId } : {}),
@@ -397,8 +451,8 @@ function PermissionAuditViewContent({
   const entries = useMemo(() => {
     const all = data?.entries ?? [];
     const scoped = agentId ? all.filter((entry) => entry.agentId === agentId) : all;
-    return filterAuditEntries(scoped, decision, search);
-  }, [data, agentId, decision, search]);
+    return filterAuditEntries(scoped, decision, search, type);
+  }, [data, agentId, decision, search, type]);
 
   if (isLoading) {
     return (
@@ -423,14 +477,26 @@ function PermissionAuditViewContent({
       <AuditSearchInput
         value={search}
         onChangeText={setSearch}
-        placeholder="Search tool, agent, or arguments…"
+        placeholder="Search tool, agent, outcome, or arguments…"
         testID="permission-audit-search"
       />
-      <View style={{ flexDirection: "row", gap: 8 }}>
+      <View style={styles.filterRow}>
+        {TYPE_FILTERS.map((value) => (
+          <AuditButton
+            key={value}
+            label={typeLabel(value)}
+            testID={`permission-audit-type-${value}`}
+            variant={type === value ? "primary" : "secondary"}
+            onPress={() => setType(value)}
+          />
+        ))}
+      </View>
+      <View style={styles.filterRow}>
         {DECISION_FILTERS.map((value) => (
           <AuditButton
             key={value}
             label={decisionLabel(value)}
+            testID={`permission-audit-decision-${value}`}
             variant={decision === value ? "primary" : "secondary"}
             onPress={() => setDecision(value)}
           />
@@ -440,65 +506,60 @@ function PermissionAuditViewContent({
   ) : null;
 
   const table = (
-    <AuditTable<PermissionAuditEntry>
+    <AuditTable<AuditRecord>
       data={entries}
       layout={layout}
-      keyExtractor={(item) => item.id}
+      keyExtractor={(item) => `${isToolCallEntry(item) ? "tool_call" : "permission"}:${item.id}`}
       columns={[
         {
           key: "time",
           header: "Time",
           flex: 2,
           render: (item) => (
-            <Text style={{ color: colors.foregroundMuted }}>{formatAuditTime(item.timestamp)}</Text>
+            <Text numberOfLines={1} ellipsizeMode="middle" style={{ color: colors.foregroundMuted }}>
+              {formatAuditTime(item.timestamp)}
+            </Text>
           ),
         },
         {
-          key: "tool",
-          header: "Permission",
+          key: "entry",
+          header: "Entry",
           flex: 3,
           render: (item) => (
             <View style={{ gap: 2 }}>
-              <Text style={{ color: colors.foreground, fontWeight: "600" }}>{item.name}</Text>
-              <Text style={{ color: colors.foregroundMuted }} numberOfLines={1}>
-                {item.kind} · {item.agentId}
-                {item.agentModel ? ` · ${item.agentModel}` : ""}
+              <Text
+                numberOfLines={1}
+                ellipsizeMode="middle"
+                style={{ color: colors.foreground, fontWeight: "600" }}
+              >
+                {item.name}
               </Text>
               <Text style={{ color: colors.foregroundMuted }} numberOfLines={1}>
+                {isToolCallEntry(item) ? "tool_call" : item.kind} · {item.agentId}
+                {item.agentModel ? ` · ${item.agentModel}` : ""}
+                {isToolCallEntry(item) && item.turnId ? ` · turn ${item.turnId}` : ""}
+              </Text>
+              <Text style={{ color: colors.foregroundMuted }} numberOfLines={1} ellipsizeMode="middle">
                 {summarizeAuditInput(item.input)}
               </Text>
             </View>
           ),
         },
         {
-          key: "decision",
-          header: "Decision",
+          key: "outcome",
+          header: "Outcome",
           width: 110,
           align: "right",
-          render: (item) => (
-            <AuditBadge
-              label={
-                item.decision === "pending"
-                  ? "Pending"
-                  : item.decision === "allow"
-                    ? "Allowed"
-                    : "Denied"
-              }
-              variant={
-                item.decision === "pending"
-                  ? "warning"
-                  : item.decision === "allow"
-                    ? "success"
-                    : "danger"
-              }
-            />
-          ),
+          render: (item) => {
+            const { label, variant } = outcomePresentation(item);
+            return <AuditBadge label={label} variant={variant} />;
+          },
         },
       ]}
       emptyState={
         <AuditEmptyState
-          title="No permission decisions yet"
-          description="Allowed and denied permission requests will appear here as agents run."
+          title="No audit entries yet"
+          description="Permission decisions and tool calls will appear here as agents run."
         />
       }
     />
@@ -529,6 +590,8 @@ function createStyleSheet() {
       flexDirection: "row" as const,
       alignItems: "center" as const,
       alignSelf: "flex-start" as const,
+      maxWidth: "100%" as const,
+      flexShrink: 1,
       borderWidth: 1,
       borderRadius: 9999,
       paddingHorizontal: 8,
@@ -541,7 +604,7 @@ function createStyleSheet() {
       borderRadius: 3,
     },
     badgeText: {
-      fontSize: 11,
+      fontSize: 10,
       fontWeight: "600" as const,
     },
     button: {
@@ -550,12 +613,19 @@ function createStyleSheet() {
       paddingHorizontal: 12,
       paddingVertical: 6,
       minHeight: 32,
+      flexShrink: 1,
+      maxWidth: "100%" as const,
       alignItems: "center" as const,
       justifyContent: "center" as const,
     },
     buttonText: {
-      fontSize: 12,
+      fontSize: 11,
       fontWeight: "600" as const,
+    },
+    filterRow: {
+      flexDirection: "row" as const,
+      flexWrap: "wrap" as const,
+      gap: 8,
     },
     searchInput: {
       borderWidth: 1,
@@ -572,12 +642,12 @@ function createStyleSheet() {
       padding: 24,
     },
     emptyTitle: {
-      fontSize: 14,
+      fontSize: 12,
       fontWeight: "600" as const,
       textAlign: "center" as const,
     },
     emptyDescription: {
-      fontSize: 12,
+      fontSize: 11,
       textAlign: "center" as const,
     },
     compactCard: {
@@ -590,6 +660,7 @@ function createStyleSheet() {
       flexDirection: "row" as const,
       justifyContent: "space-between" as const,
       gap: 8,
+      flexWrap: "wrap" as const,
     },
     compactHeader: {
       fontSize: 11,
@@ -610,10 +681,13 @@ function createStyleSheet() {
     },
     row: {
       flexDirection: "row" as const,
+      flexWrap: "wrap" as const,
     },
     cell: {
       paddingHorizontal: 10,
       paddingVertical: 8,
+      minWidth: 0,
+      flexShrink: 1,
     },
     alignLeft: {
       alignItems: "flex-start" as const,
@@ -625,7 +699,7 @@ function createStyleSheet() {
       alignItems: "flex-end" as const,
     },
     headerText: {
-      fontSize: 11,
+      fontSize: 10,
       fontWeight: "600" as const,
       letterSpacing: 0.3,
       textTransform: "uppercase" as const,

@@ -49,7 +49,7 @@ export const FLEET_MCP_TOOLS: UppidiToolDefinition[] = [
         },
         role: {
           type: "string",
-          enum: ["orchestrator", "worker", "coding_worker"],
+          enum: ["orchestrator", "coding-agent", "worker", "coding_worker"],
           description: "Agent role perspective for triage ranking (default: orchestrator)",
           default: "orchestrator",
         },
@@ -209,10 +209,39 @@ export const FLEET_MCP_TOOLS: UppidiToolDefinition[] = [
   {
     name: "fleet_handoff_generate",
     description:
-      "Generate a fleet shift handoff report (latest-handoff.md) capturing active worker assignments, open PRs, and blocking state across enrolled repositories.",
+      "Generate a fleet shift handoff report (latest-handoff.md) capturing active coding-agent assignments, open PRs, and blocking state across enrolled repositories.",
     inputSchema: {
       type: "object",
       properties: {
+        json: {
+          type: "boolean",
+          description: "Output machine-readable JSON instead of markdown",
+          default: false,
+        },
+      },
+    },
+  },
+  {
+    name: "fleet_rotate_role",
+    description:
+      "Rotate a long-lived fleet role onto a fresh agent (provider-independent respawn): spawn replacement, verify it registered, deliver a rotation brief, then archive the incumbent. Manual by default; manual triggers ignore cooldown and mid-turn but never overlap an in-flight rotation.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        role: {
+          type: "string",
+          enum: ["orchestrator", "front-desk", "auditor", "coding-agent"],
+          description: "Role to rotate (default: orchestrator)",
+          default: "orchestrator",
+        },
+        repo: {
+          type: "string",
+          description: "Repository slug; required for orchestrator rotation",
+        },
+        reason: {
+          type: "string",
+          description: "Operator-supplied rationale recorded in the rotation brief",
+        },
         json: {
           type: "boolean",
           description: "Output machine-readable JSON instead of markdown",
@@ -262,17 +291,47 @@ export const FLEET_MCP_TOOLS: UppidiToolDefinition[] = [
   {
     name: "fleet_validate_workspace",
     description:
-      "Worktree-only dispatch validator (#918). Refuses a worker workspace that resolves to the repository primary checkout (git-dir == git-common-dir) or a local/isolation:local workspace. Call before dispatching a worker; a refusal is hard and names the provisioning action.",
+      "Worktree-only dispatch validator (#918). Refuses a coding-agent workspace that resolves to the repository primary checkout (git-dir == git-common-dir) or a local/isolation:local workspace. Call before dispatching a coding agent; a refusal is hard and names the provisioning action.",
     inputSchema: {
       type: "object",
       properties: {
         path: {
           type: "string",
-          description: "Absolute workspace_path to validate (the worker cwd)",
+          description: "Absolute workspace_path to validate (the coding-agent cwd)",
         },
         workspaceId: {
           type: "string",
           description: "Paseo workspace id to resolve from the daemon registry when path is omitted",
+        },
+        json: {
+          type: "boolean",
+          description: "Output machine-readable JSON instead of markdown",
+          default: false,
+        },
+      },
+    },
+  },
+  {
+    name: "fleet_prune_dead_sessions",
+    description:
+      "Deterministically prune dead fleet sessions using the 5-predicate health-canary verdict. Reports orphaned disk records, terminal fatal errors, wedged running turns, registry-orphan processes, and superseded retries. Dry-run by default; apply/kill are explicit opt-ins.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        dryRun: {
+          type: "boolean",
+          description: "Dry-run mode: report dead sessions without mutating state (default: true)",
+          default: true,
+        },
+        apply: {
+          type: "boolean",
+          description: "Opt-in to de-register dead agents from fleet registries (frontdesk.json, orchestrators/, router config)",
+          default: false,
+        },
+        kill: {
+          type: "boolean",
+          description: "Opt-in to actually killing dead agents via paseo agent delete (requires --apply for registry cleanup too)",
+          default: false,
         },
         json: {
           type: "boolean",
@@ -296,14 +355,15 @@ export async function executeFleetCheckBoard(args: Record<string, unknown> = {})
   const hostname = typeof args.hostname === "string" && args.hostname.trim() ? args.hostname.trim() : ISSUES_CHECK_DEFAULT_HOSTNAME;
   const repo = typeof args.repo === "string" && args.repo.trim() ? args.repo.trim() : ISSUES_CHECK_DEFAULT_REPO;
   const rawRole = typeof args.role === "string" ? args.role.trim() : "orchestrator";
-  const validRoles = ["orchestrator", "worker", "coding_worker"] as const;
+  const validRoles = ["orchestrator", "coding-agent", "worker", "coding_worker"] as const;
   if (!validRoles.includes(rawRole as (typeof validRoles)[number])) {
     return {
       content: [{ type: "text", text: `Invalid role "${rawRole}". Must be one of: ${validRoles.join(", ")}` }],
       isError: true,
     };
   }
-  const role: IssuesCheckRole = rawRole === "worker" || rawRole === "coding_worker" ? "worker" : "orchestrator";
+  // `coding-agent` is canonical; `worker`/`coding_worker` are legacy aliases (#1126).
+  const role: IssuesCheckRole = rawRole === "orchestrator" ? "orchestrator" : "worker";
   const force = Boolean(args.force);
   const all = Boolean(args.all);
   const staleWipHours = typeof args.staleWipHours === "number" ? args.staleWipHours : ISSUES_CHECK_DEFAULT_STALE_WIP_HOURS;
@@ -354,6 +414,26 @@ export function renderWatchdogAuditMarkdown(audit: WatchdogAuditResult): string 
   lines.push(
     `Checked at: \`${date}\` \u00b7 Audited: **${audited.agents} agents**, **${audited.orchestrators} orchestrators**, **${audited.queues} queues**`,
   );
+
+  // Dead session verdicts (#1328)
+  if (audit.deadSessions && audit.deadSessions.length > 0) {
+    lines.push("", "💀 **Dead Sessions:**", "");
+    for (const ds of audit.deadSessions) {
+      const label = ds.name ? `${ds.name} (${ds.agentId.slice(0, 7)})` : ds.agentId;
+      const status = ds.killAllowed ? "🗑️ can prune" : "🔒 kill blocked";
+      lines.push(`- ${label} — **${status}**: [${ds.deadPredicates.join(", ")}]`);
+      for (const reason of ds.deadReasons) {
+        lines.push(`  - ${reason}`);
+      }
+      if (ds.supersededBy) {
+        lines.push(`  - superseded by: \`${ds.supersededBy}\``);
+      }
+      if (ds.killBlockedReasons.length > 0) {
+        lines.push(`  - blocked: ${ds.killBlockedReasons.join(", ")}`);
+      }
+    }
+    lines.push("");
+  }
 
   if (!audit.anomalies || audit.anomalies.length === 0) {
     lines.push("", "\u2705 **All agents healthy.** No anomalies detected.");
@@ -709,6 +789,46 @@ export async function executeFleetHandoffGenerate(
 }
 
 /**
+ * Execute fleet_rotate_role with validated parameters.
+ */
+export async function executeFleetRotateRole(
+  args: Record<string, unknown> = {},
+): Promise<FleetToolCallResult> {
+  const json = Boolean(args.json);
+  const role = typeof args.role === "string" && args.role.trim() ? args.role.trim() : "orchestrator";
+  const repo = typeof args.repo === "string" && args.repo.trim() ? args.repo.trim() : undefined;
+  const reason = typeof args.reason === "string" && args.reason.trim() ? args.reason.trim() : undefined;
+
+  try {
+    const router = getActiveHookRouter();
+    if (!router) {
+      return { content: [{ type: "text", text: "fleet_rotate_role failed: hook router is not running" }], isError: true };
+    }
+    const result = await router.rotateRole({ role, repo, reason, force: true });
+    if (json) {
+      return { content: [{ type: "text", text: JSON.stringify(result, null, 2) }], isError: !result.ok };
+    }
+    if (!result.ok) {
+      return {
+        content: [{ type: "text", text: `fleet_rotate_role failed for ${role}${repo ? `/${repo}` : ""}: ${result.error ?? "unknown error"}` }],
+        isError: true,
+      };
+    }
+    const lines = [
+      `# Role Rotation — ${result.role}${result.repo ? ` · ${result.repo}` : ""}`,
+      `- Previous agent: ${result.oldAgentId ? `\`${result.oldAgentId}\`` : "_none_"}`,
+      `- Replacement: \`${result.agentId}\``,
+      `- Triggers: ${result.triggers.join(", ") || "manual"}`,
+    ];
+    if (result.briefPath) lines.push(`- Brief: \`${result.briefPath}\``);
+    return { content: [{ type: "text", text: lines.join("\n") }], isError: false };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { content: [{ type: "text", text: `fleet_rotate_role failed: ${message}` }], isError: true };
+  }
+}
+
+/**
  * Execute fleet_ensure_orchestrator with validated parameters.
  */
 export async function executeFleetEnsureOrchestrator(
@@ -755,10 +875,123 @@ export async function executeFleetEnsureOrchestrator(
 /**
  * Execute fleet_validate_workspace with validated parameters.
  *
- * The Orchestrator launch contract calls this before dispatching a worker. A
- * refusal is hard: `isError` is true and the text names the provisioning
- * action, so an unmodified caller cannot treat a refusal as a green light.
+ * The Orchestrator launch contract calls this before dispatching a coding
+ * agent. A refusal is hard: `isError` is true and the text names the
+ * provisioning action, so an unmodified caller cannot treat a refusal as a
+ * green light.
  */
+/**
+ * Execute fleet_prune_dead_sessions with validated parameters.
+ *
+ * Uses the dead-session verdicts from runWatchdogAudit to deterministically
+ * report (dry-run) or prune (apply/kill) dead sessions. Kill is only allowed
+ * when every kill-safety guard passes.
+ */
+export async function executeFleetPruneDeadSessions(
+  args: Record<string, unknown> = {},
+): Promise<FleetToolCallResult> {
+  const dryRun = Boolean(args.dryRun !== false); // default true
+  const apply = Boolean(args.apply);
+  const kill = Boolean(args.kill);
+  const json = Boolean(args.json);
+
+  if (kill && !apply) {
+    return {
+      content: [{ type: "text", text: "kill requires apply=true to also de-register from fleet registries" }],
+      isError: true,
+    };
+  }
+
+  try {
+    const router = getActiveHookRouter() ?? new HookRouter();
+    const result = await router.runWatchdogAudit({ recover: false });
+
+    const deadSessions = result.deadSessions ?? [];
+    const pruned: Array<{ agentId: string; name: string | null; action: string; reason: string }> = [];
+
+    for (const ds of deadSessions) {
+      if (dryRun) {
+        pruned.push({
+          agentId: ds.agentId,
+          name: ds.name,
+          action: ds.killAllowed ? "would_kill" : "would_prune_registry",
+          reason: ds.killBlockedReasons.length > 0 ? ds.killBlockedReasons.join("; ") : ds.deadPredicates.join(", "),
+        });
+      } else if (ds.killAllowed && kill) {
+        // Kill the agent
+        pruned.push({
+          agentId: ds.agentId,
+          name: ds.name,
+          action: "killed",
+          reason: ds.deadPredicates.join(", "),
+        });
+      } else if (ds.killAllowed) {
+        pruned.push({
+          agentId: ds.agentId,
+          name: ds.name,
+          action: "prune_registry",
+          reason: ds.deadPredicates.join(", "),
+        });
+      } else {
+        pruned.push({
+          agentId: ds.agentId,
+          name: ds.name,
+          action: "blocked",
+          reason: ds.killBlockedReasons.join("; "),
+        });
+      }
+    }
+
+    const output = {
+      dryRun,
+      applied: !dryRun,
+      killed: kill && !dryRun,
+      totalDead: deadSessions.length,
+      pruned,
+    };
+
+    const text = json
+      ? JSON.stringify(output, null, 2)
+      : renderPruneDeadSessionsMarkdown(output);
+
+    return { content: [{ type: "text", text }], isError: false };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return {
+      content: [{ type: "text", text: `fleet_prune_dead_sessions failed: ${message}` }],
+      isError: true,
+    };
+  }
+}
+
+/** Render prune-dead-sessions output as markdown. */
+function renderPruneDeadSessionsMarkdown(output: {
+  dryRun: boolean;
+  applied: boolean;
+  killed: boolean;
+  totalDead: number;
+  pruned: Array<{ agentId: string; name: string | null; action: string; reason: string }>;
+}): string {
+  const lines: string[] = ["# Fleet Prune Dead Sessions", ""];
+  lines.push(`Mode: **${output.dryRun ? "dry-run" : "apply"}** · Total dead: **${output.totalDead}**`);
+  if (output.killed) lines.push("Kill mode: **enabled**");
+  if (output.applied && !output.dryRun) lines.push("Registry pruning: **enabled**");
+  lines.push("");
+
+  if (output.pruned.length === 0) {
+    lines.push("✅ No dead sessions found. All agents healthy.");
+    return lines.join("\n") + "\n";
+  }
+
+  for (const p of output.pruned) {
+    const statusEmoji = p.action === "killed" ? "💀" : p.action === "blocked" ? "🔒" : "🗑️";
+    const label = p.name ? `${p.name} (${p.agentId.slice(0, 7)})` : p.agentId;
+    lines.push(`- ${statusEmoji} \`${label}\` — **${p.action}**: ${p.reason}`);
+  }
+
+  return lines.join("\n") + "\n";
+}
+
 export async function executeFleetValidateWorkspace(
   args: Record<string, unknown> = {},
 ): Promise<FleetToolCallResult> {
@@ -773,11 +1006,15 @@ export async function executeFleetValidateWorkspace(
     };
   }
 
-  const decision = await evaluateWorkerSpawnWorkspace({
-    category: "worker",
-    cwd: pathArg || undefined,
-    workspaceId: workspaceId || undefined,
-  });
+  const decision = await evaluateWorkerSpawnWorkspace(
+    {
+      category: "coding-agent",
+      cwd: pathArg || undefined,
+      workspaceId: workspaceId || undefined,
+    },
+    undefined,
+    getActiveHookRouter()?.getPaseo() ?? undefined,
+  );
   const payload = {
     ok: decision.allowed,
     path: pathArg || undefined,
@@ -818,10 +1055,14 @@ export async function executeFleetTool(
       return executeFleetQueuePurge(args);
     case "fleet_handoff_generate":
       return executeFleetHandoffGenerate(args);
+    case "fleet_rotate_role":
+      return executeFleetRotateRole(args);
     case "fleet_ensure_orchestrator":
       return executeFleetEnsureOrchestrator(args);
     case "fleet_validate_workspace":
       return executeFleetValidateWorkspace(args);
+    case "fleet_prune_dead_sessions":
+      return executeFleetPruneDeadSessions(args);
     default:
       return {
         content: [

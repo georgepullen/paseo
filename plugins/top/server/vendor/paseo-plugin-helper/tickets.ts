@@ -1,5 +1,4 @@
 import { readFile, stat } from "node:fs/promises";
-import { homedir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 import { PluginStorage } from "./storage";
 import { createPluginLogger } from "./logger";
@@ -13,7 +12,6 @@ import {
   activeForgeForDirectory,
   forgeCapabilityFromRepo,
   forgeContextContract,
-  forgeForgeContextContract,
   openIssuesContract,
   searchIssuesContract,
   issueDetailContract,
@@ -624,18 +622,20 @@ export async function resolveForgeToken(
     } catch {}
   }
 
-  const storagePluginId = options?.storagePluginId ?? "forges";
-  try {
-    const storage = new PluginStorage<{ tokensByHost?: Record<string, string> }>(
-      storagePluginId,
-      "settings.json",
-    );
-    const data = await storage.readAsync();
-    const token = data?.tokensByHost?.[host];
-    if (typeof token === "string" && token.trim()) {
-      return token.trim();
-    }
-  } catch {}
+  // Read ONLY from the caller's own plugin scope — never fall back to 'forges'.
+  if (options?.storagePluginId) {
+    try {
+      const storage = new PluginStorage<{ tokensByHost?: Record<string, string> }>(
+        options.storagePluginId,
+        "settings.json",
+      );
+      const data = await storage.readAsync();
+      const token = data?.tokensByHost?.[host];
+      if (typeof token === "string" && token.trim()) {
+        return token.trim();
+      }
+    } catch {}
+  }
 
   if (process.env.FORGEJO_TOKEN?.trim()) {
     return process.env.FORGEJO_TOKEN.trim();
@@ -643,24 +643,6 @@ export async function resolveForgeToken(
   if (process.env.GITEA_TOKEN?.trim()) {
     return process.env.GITEA_TOKEN.trim();
   }
-
-  try {
-    const teaConfigPath = join(homedir(), ".config", "tea", "config.yml");
-    const content = await readFile(teaConfigPath, "utf8");
-    const lines = content.split("\n");
-    let currentLoginMatches = false;
-    for (const line of lines) {
-      if (line.includes(host) || line.includes("https://" + host)) {
-        currentLoginMatches = true;
-      } else if (line.trim().startsWith("- name:")) {
-        currentLoginMatches = line.includes(host);
-      }
-      if (currentLoginMatches && line.trim().startsWith("token:")) {
-        const token = line.replace(/.*token:\s*/, "").trim();
-        if (token) return token;
-      }
-    }
-  } catch {}
 
   return undefined;
 }
@@ -672,45 +654,15 @@ export async function resolveDefaultForgeHost(): Promise<string> {
   if (process.env.GITEA_HOST?.trim()) {
     return process.env.GITEA_HOST.trim().replace(/^https?:\/\//, "").replace(/\/+$/, "");
   }
-  try {
-    const teaConfigPath = join(homedir(), ".config", "tea", "config.yml");
-    const content = await readFile(teaConfigPath, "utf8");
-    const lines = content.split("\n");
-    let defaultLoginUrl = "";
-    let firstLoginUrl = "";
-    let inDefaultLogin = false;
-    for (const line of lines) {
-      if (line.trim().startsWith("- name:")) {
-        inDefaultLogin = false;
-      }
-      if (line.trim().startsWith("default: true")) {
-        inDefaultLogin = true;
-      }
-      if (line.trim().startsWith("url:") || line.trim().startsWith("ssh_host:")) {
-        const urlOrHost = line.replace(/.*(?:url|ssh_host):\s*/, "").trim();
-        if (urlOrHost) {
-          const host = urlOrHost.replace(/^https?:\/\//, "").replace(/\/+$/, "");
-          if (inDefaultLogin && !defaultLoginUrl) {
-            defaultLoginUrl = host;
-          }
-          if (!firstLoginUrl) {
-            firstLoginUrl = host;
-          }
-        }
-      }
-    }
-    if (defaultLoginUrl) return defaultLoginUrl;
-    if (firstLoginUrl) return firstLoginUrl;
-  } catch {}
 
   return "forge.mrs.uppidi.com";
 }
 
 export async function storedForgeSelection(
   directory: string | undefined,
-  storagePluginId = "forges",
+  storagePluginId?: string,
 ): Promise<string | undefined> {
-  if (!directory) return undefined;
+  if (!directory || !storagePluginId) return undefined;
   try {
     const storage = new PluginStorage<Record<string, any>>(storagePluginId, "settings.json");
     const settings = await storage.readAsync();
@@ -781,8 +733,8 @@ export interface TicketHandlers {
 }
 
 export function createTicketHandlers(options: TicketHandlerOptions = {}): TicketHandlers {
-  const storagePluginId = options.storagePluginId ?? "forges";
-  const log = createPluginLogger(storagePluginId, { banner: false });
+  const storagePluginId = options.storagePluginId; // no 'forges' fallback
+  const log = createPluginLogger(storagePluginId || "tickets", { banner: false });
   const guard = options.guard ?? new ForgeGuard();
 
   function logAt(level: GuardLogLevel, message: string, context: Record<string, unknown>): void {
@@ -1271,7 +1223,6 @@ export function registerTicketHandlers(
   server.handle(openIssuesContract, (input: OpenIssuesInput) => handlers.handleOpenIssues(input));
   server.handle(searchIssuesContract, (input: SearchIssuesInput) => handlers.handleSearchIssues(input));
   server.handle(forgeContextContract, (input: ForgeContextInput) => handlers.handleForgeContext(input));
-  server.handle(forgeForgeContextContract, (input: ForgeContextInput) => handlers.handleForgeContext(input));
   server.handle(issueDetailContract, (input: IssueDetailInput) => handlers.handleIssueDetail(input));
   server.handle(setLabelContract, (input: SetLabelInput) => handlers.handleSetLabel(input));
   server.handle(addCommentContract, (input: AddCommentInput) => handlers.handleAddComment(input));

@@ -15,6 +15,7 @@ import {
   executeFleetHandoffGenerate,
   executeFleetEnsureOrchestrator,
   executeFleetValidateWorkspace,
+  executeFleetPruneDeadSessions,
   executeFleetTool,
   handleFleetToolList,
   handleFleetToolExecute,
@@ -47,7 +48,7 @@ describe("fleet MCP tools and handlers", () => {
   });
 
   test("FLEET_MCP_TOOLS declares typed tools with valid schemas", () => {
-    assert.equal(FLEET_MCP_TOOLS.length, 9);
+    assert.equal(FLEET_MCP_TOOLS.length, 11);
 
     const toolNames = FLEET_MCP_TOOLS.map((t) => t.name);
     assert.deepEqual(toolNames, [
@@ -58,8 +59,10 @@ describe("fleet MCP tools and handlers", () => {
       "fleet_queue_inspect",
       "fleet_queue_purge",
       "fleet_handoff_generate",
+      "fleet_rotate_role",
       "fleet_ensure_orchestrator",
       "fleet_validate_workspace",
+      "fleet_prune_dead_sessions",
     ]);
 
     const boardTool = FLEET_MCP_TOOLS.find((t) => t.name === "fleet_check_board");
@@ -113,6 +116,12 @@ describe("fleet MCP tools and handlers", () => {
     assert.ok(ensureTool.inputSchema.properties.repo);
     assert.ok(ensureTool.inputSchema.properties.mode);
     assert.deepEqual(ensureTool.inputSchema.required, ["repo"]);
+
+    const rotateTool = FLEET_MCP_TOOLS.find((t) => t.name === "fleet_rotate_role");
+    assert.ok(rotateTool, "fleet_rotate_role tool must be registered");
+    assert.equal(rotateTool.inputSchema.type, "object");
+    assert.ok(rotateTool.inputSchema.properties.role);
+    assert.ok(rotateTool.inputSchema.properties.repo);
   });
 
   test("executeFleetCheckBoard rejects invalid role", async () => {
@@ -275,10 +284,10 @@ describe("fleet MCP tools and handlers", () => {
     assert.match(res.content[0]!.text, /Unknown tool/);
   });
 
-  test("handleFleetToolList returns all 9 available tools", async () => {
+  test("handleFleetToolList returns all 11 available tools", async () => {
     const res = await handleFleetToolList({});
     assert.equal(res.ok, true);
-    assert.equal(res.tools.length, 9);
+    assert.equal(res.tools.length, 11);
     assert.deepEqual(
       res.tools.map((t) => t.name),
       [
@@ -289,8 +298,10 @@ describe("fleet MCP tools and handlers", () => {
         "fleet_queue_inspect",
         "fleet_queue_purge",
         "fleet_handoff_generate",
+        "fleet_rotate_role",
         "fleet_ensure_orchestrator",
         "fleet_validate_workspace",
+        "fleet_prune_dead_sessions",
       ],
     );
   });
@@ -369,5 +380,21 @@ describe("fleet MCP tools and handlers", () => {
     assert.equal(res.ok, false);
     assert.equal(res.isError, true);
     assert.match(res.error ?? "", /Unknown tool/);
+  });
+
+  test("fleet_prune_dead_sessions dry-run reports dead sessions without mutating", async () => {
+    // With no agents, should return empty results in dry-run mode
+    const res = await executeFleetPruneDeadSessions({ dryRun: true, json: true });
+    assert.equal(res.isError, false);
+    const body = JSON.parse(res.content[0]!.text);
+    assert.equal(body.dryRun, true);
+    assert.equal(body.totalDead, 0);
+    assert.equal(body.pruned.length, 0);
+  });
+
+  test("fleet_prune_dead_sessions requires apply when kill is set", async () => {
+    const res = await executeFleetPruneDeadSessions({ kill: true, apply: false });
+    assert.equal(res.isError, true);
+    assert.match(res.content[0]!.text, /kill requires apply/);
   });
 });

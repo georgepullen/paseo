@@ -1,10 +1,10 @@
-export { H as HostLayoutProvider, a as HostLayoutProviderProps, b as HostTheme, c as HostThemeProvider, d as HostThemeProviderProps, e as alpha, g as getContrastColor, f as getLuminance, h as getStatusColor, i as getVariantPalette, u as useHostLayout, j as useHostTheme } from '../host-color-DAZYIfPn.cjs';
+export { F as FALLBACK_COLORS, H as HOST_SHADOW_COLOR, a as HostLayoutProvider, b as HostLayoutProviderProps, c as HostTheme, d as HostThemeProvider, e as HostThemeProviderProps, f as alpha, g as getContrastColor, h as getLuminance, i as getStatusColor, j as getVariantPalette, r as resolveHostColors, u as useHostLayout, k as useHostTheme } from '../host-color-C3yeBsXb.cjs';
 import React__default, { ReactNode, ComponentType } from 'react';
 import { StyleProp, ViewStyle, ScrollViewProps, TextStyle, KeyboardTypeOptions, GestureResponderEvent, AccessibilityRole } from 'react-native';
 import { S as StatusVariant, T as ThemeColors } from '../types-4TBN5lgi.cjs';
 import { M as MetricThresholds } from '../formatters-CtC4syDt.cjs';
 import { S as SettingsContract } from '../settings-BNRcFeSP.cjs';
-import { a as HostSurfaceProps, P as PluginCleanup } from '../host-BAF48X1U.cjs';
+import { a as HostSurfaceProps, P as PluginCleanup } from '../host-D31sreow.cjs';
 import 'zod';
 import '../rpc-D27pph91.cjs';
 import '@getpaseo/plugin/client';
@@ -372,6 +372,8 @@ interface HostSelectProps {
     size?: "sm" | "md";
     placeholder?: string;
     disabled?: boolean;
+    searchable?: boolean;
+    searchPlaceholder?: string;
     style?: StyleProp<ViewStyle>;
 }
 /**
@@ -381,7 +383,7 @@ interface HostSelectProps {
  * above later siblings. The option list scrolls with a plain React Native
  * ScrollView — never the host sheet-gesture scroller (#219).
  */
-declare function HostSelect({ value, options, onValueChange, label, size, placeholder, disabled, style, }: HostSelectProps): React__default.JSX.Element;
+declare function HostSelect({ value, options, onValueChange, label, size, placeholder, disabled, searchable, searchPlaceholder, style, }: HostSelectProps): React__default.JSX.Element;
 type HostCopyButtonSize = "sm" | "md";
 type HostCopyButtonVariant = "ghost" | "secondary";
 interface HostCopyButtonProps {

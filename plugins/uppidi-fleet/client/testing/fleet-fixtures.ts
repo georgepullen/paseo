@@ -244,7 +244,7 @@ export function agentsPayload(): Record<string, unknown> {
     // fourth count badge on the header row.
     errorCount: 1,
     enrolledRepos: ["paseo", "2fado", "aur-automation", "platform"],
-    mutedRepos: [],
+    pausedRepos: [],
     repoQueuedHooks: { "forgejo:xpufx-org/paseo": 3 },
   };
 }
@@ -406,7 +406,7 @@ export function installPayloads(
   fleet: Record<string, unknown> = agentsPayload(),
 ): Record<string, unknown> {
   Object.assign(payloads, {
-    "uppidi-fleet.agents": fleet,
+    "fleet.roster": fleet,
     "uppidi-fleet.issues": issuesPayload(),
     "uppidi-fleet.metrics": metricsPayload(),
     "uppidi-fleet.runners": runnersPayload(),

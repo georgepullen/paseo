@@ -11,12 +11,14 @@ import {
   uppidiHookServiceActionContract,
   uppidiHookConfigureContract,
   uppidiHookLogTailContract,
-  uppidiAgentsContract,
   uppidiRoleModelsContract,
   uppidiSetRoleModelContract,
+  uppidiFleetAlertsContract,
   uppidiSkillsContract,
   uppidiSetSkillContract,
   uppidiRunnersContract,
+  uppidiFleetScaleHostContract,
+  uppidiFleetDrainHostContract,
   uppidiFleetMetricsContract,
   uppidiArchiveAgentContract,
   uppidiArchiveInactiveAgentsContract,
@@ -24,7 +26,8 @@ import {
   uppidiReplaceFrontDeskContract,
   uppidiAddOrchestratorContract,
   uppidiReplaceOrchestratorContract,
-  uppidiToggleRepoMuteContract,
+  uppidiToggleRepoPauseContract,
+  uppidiToggleRepoAutomationTierContract,
   uppidiReposContract,
   uppidiEnrollRepoContract,
   uppidiUnenrollRepoContract,
@@ -33,9 +36,19 @@ import {
   uppidiFleetToolListContract,
   uppidiFleetToolExecuteContract,
   uppidiFleetResetStateContract,
+  uppidiFleetHaltContract,
+  uppidiFleetResumeContract,
+  uppidiRotateRoleContract,
+  uppidiRotationStatusContract,
+  uppidiSetRotationPolicyContract,
   uppidiFrontDeskActivityContract,
   uppidiFrontDeskPromptContract,
   uppidiTransitionIssueContract,
+  uppidiAuditRecordContract,
+  uppidiAuditCheckContract,
+  uppidiAuditSummaryContract,
+  uppidiModelTelemetryQueryContract,
+  forgeActionRunsContract,
 } from "./shared/contracts.js";
 import { handleUppidiIssues, handleUppidiTransitionIssue } from "./server/issues.js";
 import {
@@ -63,9 +76,12 @@ import {
   handleUppidiReplaceFrontDesk,
   handleUppidiAddOrchestrator,
   handleUppidiReplaceOrchestrator,
-  handleUppidiToggleRepoMute,
+  handleUppidiToggleRepoPause,
+  handleUppidiToggleRepoAutomationTier,
   handleFleetTeardown,
   handleFleetResetState,
+  handleFleetHalt,
+  handleFleetResume,
   handleUppidiFrontDeskActivity,
   handleUppidiFrontDeskPrompt,
 } from "./server/agents.js";
@@ -73,13 +89,49 @@ import {
 import { handleUppidiRoleModels, handleUppidiSetRoleModel } from "./server/role-models.js";
 import { handleUppidiSkills, handleUppidiSetSkill } from "./server/skills.js";
 import { handleUppidiRunners } from "./server/runners.js";
+import { handleUppidiFleetScaleHost, handleUppidiFleetDrainHost } from "./server/runners.js";
 import { handleUppidiFleetMetrics } from "./server/metrics.js";
+import {
+  handleUppidiAuditRecord,
+  handleUppidiAuditCheck,
+  handleUppidiAuditSummary,
+} from "./server/audit-receipts.js";
+import {
+  handleUppidiModelTelemetryQuery,
+  setupTelemetryTap,
+} from "./server/telemetry.js";
 import { handleFleetToolList, handleFleetToolExecute } from "./server/mcp-tools.js";
-import { startHookRouter, getActiveHookRouter } from "./server/hook-router.js";
-import { createPluginLogger, registerSettingsRpc, registerTicketHandlers } from "paseo-plugin-helper/server";
+import { handleForgeActionRuns } from "./server/actions.js";
+import {
+  HookRouter,
+  startHookRouter,
+  getActiveHookRouter,
+  setActivePaseo,
+  handleUppidiFleetAlerts,
+  handleUppidiRotateRole,
+  handleUppidiRotationStatus,
+  handleUppidiSetRotationPolicy,
+} from "./server/hook-router.js";
+import {
+  createPluginLogger,
+  registerSettingsRpc,
+  registerTicketHandlers,
+  installStorageGuard,
+  createTimelineTelemetryFeature,
+} from "paseo-plugin-helper/server";
+import { registerFleetMcpInjection } from "./server/mcp-injection.js";
+import { fleetRosterContract } from "@xpufx/backend-fleet/shared";
 import { getUppidiFleetSettingsStorage } from "./server/settings.js";
 import { PLUGIN_VERSION } from "./shared/version.js";
 import { HELPER_VERSION, HELPER_SERVED_FROM } from "./shared/helper-version.js";
+
+// #1186: install storage guard to migrate file writes into scoped plugin storage
+  installStorageGuard({
+    pluginId: "uppidi-fleet",
+    namespace: "plugin-data/xpufx",
+    allowTmp: true,
+    mode: "enforce",
+  });
 
 // The checkout revision both the plugin and the resolved helper were read from.
 // `PLUGIN_VERSION` is generated as `<plugin version>+<git sha>` by the helper's
@@ -101,6 +153,22 @@ const log = createPluginLogger("uppidi-fleet", {
 });
 
 export default function contribute(server: PluginServerContext) {
+  if ((server as any)?.paseo) {
+    HookRouter.setActivePaseo((server as any).paseo);
+  }
+
+  // Intercept RPC execution to ensure context.paseo is captured immediately
+  // and forwarded to HookRouter.setActivePaseo (#1170).
+  const origHandle = server.handle.bind(server);
+  server.handle = ((contract: any, handler: any) => {
+    return origHandle(contract, async (input: any, context: any) => {
+      if (context?.paseo) {
+        HookRouter.setActivePaseo(context.paseo);
+      }
+      return handler(input, context);
+    });
+  }) as any;
+
   registerTicketHandlers(server);
   server.handle(uppidiIssuesContract, handleUppidiIssues);
   server.handle(uppidiTransitionIssueContract, handleUppidiTransitionIssue);
@@ -114,12 +182,18 @@ export default function contribute(server: PluginServerContext) {
   server.handle(uppidiHookServiceActionContract, handleHookServiceAction);
   server.handle(uppidiHookConfigureContract, handleHookConfigure);
   server.handle(uppidiHookLogTailContract, handleHookLogTail);
-  server.handle(uppidiAgentsContract, handleUppidiAgents);
+  server.handle(fleetRosterContract as any, handleUppidiAgents);
   server.handle(uppidiRoleModelsContract, handleUppidiRoleModels);
   server.handle(uppidiSetRoleModelContract, handleUppidiSetRoleModel);
+  server.handle(uppidiFleetAlertsContract, handleUppidiFleetAlerts);
+  server.handle(uppidiRotateRoleContract, handleUppidiRotateRole);
+  server.handle(uppidiRotationStatusContract, handleUppidiRotationStatus);
+  server.handle(uppidiSetRotationPolicyContract, handleUppidiSetRotationPolicy);
   server.handle(uppidiSkillsContract, handleUppidiSkills);
   server.handle(uppidiSetSkillContract, handleUppidiSetSkill);
   server.handle(uppidiRunnersContract, handleUppidiRunners);
+  server.handle(uppidiFleetScaleHostContract, handleUppidiFleetScaleHost);
+  server.handle(uppidiFleetDrainHostContract, handleUppidiFleetDrainHost);
   server.handle(uppidiFleetMetricsContract, handleUppidiFleetMetrics);
   server.handle(uppidiArchiveAgentContract, handleUppidiArchiveAgent);
   server.handle(uppidiArchiveInactiveAgentsContract, handleUppidiArchiveInactiveAgents);
@@ -127,16 +201,24 @@ export default function contribute(server: PluginServerContext) {
   server.handle(uppidiReplaceFrontDeskContract, handleUppidiReplaceFrontDesk);
   server.handle(uppidiAddOrchestratorContract, handleUppidiAddOrchestrator);
   server.handle(uppidiReplaceOrchestratorContract, handleUppidiReplaceOrchestrator);
-  server.handle(uppidiToggleRepoMuteContract, handleUppidiToggleRepoMute);
+  server.handle(uppidiToggleRepoPauseContract, handleUppidiToggleRepoPause);
+  server.handle(uppidiToggleRepoAutomationTierContract, handleUppidiToggleRepoAutomationTier);
   server.handle(uppidiReposContract, handleUppidiRepos);
   server.handle(uppidiEnrollRepoContract, handleUppidiEnrollRepo);
   server.handle(uppidiUnenrollRepoContract, handleUppidiUnenrollRepo);
   server.handle(uppidiFleetTeardownContract, handleFleetTeardown);
   server.handle(uppidiFleetResetStateContract, handleFleetResetState);
+  server.handle(uppidiFleetHaltContract, handleFleetHalt);
+  server.handle(uppidiFleetResumeContract, handleFleetResume);
   server.handle(uppidiFleetToolListContract, handleFleetToolList);
   server.handle(uppidiFleetToolExecuteContract, handleFleetToolExecute);
   server.handle(uppidiFrontDeskActivityContract, handleUppidiFrontDeskActivity);
   server.handle(uppidiFrontDeskPromptContract, handleUppidiFrontDeskPrompt);
+  server.handle(uppidiAuditRecordContract, handleUppidiAuditRecord);
+  server.handle(uppidiAuditCheckContract, handleUppidiAuditCheck);
+  server.handle(uppidiAuditSummaryContract, handleUppidiAuditSummary);
+  server.handle(uppidiModelTelemetryQueryContract, handleUppidiModelTelemetryQuery);
+  server.handle(forgeActionRunsContract, handleForgeActionRuns);
 
   const settingsStorage = getUppidiFleetSettingsStorage();
   registerSettingsRpc(server, uppidiFleetSettingsContract, settingsStorage, {
@@ -166,7 +248,16 @@ export default function contribute(server: PluginServerContext) {
     },
   });
 
+  const fleetTelemetryFeature = createTimelineTelemetryFeature<PluginServerContext>({
+    id: "uppidi-fleet-timeline-telemetry",
+    contracts: {
+      query: uppidiModelTelemetryQueryContract as any,
+    },
+    serverTap: (srv) => setupTelemetryTap(srv),
+  });
+
   const stopHookRouter = startHookRouter(server);
+  const stopTelemetryTap = fleetTelemetryFeature.contributeServer?.(server);
 
   log.info("Serving paseo-plugin-helper from the checkout this plugin was installed from", {
     helper: HELPER_VERSION,
@@ -175,8 +266,17 @@ export default function contribute(server: PluginServerContext) {
     expectationCheck: "scripts/doctor-live.mjs + scripts/helper-resolution.test.mjs",
   });
 
+  // #1020: register MCP injection hook — reads PASEO_FLEET_ROLE from env,
+  // strips it, and injects per-class MCP servers into agent sessions.
+  const mcpInjectionStop = registerFleetMcpInjection(server, {
+    enabled: settingsStorage.read()?.mcpInjection?.enabled ?? false,
+    profiles: settingsStorage.read()?.mcpInjection?.profiles ?? {},
+  });
+
   return () => {
-    log.info("Unloading; disposing hook router");
+    log.info("Unloading; disposing hook router, telemetry tap, and MCP injection");
+    if (stopTelemetryTap) void stopTelemetryTap();
     void stopHookRouter();
+    mcpInjectionStop();
   };
 }

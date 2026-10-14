@@ -1,4 +1,7 @@
-import { createPluginLogger } from "paseo-plugin-helper/server";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import type { PluginHandlerContext } from "@getpaseo/plugin/server";
+import { createPluginLogger } from "./vendor/paseo-plugin-helper";
 import {
   KNOWN_OPEN_TARGETS,
   SEED_COMMANDS,
@@ -58,12 +61,29 @@ export function handleListCatalog(): { commands: SlashCommand[] } {
   return { commands: SEED_COMMANDS };
 }
 
-export async function handleListOperations(): Promise<{ rpc: string[]; open: string[] }> {
-  return { rpc: await allowedOperations(), open: [...KNOWN_OPEN_TARGETS] };
+export async function handleListOperations(): Promise<{
+  rpc: string[];
+  open: string[];
+  descriptions: Record<string, string>;
+}> {
+  const bindings = await resolveOperationBindings();
+  const descriptions: Record<string, string> = {};
+  for (const b of bindings) {
+    if (b.description) {
+      descriptions[b.name] = b.description;
+    }
+  }
+  return {
+    rpc: bindings.map((b) => b.name),
+    open: [...KNOWN_OPEN_TARGETS],
+    descriptions,
+  };
 }
 
 export interface OperationContext {
   agentId?: string;
+  args?: string;
+  paseo?: any;
 }
 
 /** A primitive is a built-in code handler; operation bindings are the data that name it. */
@@ -212,12 +232,142 @@ async function readCappedText(response: Response): Promise<{ text: string; trunc
   return { text, truncated };
 }
 
+const execFileAsync = promisify(execFile);
+
+/**
+ * Splits a command argument string into tokens safely respecting quotes.
+ */
+export function tokenizeArgs(raw?: string): string[] {
+  if (!raw || !raw.trim()) return [];
+  const matches = raw.match(/(?:[^\s"']+|"[^"]*"|'[^']*')+/g);
+  if (!matches) return [];
+  return matches.map((arg) => {
+    if ((arg.startsWith('"') && arg.endsWith('"')) || (arg.startsWith("'") && arg.endsWith("'"))) {
+      return arg.slice(1, -1);
+    }
+    return arg;
+  });
+}
+
+async function runAgentMux(args: string[], timeoutMs = 15_000): Promise<{ output: string }> {
+  try {
+    const { stdout, stderr } = await execFileAsync("agent-mux", args, {
+      timeout: timeoutMs,
+      env: { ...process.env, PATH: `${process.env.HOME}/.local/bin:${process.env.PATH ?? ""}` },
+      maxBuffer: 1024 * 1024,
+    });
+    return { output: stdout || stderr };
+  } catch (err: unknown) {
+    const execErr = err as { stdout?: string; stderr?: string; message?: string; code?: string };
+    if (execErr.code === "ENOENT") {
+      throw new Error(
+        "agent-mux CLI is not installed or not found in PATH (~/.local/bin). Please install agent-mux to use this command.",
+      );
+    }
+    const output = (execErr.stdout ?? "") + (execErr.stderr ?? "");
+    if (output.trim()) {
+      return { output: output.trim() };
+    }
+    throw new Error(`agent-mux failed: ${execErr.message ?? String(err)}`);
+  }
+}
+
 const PRIMITIVES: Record<string, OperationPrimitive> = {
   "slash.ping": () => ({ ok: true, version: SLASH_PLUGIN_VERSION }),
   "slash.echo": (params) => ({ echo: params }),
   "slash.orchestrate": (_params, context, binding) => {
     if (!context.agentId) throw new Error("orchestrate requires a caller agent id");
     return orchestrateHandover(context.agentId, binding.target);
+  },
+  "slash.agent.identity": async (_params, context) => {
+    if (!context.agentId) {
+      throw new Error("agent identity requires a caller agent id");
+    }
+    const paseo = context.paseo;
+    const agentRef = paseo?.agents?.ref ? paseo.agents.ref(context.agentId) : null;
+    let agentSnapshot: any = null;
+    if (agentRef) {
+      try {
+        const refetched = await agentRef.refresh();
+        agentSnapshot = refetched?.agent ?? agentRef.current();
+      } catch (err) {
+        log.warn("Failed to refresh agent snapshot for identity", { error: String(err) });
+        agentSnapshot = agentRef.current();
+      }
+    }
+
+    const title = agentSnapshot?.title || "Agent";
+    const provider = agentSnapshot?.provider || "unknown";
+    const model = agentSnapshot?.model || "unknown";
+    const status = agentSnapshot?.status || "active";
+    const cwd = agentSnapshot?.cwd || process.cwd();
+    const workspaceId = agentSnapshot?.workspaceId || "none";
+    const thinkingOptionId = agentSnapshot?.thinkingOptionId ?? agentSnapshot?.effectiveThinkingOptionId ?? "auto";
+
+    const lines = [
+      `Agent ID: ${context.agentId}`,
+      `Title: ${title}`,
+      `Provider: ${provider}`,
+      `Model: ${model}`,
+      `Status: ${status}`,
+      `Thinking Mode: ${thinkingOptionId}`,
+      `Workspace ID: ${workspaceId}`,
+      `Working Directory: ${cwd}`,
+    ];
+
+    return {
+      output: lines.join("\n"),
+      agentId: context.agentId,
+      title,
+      provider,
+      model,
+      status,
+      cwd,
+      workspaceId,
+      thinkingOptionId,
+    };
+  },
+  "slash.agent-mux": async (params, context) => {
+    // If explicit subcommand / args provided in params or via chat {args}, split into tokens safely
+    const extraArgs = tokenizeArgs(context.args);
+    const paramArgs = Array.isArray(params.args)
+      ? params.args.map(String)
+      : typeof params.args === "string"
+        ? tokenizeArgs(params.args)
+        : [];
+    const finalArgs = [...paramArgs, ...extraArgs];
+    return runAgentMux(finalArgs.length > 0 ? finalArgs : ["--help"], 30_000);
+  },
+  "slash.agent-mux.status": async (params, context) => {
+    const extra = tokenizeArgs(context.args);
+    if (extra.length > 0) {
+      return runAgentMux(["status", ...extra]);
+    }
+    const provider = typeof params.provider === "string" && params.provider.trim() ? [params.provider.trim()] : [];
+    return runAgentMux(["status", ...provider]);
+  },
+  "slash.agent-mux.probe": async (params, context) => {
+    const extra = tokenizeArgs(context.args);
+    if (extra.length > 0) {
+      return runAgentMux(["probe", ...extra], 25_000);
+    }
+    const args: string[] = ["probe"];
+    if (typeof params.provider === "string" && params.provider.trim()) {
+      args.push(params.provider.trim());
+      if (typeof params.profile === "string" && params.profile.trim()) {
+        args.push(params.profile.trim());
+        if (typeof params.pool === "string" && params.pool.trim()) {
+          args.push(params.pool.trim());
+        }
+      }
+    } else {
+      args.push("antigravity");
+    }
+    return runAgentMux(args, 25_000);
+  },
+  "slash.agent-mux.cooldowns": async (_params, context) => {
+    const extra = tokenizeArgs(context.args);
+    return runAgentMux(["cooldowns", ...extra]);
   },
   // One generic handler backs every `kind: "http"` binding.
   http: (params, _context, binding) => {
@@ -257,22 +407,77 @@ export async function runOperation(
   return primitive({ ...binding.params, ...params }, context, binding);
 }
 
-export async function handleRunCommand(input: { name: string; args: string; agentId?: string }) {
+export async function handleRunCommand(
+  input: { name: string; args: string; agentId?: string },
+  context?: PluginHandlerContext,
+) {
   const settings = await readSettings();
   const command = settings.commands.find((c) => c.enabled && c.name === input.name);
   if (!command) {
     throw new Error(`unknown or disabled command: ${input.name}`);
   }
   if (command.action.verb === "send") {
-    return { verb: "send" as const, prompt: interpolateTemplate(command.action.template, input.args) };
+    const prompt = interpolateTemplate(command.action.template, input.args);
+    if (input.agentId && context?.paseo?.agents?.ref) {
+      await context.paseo.agents.ref(input.agentId).send(prompt);
+    }
+    return { verb: "send" as const, prompt };
   }
   if (command.action.verb === "open") {
     return { verb: "open" as const, target: command.action.target };
   }
-  const result = await runOperation(command.action.operation, command.action.params ?? {}, {
-    agentId: input.agentId,
-  });
-  return { verb: "rpc" as const, result };
+  try {
+    const result = await runOperation(command.action.operation, command.action.params ?? {}, {
+      agentId: input.agentId,
+      args: input.args,
+      paseo: context?.paseo,
+    });
+
+    if (input.agentId && context?.paseo?.agents?.ref) {
+      try {
+        const bodyText =
+          typeof result === "object" && result && "output" in result
+            ? String((result as { output: unknown }).output)
+            : typeof result === "string"
+              ? result
+              : JSON.stringify(result, null, 2);
+
+        await context.paseo.agents.ref(input.agentId).timeline.append({
+          type: "plugin",
+          id: `slash-${command.name}-${Date.now()}`,
+          kind: "slash-command-result",
+          version: 1,
+          data: {
+            command: command.name,
+            status: "ok",
+            body: bodyText,
+          },
+        });
+      } catch (tlErr) {
+        log.warn("Failed to append slash result to timeline", { error: String(tlErr) });
+      }
+    }
+
+    return { verb: "rpc" as const, result };
+  } catch (err: unknown) {
+    const errMessage = err instanceof Error ? err.message : String(err);
+    if (input.agentId && context?.paseo?.agents?.ref) {
+      try {
+        await context.paseo.agents.ref(input.agentId).timeline.append({
+          type: "plugin",
+          id: `slash-${command.name}-${Date.now()}`,
+          kind: "slash-command-result",
+          version: 1,
+          data: {
+            command: command.name,
+            status: "error",
+            body: errMessage,
+          },
+        });
+      } catch {}
+    }
+    throw err;
+  }
 }
 
 export async function handleExportBundle(): Promise<{ bundle: CommandBundle }> {

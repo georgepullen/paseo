@@ -4,6 +4,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 if (!process.env.NODE_ENV) {
   process.env.NODE_ENV = "test";
@@ -32,10 +33,19 @@ import {
   buildFrontDeskIntroPrompt,
   handleUppidiFrontDeskActivity,
   handleUppidiFrontDeskPrompt,
+  handleUppidiCreateFrontDesk,
   handleFleetTeardown,
+  assertSafeTeardownPath,
+  handleFleetHalt,
+  handleFleetResume,
   getPersistedStateDir,
   resolveRegisteredFrontDeskAgentId,
   checkRepoMainDirty,
+  isFleetWorker,
+  resolveTeardownAgents,
+  handleUppidiAddOrchestrator,
+  categorizeAgent,
+  resolveAgentRole,
 } from "./agents.js";
 import { HookRouter, setActiveHookRouter } from "./hook-router.js";
 import { DEFAULT_PROJECT } from "../shared/contracts.js";
@@ -593,7 +603,7 @@ describe("two-tier spawn authority guard (#573)", () => {
     const decision = evaluateSpawnAuthority({ category: "worker", callerAgentId: DESK }, undefined, deps);
     assert.equal(decision.allowed, false);
     assert.equal(decision.error, SPAWN_AUTHORITY_WORKER_ERROR);
-    assert.ok(decision.error?.includes("paseo send --steer --no-wait <orchId>"));
+    assert.ok(decision.error?.includes("paseo send --no-wait <orchId>"));
     assert.ok(decision.error?.includes("POST <hook-host>:<port>/orchestrator"));
   });
 
@@ -673,7 +683,7 @@ describe("two-tier spawn authority guard (#573)", () => {
     }
   });
 
-  it("resolveDeskWorkingDirs includes ~/code/meta and the desk's recorded cwd", () => {
+  it("resolveDeskWorkingDirs includes ~/code/meta", () => {
     const originalHome = process.env.HOME;
     process.env.HOME = "/home/user";
     try {
@@ -898,11 +908,16 @@ describe("Fleet teardown state cleanup (#774)", () => {
   let tmpDir: string;
   let prevHookStateDir: string | undefined;
   let prevHookQueueDir: string | undefined;
+  let prevHome: string | undefined;
 
   beforeEach(() => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "uppidi-fleet-teardown-test-"));
     prevHookStateDir = process.env.HOOK_STATE_DIR;
     prevHookQueueDir = process.env.HOOK_QUEUE_DIR;
+    prevHome = process.env.HOME;
+    // Isolate HOME as well as the hook state/queue dirs so every teardown
+    // candidate resolves inside the per-test temp dir (#1160).
+    process.env.HOME = tmpDir;
     process.env.HOOK_STATE_DIR = tmpDir;
     process.env.HOOK_QUEUE_DIR = path.join(tmpDir, "queues");
     setExecFileAsyncForTest(async () => ({ stdout: "[]", stderr: "" }));
@@ -911,6 +926,8 @@ describe("Fleet teardown state cleanup (#774)", () => {
   afterEach(() => {
     setExecFileAsyncForTest(null);
     setActiveHookRouter(null);
+    if (prevHome !== undefined) process.env.HOME = prevHome;
+    else delete process.env.HOME;
     if (prevHookStateDir !== undefined) process.env.HOOK_STATE_DIR = prevHookStateDir;
     else delete process.env.HOOK_STATE_DIR;
     if (prevHookQueueDir !== undefined) process.env.HOOK_QUEUE_DIR = prevHookQueueDir;
@@ -918,6 +935,126 @@ describe("Fleet teardown state cleanup (#774)", () => {
     try {
       fs.rmSync(tmpDir, { recursive: true, force: true });
     } catch {}
+  });
+
+  it("refuses to delete a host path outside os.tmpdir() under NODE_ENV=test (#1160)", () => {
+    const root = path.parse(os.tmpdir()).root;
+    const hostPath = path.join(
+      root,
+      "home",
+      "user",
+      ".paseo",
+      "plugin-data",
+      "xpufx",
+      "uppidi-fleet",
+      "frontdesk.json",
+    );
+    assert.throws(() => assertSafeTeardownPath(hostPath), /outside os\.tmpdir/);
+    assert.doesNotThrow(() => assertSafeTeardownPath(path.join(tmpDir, "frontdesk.json")));
+  });
+
+  it("never targets a path outside os.tmpdir() when HOME is isolated (#1160)", async () => {
+    const fdFile = path.join(tmpDir, "frontdesk.json");
+    const orchDir = path.join(tmpDir, "orchestrators");
+    const queueDir = path.join(tmpDir, "queues");
+    fs.mkdirSync(orchDir, { recursive: true });
+    fs.mkdirSync(queueDir, { recursive: true });
+    fs.writeFileSync(fdFile, JSON.stringify({ agentId: "agent-fd" }), "utf8");
+    fs.writeFileSync(path.join(orchDir, "repo.json"), JSON.stringify({ agentId: "agent-orch" }), "utf8");
+    fs.writeFileSync(path.join(queueDir, "worker.json"), JSON.stringify([{ id: "w1" }]), "utf8");
+
+    const deleted: string[] = [];
+    const originalUnlink = fs.unlinkSync;
+    (fs as any).unlinkSync = (target: string) => {
+      deleted.push(path.resolve(String(target)));
+      return originalUnlink(target);
+    };
+
+    try {
+      const mockContext = {
+        paseo: {
+          agents: {
+            list: async () => ({ entries: [] }),
+            ref: () => ({ archive: async () => ({ ok: true }) }),
+          },
+        },
+      } as any;
+
+      const res = await handleFleetTeardown(
+        { targets: ["frontdesk", "orchestrators", "workers"], confirm: true },
+        mockContext,
+      );
+
+      assert.equal(res.ok, true);
+      assert.ok(deleted.length > 0, "teardown must delete the isolated state files");
+      const tmpRoot = path.resolve(os.tmpdir());
+      for (const target of deleted) {
+        const rel = path.relative(tmpRoot, target);
+        assert.ok(
+          rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel),
+          `teardown deleted a path outside os.tmpdir(): ${target}`,
+        );
+      }
+    } finally {
+      (fs as any).unlinkSync = originalUnlink;
+    }
+  });
+
+  it("does not reach into an unisolated host HOME when teardown state is isolated (#1160)", async () => {
+    const isolatedHome = process.env.HOME;
+    const scratchRoot = path.resolve(
+      path.dirname(fileURLToPath(import.meta.url)),
+      "..",
+      "..",
+      "..",
+      ".tmp",
+    );
+    fs.mkdirSync(scratchRoot, { recursive: true });
+    const decoyHome = fs.mkdtempSync(path.join(scratchRoot, "teardown-host-home-"));
+    process.env.HOME = decoyHome;
+
+    // Simulate the operator's live host state, deliberately outside os.tmpdir().
+    const decoyData = path.join(
+      decoyHome,
+      ".paseo",
+      "plugin-data",
+      "xpufx",
+      "uppidi-fleet",
+    );
+    const decoyOrchDir = path.join(decoyData, "orchestrators");
+    const decoyQueueDir = path.join(decoyData, "queues");
+    fs.mkdirSync(decoyOrchDir, { recursive: true });
+    fs.mkdirSync(decoyQueueDir, { recursive: true });
+    const decoyFrontDesk = path.join(decoyData, "frontdesk.json");
+    const decoyOrchestrator = path.join(decoyOrchDir, "repo.json");
+    const decoyQueue = path.join(decoyQueueDir, "worker.json");
+    fs.writeFileSync(decoyFrontDesk, JSON.stringify({ agentId: "host-fd" }), "utf8");
+    fs.writeFileSync(decoyOrchestrator, JSON.stringify({ agentId: "host-orch" }), "utf8");
+    fs.writeFileSync(decoyQueue, JSON.stringify([{ id: "host" }]), "utf8");
+
+    try {
+      const mockContext = {
+        paseo: {
+          agents: {
+            list: async () => ({ entries: [] }),
+            ref: () => ({ archive: async () => ({ ok: true }) }),
+          },
+        },
+      } as any;
+
+      const res = await handleFleetTeardown(
+        { targets: ["frontdesk", "orchestrators", "workers"], confirm: true },
+        mockContext,
+      );
+
+      assert.equal(res.ok, true);
+      assert.equal(fs.existsSync(decoyFrontDesk), true, "host frontdesk.json must survive");
+      assert.equal(fs.existsSync(decoyOrchestrator), true, "host orchestrator file must survive");
+      assert.equal(fs.existsSync(decoyQueue), true, "host queue file must survive");
+    } finally {
+      process.env.HOME = isolatedHome;
+      fs.rmSync(decoyHome, { recursive: true, force: true });
+    }
   });
 
   it("deletes frontdesk.json and clears active router when frontdesk is targeted", async () => {
@@ -1083,6 +1220,343 @@ describe("Fleet teardown state cleanup (#774)", () => {
     assert.equal(fs.existsSync(fdFile), false);
     assert.equal(fs.existsSync(repoFile), false);
   });
+
+  it("does not deliver duplicate teardown notices to surviving Front Desk or leave phantom notices (#1118)", async () => {
+    const queueDir = path.join(tmpDir, "queues");
+    fs.mkdirSync(queueDir, { recursive: true });
+
+    const router = new HookRouter(null, {
+      stateDir: tmpDir,
+      queueDir,
+      port: 0,
+    });
+    router.writeFrontDesk("fd-surviving");
+    router.writeOrchestrator("repo-surviving", "orch-surviving");
+    setActiveHookRouter(router);
+
+    const directDeliveries: Array<{ agentId: string; msg: string }> = [];
+    (router as any).deliverMessage = async (agentId: string, msg: string) => {
+      directDeliveries.push({ agentId, msg });
+      return true;
+    };
+
+    const mockContext = {
+      paseo: {
+        agents: {
+          list: async () => ({
+            entries: [
+              { id: "fd-surviving", name: "Front Desk", category: "front-desk", status: "running" },
+              { id: "orch-surviving", name: "Orchestrator", category: "orchestrator", status: "running" },
+              { id: "worker-dead", name: "Worker", category: "worker", status: "running", labels: { role: "worker" }, parentId: "orch-surviving" },
+            ],
+          }),
+          ref: () => ({ archive: async () => ({ ok: true }) }),
+        },
+      },
+    } as any;
+
+    try {
+      const res = await handleFleetTeardown(
+        { targets: ["workers"], confirm: true },
+        mockContext
+      );
+
+      assert.equal(res.ok, true);
+      assert.equal(res.tornDown.workers, 1);
+      assert.equal(res.tornDown.frontdesk, 0);
+      assert.equal(res.tornDown.orchestrators, 0);
+
+      // Direct deliveries happened for surviving frontdesk and orchestrator
+      assert.equal(directDeliveries.length, 2);
+      // Queues must be empty so resume does not deliver duplicate notices
+      assert.equal(router.getQueue("frontdesk").length, 0, "frontdesk queue must not contain duplicate notice");
+      assert.equal(router.getQueue("repo-surviving").length, 0, "orchestrator queue must not contain duplicate notice");
+
+      // Also verify general teardown leaves no phantom frontdesk notice
+      const generalRes = await handleFleetTeardown(
+        { targets: ["frontdesk", "orchestrators", "workers"], confirm: true },
+        mockContext
+      );
+      assert.equal(generalRes.ok, true);
+      assert.equal(router.getQueue("frontdesk").length, 0, "general teardown must not leave phantom frontdesk notice");
+    } finally {
+      setActiveHookRouter(null);
+    }
+  });
+
+  it("engages router.halt() at start of teardown and prevents new agent spawns (#994)", async () => {
+    const router = new HookRouter(null, {
+      stateDir: tmpDir,
+      queueDir: path.join(tmpDir, "queues"),
+      port: 0,
+    });
+    setActiveHookRouter(router);
+
+    let haltObservedBeforeArchive = false;
+    let archiveCalls = 0;
+
+    const mockContext = {
+      paseo: {
+        agents: {
+          list: async () => ({
+            entries: [
+              { id: "agent-1", name: "Worker 1", labels: { role: "worker" }, status: "idle" },
+            ],
+          }),
+          ref: () => ({
+            archive: async () => {
+              archiveCalls++;
+              if (router.isHalted()) {
+                haltObservedBeforeArchive = true;
+              }
+              return { ok: true };
+            },
+          }),
+        },
+      },
+    } as any;
+
+    assert.equal(router.isHalted(), false);
+
+    const res = await handleFleetTeardown(
+      { targets: ["workers"], confirm: true },
+      mockContext
+    );
+
+    assert.equal(res.ok, true);
+    assert.equal(archiveCalls, 1);
+    assert.equal(haltObservedBeforeArchive, true, "router must be halted before archiving agents");
+    assert.equal(router.isHalted(), true, "router remains halted after teardown");
+
+    // Attempting to spawn Front Desk during/after teardown must be rejected
+    const createFdRes = await handleUppidiCreateFrontDesk(
+      { title: "New Front Desk", prompt: "Hello" },
+      mockContext
+    );
+    assert.equal(createFdRes.ok, false);
+    assert.match(createFdRes.error || "", /halt|teardown/i);
+
+    // Attempting to ensure an orchestrator must be rejected
+    const ensureOrchRes = await router.ensureOrchestrator({ repo: "xpufx-org/test-repo" });
+    assert.equal(ensureOrchRes.ok, false);
+    assert.match(ensureOrchRes.error || "", /halted/i);
+  });
+
+  it("handles fleet teardown with drain: true waiting for running agent to become idle (#995)", async () => {
+    let checkCount = 0;
+    const archivedAgents: string[] = [];
+
+    const mockContext = {
+      paseo: {
+        agents: {
+          list: async () => {
+            checkCount++;
+            return {
+              entries: [
+                {
+                  id: "agent-running-1",
+                  name: "Worker 1",
+                  labels: { role: "worker" },
+                  // Status is running on first call, becomes idle on subsequent calls
+                  status: checkCount === 1 ? "running" : "idle",
+                },
+              ],
+            };
+          },
+          ref: (id: string) => ({
+            archive: async () => {
+              archivedAgents.push(id);
+              return { ok: true };
+            },
+          }),
+        },
+      },
+    } as any;
+
+    const res = await handleFleetTeardown(
+      { targets: ["workers"], confirm: true, drain: true, drainTimeoutMs: 2000 },
+      mockContext
+    );
+
+    assert.equal(res.ok, true);
+    assert.equal(res.tornDown.workers, 1);
+    assert.deepEqual(archivedAgents, ["agent-running-1"]);
+    assert.ok(checkCount >= 2, "must poll until the running agent becomes idle");
+  });
+
+  it("handles fleet teardown with drain: true timing out when agent remains running (#995)", async () => {
+    const archivedAgents: string[] = [];
+
+    const mockContext = {
+      paseo: {
+        agents: {
+          list: async () => ({
+            entries: [
+              {
+                id: "agent-running-forever",
+                name: "Worker Stuck",
+                labels: { role: "worker" },
+                status: "running",
+              },
+            ],
+          }),
+          ref: (id: string) => ({
+            archive: async () => {
+              archivedAgents.push(id);
+              return { ok: true };
+            },
+          }),
+        },
+      },
+    } as any;
+
+    const start = Date.now();
+    const res = await handleFleetTeardown(
+      { targets: ["workers"], confirm: true, drain: true, drainTimeoutMs: 300 },
+      mockContext
+    );
+    const elapsed = Date.now() - start;
+
+    assert.equal(res.ok, true);
+    assert.ok(elapsed >= 250, "must wait for drain interval before timeout");
+    assert.equal(res.tornDown.workers, 1, "archives remaining running agents after timeout");
+    assert.deepEqual(archivedAgents, ["agent-running-forever"]);
+  });
+
+  it("archives fleet workers and does NOT archive ad-hoc or detached user agents (#1121)", async () => {
+    const router = new HookRouter(null, {
+      stateDir: path.join(tmpDir, "orchestrators"),
+      queueDir: path.join(tmpDir, "queues"),
+      port: 0,
+    });
+    router.writeFrontDesk("fd-1");
+    router.writeOrchestrator("xpufx-org/paseo", "orch-paseo");
+    setActiveHookRouter(router);
+
+    const archivedAgents: string[] = [];
+    const mockContext = {
+      paseo: {
+        agents: {
+          list: async () => ({
+            entries: [
+              // 1. Registered Front Desk
+              { id: "fd-1", name: "Front Desk", status: "idle" },
+              // 2. Registered Orchestrator
+              { id: "orch-paseo", name: "Orchestrator · xpufx-org/paseo", status: "idle" },
+              // 3. Genuine fleet worker spawned by orch-paseo (parentId)
+              {
+                id: "worker-fleet-child",
+                name: "paseo#1121 teardown ownership",
+                status: "idle",
+                parentId: "orch-paseo",
+              },
+              // 4. Fleet worker with explicit label role: worker
+              {
+                id: "worker-fleet-labeled",
+                name: "some task",
+                status: "idle",
+                labels: { role: "worker" },
+              },
+              // 5. Fleet worker with attributed issue work
+              {
+                id: "worker-fleet-issue",
+                name: "fix bug",
+                status: "idle",
+                labels: { "forgejo.issue": "1121", repo: "xpufx-org/paseo" },
+              },
+              // 6. Ad-hoc user session (arbitrary title, no parent, no fleet labels, no enrolled repo)
+              {
+                id: "user-adhoc-scratch",
+                name: "my scratch exploration session",
+                status: "idle",
+              },
+              // 7. Detached user agent working on local notes (no fleet labels, no fleet parent)
+              {
+                id: "user-detached-notes",
+                name: "notes and experiments",
+                status: "idle",
+                labels: { purpose: "personal-notes" },
+              },
+            ],
+          }),
+          ref: (id: string) => ({
+            archive: async () => {
+              archivedAgents.push(id);
+              return { ok: true };
+            },
+          }),
+        },
+      },
+    } as any;
+
+    // Teardown targeting ONLY workers
+    const resWorkersOnly = await handleFleetTeardown(
+      { targets: ["workers"], confirm: true },
+      mockContext
+    );
+
+    assert.equal(resWorkersOnly.ok, true);
+    assert.equal(resWorkersOnly.tornDown.workers, 3);
+    assert.equal(resWorkersOnly.tornDown.orchestrators, 0);
+    assert.equal(resWorkersOnly.tornDown.frontdesk, 0);
+    // Must contain ONLY the 3 fleet workers
+    assert.deepEqual(
+      archivedAgents.sort(),
+      ["worker-fleet-child", "worker-fleet-labeled", "worker-fleet-issue"].sort()
+    );
+    // Must NOT contain ad-hoc or detached user agents
+    assert.equal(archivedAgents.includes("user-adhoc-scratch"), false);
+    assert.equal(archivedAgents.includes("user-detached-notes"), false);
+    // Must NOT contain frontdesk or orchestrator when not targeted
+    assert.equal(archivedAgents.includes("fd-1"), false);
+    assert.equal(archivedAgents.includes("orch-paseo"), false);
+  });
+
+  it("isFleetWorker predicate accurately distinguishes fleet workers from ad-hoc agents (#1121)", () => {
+    const orchestratorIds = new Set(["orch-1"]);
+
+    // Fleet worker via parentId
+    assert.equal(
+      isFleetWorker({ id: "w1", shortId: "w1", name: "Worker", category: "worker", status: "idle", parentId: "orch-1" }, { orchestratorIds }),
+      true
+    );
+    // Fleet worker via parentCategory
+    assert.equal(
+      isFleetWorker({ id: "w2", shortId: "w2", name: "Worker", category: "worker", status: "idle", parentId: "unknown", parentCategory: "orchestrator" }),
+      true
+    );
+    // Fleet worker via label role
+    assert.equal(
+      isFleetWorker({ id: "w3", shortId: "w3", name: "Worker", category: "worker", status: "idle", labels: { role: "worker" } }),
+      true
+    );
+    // Fleet worker via paseo.parent-agent-id label
+    assert.equal(
+      isFleetWorker({ id: "w4", shortId: "w4", name: "Worker", category: "worker", status: "idle", labels: { "paseo.parent-agent-id": "orch-1" } }),
+      true
+    );
+    // Fleet worker via attributed work issue
+    assert.equal(
+      isFleetWorker({ id: "w5", shortId: "w5", name: "Worker", category: "worker", status: "idle", attributedWork: { issue: 1121, repo: "xpufx-org/paseo" } }),
+      true
+    );
+    // Fleet worker via enrolled repo
+    assert.equal(
+      isFleetWorker({ id: "w6", shortId: "w6", name: "Worker", category: "worker", status: "idle", project: "xpufx-org/paseo" }, { enrolledRepos: ["xpufx-org/paseo"] }),
+      true
+    );
+
+    // Ad-hoc user session (no parent, no fleet labels, no enrolled repo)
+    assert.equal(
+      isFleetWorker({ id: "u1", shortId: "u1", name: "scratch session", category: "worker", status: "idle" }),
+      false
+    );
+    // Detached user session on an unenrolled repo
+    assert.equal(
+      isFleetWorker({ id: "u2", shortId: "u2", name: "my app", category: "worker", status: "idle", project: "personal/app" }, { enrolledRepos: ["xpufx-org/paseo"] }),
+      false
+    );
+  });
 });
 
 describe("Front Desk intro prompt hook context (#903)", () => {
@@ -1239,6 +1713,562 @@ describe("repo root off-main inspection (#919)", () => {
       assert.equal(result.isOffMain, false);
     } finally {
       fs.rmSync(nonRepo, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("Fleet HALT / RESUME handlers (#1013)", () => {
+  let tmpDir: string;
+  let prevHookStateDir: string | undefined;
+  let prevHookQueueDir: string | undefined;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "uppidi-fleet-halt-rpc-test-"));
+    prevHookStateDir = process.env.HOOK_STATE_DIR;
+    prevHookQueueDir = process.env.HOOK_QUEUE_DIR;
+    process.env.HOOK_STATE_DIR = tmpDir;
+    process.env.HOOK_QUEUE_DIR = path.join(tmpDir, "queues");
+    setExecFileAsyncForTest(async () => ({ stdout: "[]", stderr: "" }));
+  });
+
+  afterEach(() => {
+    setExecFileAsyncForTest(null);
+    setActiveHookRouter(null);
+    if (prevHookStateDir !== undefined) process.env.HOOK_STATE_DIR = prevHookStateDir;
+    else delete process.env.HOOK_STATE_DIR;
+    if (prevHookQueueDir !== undefined) process.env.HOOK_QUEUE_DIR = prevHookQueueDir;
+    else delete process.env.HOOK_QUEUE_DIR;
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch {}
+  });
+
+  function makeRouter(): HookRouter {
+    const router = new HookRouter(null, {
+      stateDir: tmpDir,
+      queueDir: path.join(tmpDir, "queues"),
+      port: 0,
+    });
+    setActiveHookRouter(router);
+    return router;
+  }
+
+  it("engages the canonical halt and reports a no-op on a second engage", async () => {
+    const router = makeRouter();
+    assert.equal(router.isHalted(), false);
+
+    const first = await handleFleetHalt({ confirm: true });
+    assert.equal(first.ok, true);
+    assert.equal(first.halted, true);
+    assert.equal(first.alreadyHalted, false);
+    assert.equal(router.isHalted(), true);
+    assert.equal(router.isAllPaused(), true);
+
+    const second = await handleFleetHalt({ confirm: true });
+    assert.equal(second.ok, true);
+    assert.equal(second.halted, true);
+    assert.equal(second.alreadyHalted, true, "double-engage must be guarded");
+  });
+
+  it("clears the halt through resume('all')", async () => {
+    const router = makeRouter();
+    await handleFleetHalt({ confirm: true });
+    assert.equal(router.isHalted(), true);
+
+    const res = await handleFleetResume({ confirm: true });
+    assert.equal(res.ok, true);
+    assert.equal(res.halted, false);
+    assert.equal(router.isHalted(), false);
+    assert.equal(router.isAllPaused(), false);
+  });
+
+  it("refuses resume while a teardown is mid-flight", async () => {
+    const router = makeRouter();
+    await handleFleetHalt({ confirm: true });
+    router.markTeardownStart();
+
+    const res = await handleFleetResume({ confirm: true });
+    assert.equal(res.ok, false);
+    assert.equal(res.teardownInProgress, true);
+    assert.match(res.error || "", /teardown in progress/i);
+    assert.equal(router.isHalted(), true, "halt must remain engaged during teardown");
+
+    router.markTeardownEnd();
+    const after = await handleFleetResume({ confirm: true });
+    assert.equal(after.ok, true);
+    assert.equal(router.isHalted(), false);
+  });
+
+  it("treats a missing active router as an error", async () => {
+    setActiveHookRouter(null);
+    const halt = await handleFleetHalt({ confirm: true });
+    assert.equal(halt.ok, false);
+    assert.match(halt.error || "", /not running/i);
+    const resume = await handleFleetResume({ confirm: true });
+    assert.equal(resume.ok, false);
+    assert.match(resume.error || "", /not running/i);
+  });
+
+  it("holds the teardown window across handleFleetTeardown and releases it afterwards", async () => {
+    const router = makeRouter();
+    let sawTeardownWindow = false;
+    let sawHalted = false;
+    let sawListDuringTeardown = false;
+    // The broadcast happens after halt() but before archiving, so it is the
+    // earliest point where both the teardown window and the halt must be set.
+    (router as any).broadcastTeardownNotice = async () => {
+      sawTeardownWindow = router.isTeardownInProgress();
+      sawHalted = router.isHalted();
+      return { queuedKeys: [], delivered: 0 };
+    };
+    const mockContext = {
+      paseo: {
+        agents: {
+          list: async () => {
+            sawListDuringTeardown = sawListDuringTeardown || router.isTeardownInProgress();
+            return { entries: [] };
+          },
+          ref: () => ({ archive: async () => ({ ok: true }) }),
+        },
+      },
+    } as any;
+
+    await handleFleetTeardown({ targets: ["workers"], confirm: true }, mockContext);
+
+    assert.equal(sawListDuringTeardown, true, "teardown window must be open before archiving runs");
+    assert.equal(sawTeardownWindow, true, "teardown window must be open while archiving runs");
+    assert.equal(sawHalted, true, "canonical halt must be engaged while teardown runs");
+    assert.equal(router.isTeardownInProgress(), false, "teardown window must close when the handler returns");
+    assert.equal(router.isHalted(), true, "the halt remains engaged after teardown until RESUME");
+
+    const resume = await handleFleetResume({ confirm: true });
+    assert.equal(resume.ok, true);
+    assert.equal(router.isHalted(), false);
+  });
+});
+
+describe("canonical fleet roles from the hook router registry (#1078)", () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "uppidi-fleet-canonical-1078-"));
+  });
+
+  afterEach(() => {
+    setActiveHookRouter(null);
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch {}
+  });
+
+  function makeRouter(): HookRouter {
+    const router = new HookRouter(null, {
+      stateDir: path.join(tmpDir, "orchestrators"),
+      queueDir: path.join(tmpDir, "queues"),
+      port: 0,
+    });
+    setActiveHookRouter(router);
+    return router;
+  }
+
+  function contextFor(entries: any[]): any {
+    return { paseo: { agents: { list: async () => ({ entries }) } } };
+  }
+
+  it("does not promote an agent named 'Front Desk' when the registry names no desk", async () => {
+    makeRouter();
+
+    const res = await handleUppidiAgents(
+      {},
+      contextFor([{ id: "phantom-desk", name: "Front Desk", status: "idle" }])
+    );
+
+    assert.equal(res.registryAuthoritative, true);
+    assert.equal(res.frontDesk.length, 0, "no registered desk means no canonical Front Desk");
+
+    const phantom = res.workers.find((a) => a.id === "phantom-desk");
+    assert.ok(phantom, "the name-only desk must fall through to workers");
+    assert.equal(phantom?.category, "coding-agent");
+    assert.equal(phantom?.roleSource, "registry");
+    assert.equal(phantom?.roleDivergent, false);
+    assert.equal(res.roleDivergences.length, 0);
+  });
+
+  it("promotes only the registered Front Desk id, regardless of its display name", async () => {
+    const router = makeRouter();
+    router.writeFrontDesk("real-desk");
+
+    const res = await handleUppidiAgents(
+      {},
+      contextFor([
+        { id: "real-desk", name: "Some Session Title", status: "idle" },
+        { id: "phantom-desk", name: "Front Desk", status: "idle" },
+      ])
+    );
+
+    assert.equal(res.frontDesk.length, 1);
+    assert.equal(res.frontDesk[0]?.id, "real-desk");
+    assert.equal(res.frontDesk[0]?.category, "front-desk");
+    assert.equal(res.frontDesk[0]?.roleSource, "registry");
+
+    const phantom = res.workers.find((a) => a.id === "phantom-desk");
+    assert.ok(phantom);
+    assert.equal(phantom?.category, "coding-agent");
+  });
+
+  it("classifies orchestrators from GET /orchestrators and carries the canonical repo key", async () => {
+    const router = makeRouter();
+    router.writeOrchestrator("forge.example.com/org/repo", "orch-1");
+
+    const res = await handleUppidiAgents(
+      {},
+      contextFor([
+        { id: "orch-1", name: "Agent With No Role In Its Name", status: "idle" },
+        { id: "fake-orch", name: "Orchestrator · repo", status: "idle" },
+      ])
+    );
+
+    assert.equal(res.orchestrators.length, 1);
+    assert.equal(res.orchestrators[0]?.id, "orch-1");
+    assert.equal(res.orchestrators[0]?.category, "orchestrator");
+    assert.equal(res.orchestrators[0]?.registryRepoKey, "forge.example.com/org/repo");
+    assert.equal(res.orchestrators[0]?.roleDivergent, false);
+
+    const fake = res.workers.find((a) => a.id === "fake-orch");
+    assert.ok(fake);
+    assert.equal(fake?.category, "coding-agent");
+    assert.equal(fake?.roleDivergent, false);
+    assert.equal(res.roleDivergences.length, 0);
+  });
+
+  it("leaves unregistered label claims to the registry at output while normalizing from labels (#1143, #1150)", async () => {
+    makeRouter();
+
+    const res = await handleUppidiAgents(
+      {},
+      contextFor([
+        { id: "label-desk", name: "Some Session", status: "idle", labels: { role: "front-desk" } },
+        { id: "label-orch", name: "Another Session", status: "idle", labels: { role: "orchestrator" } },
+      ])
+    );
+
+    // The registry is the only source of truth at output (#1150): unregistered
+    // claims stay coding-agents, while normalize-level classification still
+    // reads their explicit labels (see resolveAgentRole/categorizeAgent below).
+    assert.equal(res.registryAuthoritative, true);
+    assert.equal(res.frontDesk.length, 0);
+    assert.equal(res.orchestrators.length, 0);
+    assert.equal(res.roleDivergences.length, 0);
+    for (const id of ["label-desk", "label-orch"]) {
+      const worker = res.workers.find((a) => a.id === id);
+      assert.ok(worker);
+      assert.equal(worker?.category, "coding-agent");
+      assert.equal(worker?.roleSource, "registry");
+      assert.equal(worker?.roleDivergent, false);
+    }
+    // Normalize-level resolution honors the same labels deterministically.
+    assert.equal(categorizeAgent({ id: "label-desk", labels: { role: "front-desk" } }), "front-desk");
+    assert.equal(categorizeAgent({ id: "label-orch", labels: { role: "orchestrator" } }), "orchestrator");
+  });
+
+  it("lets registry ids win over conflicting labels without divergence alerts (#1143, #1150)", async () => {
+    const router = makeRouter();
+    router.writeOrchestrator("forge.example.com/org/repo", "conflict-id");
+
+    const res = await handleUppidiAgents(
+      {},
+      contextFor([
+        { id: "conflict-id", name: "Some Session", status: "idle", labels: { role: "front-desk" } },
+      ])
+    );
+
+    const conflict = res.orchestrators.find((a) => a.id === "conflict-id");
+    assert.ok(conflict, "the registry id decides the canonical role");
+    assert.equal(conflict?.category, "orchestrator");
+    assert.equal(conflict?.registryRepoKey, "forge.example.com/org/repo");
+    assert.equal(conflict?.roleDivergent, false);
+    assert.equal(res.roleDivergences.length, 0);
+  });
+
+  it("marks label-derived roles display-only when no router registry is reachable", async () => {
+    setActiveHookRouter(null);
+
+    const res = await handleUppidiAgents(
+      {},
+      contextFor([
+        { id: "desk-no-router", name: "Front Desk", status: "idle" },
+        { id: "labeled-no-router", name: "Some Session", status: "idle", labels: { role: "front-desk" } },
+      ])
+    );
+
+    assert.equal(res.registryAuthoritative, false);
+    // A bare display name grants nothing without roster metadata (#1143).
+    const bare = res.workers.find((a) => a.id === "desk-no-router");
+    assert.ok(bare);
+    assert.equal(bare?.category, "coding-agent");
+    assert.equal(bare?.roleSource, "name-heuristic");
+    assert.equal(bare?.roleDivergent, false);
+    // Explicit labels still resolve, but are marked display-only without a registry.
+    const desk = res.frontDesk.find((a) => a.id === "labeled-no-router");
+    assert.ok(desk);
+    assert.equal(desk?.roleSource, "name-heuristic");
+    assert.equal(desk?.roleDivergent, false);
+    assert.equal(res.roleDivergences.length, 0);
+  });
+
+  it("resolveAgentRole honors registry ids, then explicit labels, then coding-agent fallback (#1143)", () => {
+    const registry = {
+      available: true,
+      frontDeskAgentId: "fd-1",
+      orchestratorAgentIdToRepo: new Map([["orch-1", "forge.example.com/org/repo"]]),
+    } as any;
+
+    // 1. Registry id lookup wins over everything, regardless of display name.
+    assert.equal(resolveAgentRole({ id: "fd-1", labels: { role: "coding-agent" } }, registry), "front-desk");
+    assert.equal(resolveAgentRole({ id: "orch-1", labels: { role: "front-desk" } }, registry), "orchestrator");
+
+    // 2. Explicit label tags grant roles: record category/role, labels, and role=* arrays.
+    assert.equal(resolveAgentRole({ id: "a", labels: { role: "front-desk" } }, registry), "front-desk");
+    assert.equal(resolveAgentRole({ id: "a", labels: { role: "frontdesk" } }, registry), "front-desk");
+    assert.equal(resolveAgentRole({ id: "a", labels: { category: "front-desk" } }, registry), "front-desk");
+    assert.equal(resolveAgentRole({ id: "a", labels: { role: "orchestrator" } }, registry), "orchestrator");
+    assert.equal(resolveAgentRole({ id: "a", labels: ["role=orchestrator"] } as any, registry), "orchestrator");
+    assert.equal(resolveAgentRole({ id: "a", role: "front-desk" } as any, registry), "front-desk");
+    assert.equal(resolveAgentRole({ id: "a", category: "orchestrator" } as any, registry), "orchestrator");
+    // Legacy `worker` spelling maps to the canonical coding-agent category (#1126).
+    assert.equal(resolveAgentRole({ id: "a", labels: { role: "worker" } }, registry), "coding-agent");
+
+    // 3. Retired markers are rejected to coding-agent, even with Front Desk titles.
+    assert.equal(
+      resolveAgentRole({ id: "r", name: "Front Desk (retired)", labels: { role: "retired-front-desk" } } as any, registry),
+      "coding-agent"
+    );
+    assert.equal(resolveAgentRole({ id: "r", labels: { role: "retired" } }, registry), "coding-agent");
+
+    // 4. Fallback is always coding-agent: unknown/empty labels and bare names never
+    // promote, no matter how Front Desk-like the title looks.
+    assert.equal(resolveAgentRole({ id: "w" }, registry), "coding-agent");
+    assert.equal(resolveAgentRole({ id: "w", labels: { role: "bogus" } }, registry), "coding-agent");
+    assert.equal(categorizeAgent("Front Desk (retired)"), "coding-agent");
+    assert.equal(categorizeAgent("Front Desk"), "coding-agent");
+    assert.equal(categorizeAgent("Front Desk · Main"), "coding-agent");
+    assert.equal(categorizeAgent("paseo#1119 Front Desk live recovery"), "coding-agent");
+    assert.equal(categorizeAgent("#1143 fix registry role divergences"), "coding-agent");
+    assert.equal(categorizeAgent("Orchestrator · xpufx-org/paseo"), "coding-agent");
+  });
+
+  it("categorizeAgent never promotes from display names; records resolve via roster metadata (#1143)", () => {
+    // Retired sessions, issue workers, and bare Front Desk / orchestrator
+    // titles are all coding-agents without roster metadata.
+    assert.equal(categorizeAgent("Front Desk (retired)"), "coding-agent");
+    assert.equal(categorizeAgent("Front Desk (retired-front-desk)"), "coding-agent");
+    assert.equal(categorizeAgent("paseo#1119 Front Desk live recovery"), "coding-agent");
+    assert.equal(categorizeAgent("#1143 fix registry role divergences"), "coding-agent");
+    assert.equal(categorizeAgent("Front Desk"), "coding-agent");
+    assert.equal(categorizeAgent("Front Desk · Main"), "coding-agent");
+    assert.equal(categorizeAgent("Orchestrator · xpufx-org/paseo"), "coding-agent");
+    // Full records resolve through explicit labels and registry ids.
+    assert.equal(
+      categorizeAgent({ id: "fd", name: "Front Desk", labels: { role: "front-desk" } }),
+      "front-desk"
+    );
+    assert.equal(
+      categorizeAgent({
+        id: "retired",
+        name: "Front Desk (retired)",
+        labels: { role: "retired-front-desk" },
+      }),
+      "coding-agent"
+    );
+    assert.equal(
+      categorizeAgent({
+        id: "w",
+        name: "paseo#1119 Front Desk live recovery",
+        labels: { role: "coding-agent" },
+      }),
+      "coding-agent"
+    );
+    const registry = {
+      available: true,
+      frontDeskAgentId: "fd-reg",
+      orchestratorAgentIdToRepo: new Map(),
+    } as any;
+    assert.equal(
+      categorizeAgent({ id: "fd-reg", name: "Some Session Title" }, registry),
+      "front-desk"
+    );
+  });
+
+  it("eagerly reconciles missing orchestrators when router has enrolled repos and agentMap is present (#1143)", async () => {
+    const router = makeRouter();
+    // Configure enrolled repos
+    router.enrollRepo("xpufx-org/paseo");
+    // Simulate live agent roster containing the orchestrator
+    const mockContext = contextFor([
+      { id: "orch-paseo", name: "Orchestrator · xpufx-org/paseo", status: "idle" },
+    ]);
+
+    const res = await handleUppidiAgents({}, mockContext);
+    assert.equal(res.orchestrators.length, 1);
+    assert.equal(res.orchestrators[0]?.id, "orch-paseo");
+    assert.equal(res.orchestrators[0]?.category, "orchestrator");
+    assert.equal(res.roleDivergences.length, 0);
+  });
+
+  it("reconciles label-tagged orchestrators without title heuristics and isolates retired desks (#1143)", async () => {
+    const router = makeRouter();
+    router.enrollRepo("xpufx-org/paseo");
+
+    const res = await handleUppidiAgents(
+      {},
+      contextFor([
+        {
+          id: "orch-labeled",
+          name: "some opaque session title",
+          status: "idle",
+          labels: { role: "orchestrator", repo: "xpufx-org/paseo" },
+        },
+        {
+          id: "retired-desk",
+          name: "Front Desk (retired)",
+          status: "idle",
+          updatedAt: new Date(Date.now() + 60_000).toISOString(),
+          labels: { role: "retired-front-desk" },
+        },
+      ])
+    );
+
+    const orch = res.orchestrators.find((a) => a.id === "orch-labeled");
+    assert.ok(orch, "explicit orchestrator labels must resolve without title matching");
+    assert.equal(orch?.category, "orchestrator");
+    const retired = res.workers.find((a) => a.id === "retired-desk");
+    assert.ok(retired, "the retired desk must stay a coding-agent despite its newer timestamp");
+    assert.equal(retired?.category, "coding-agent");
+    assert.equal(res.frontDesk.length, 0, "no registered desk means no canonical Front Desk");
+    assert.equal(res.roleDivergences.length, 0);
+  });
+});
+
+describe("canonical orchestrator spawn resolution (#1159)", () => {
+  const originalHome = process.env.HOME;
+  const originalRealHome = process.env.REAL_HOME;
+
+  afterEach(() => {
+    if (originalHome === undefined) delete process.env.HOME;
+    else process.env.HOME = originalHome;
+    if (originalRealHome === undefined) delete process.env.REAL_HOME;
+    else process.env.REAL_HOME = originalRealHome;
+  });
+
+  it("fails fast with an actionable error when no workspace resolves", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "paseo-add-orch-"));
+    process.env.HOME = home;
+    process.env.REAL_HOME = home;
+    try {
+      const context: any = { paseo: { workspaces: { list: async () => ({ entries: [] }) } } };
+      const res = await handleUppidiAddOrchestrator({ repo: "unknown-org/no-such-repo-xyz" }, context);
+      assert.equal(res.ok, false);
+      assert.match(res.error ?? "", /No workspace found/);
+      assert.match(res.error ?? "", /workspace open --cwd/);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("coding-agent role model resolution (#1126)", () => {
+  const originalEnv = {
+    HOME: process.env.HOME,
+    REAL_HOME: process.env.REAL_HOME,
+    UPPIDI_FLEET_ROLE_MODELS_CONFIG: process.env.UPPIDI_FLEET_ROLE_MODELS_CONFIG,
+    HOOK_STATE_DIR: process.env.HOOK_STATE_DIR,
+  };
+
+  afterEach(() => {
+    for (const [key, value] of Object.entries(originalEnv)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    setExecFileAsyncForTest(null);
+  });
+
+  function writeRoleModels(models: Record<string, unknown>): void {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "paseo-1126-"));
+    process.env.HOME = home;
+    process.env.REAL_HOME = home;
+    process.env.HOOK_STATE_DIR = path.join(home, "hook-state");
+    fs.mkdirSync(process.env.HOOK_STATE_DIR, { recursive: true });
+    const target = path.join(home, "role-models.json");
+    fs.writeFileSync(target, JSON.stringify(models));
+    process.env.UPPIDI_FLEET_ROLE_MODELS_CONFIG = target;
+  }
+
+  function captureSpawn(): { context: any; payload: () => any } {
+    let captured: any;
+    const context: any = {
+      paseo: {
+        agents: {
+          create: async (payload: any) => {
+            captured = payload;
+            return { agent: { id: "coding-agent-ok" } };
+          },
+        },
+      },
+    };
+    return { context, payload: () => captured };
+  }
+
+  it("uses the coding-agent role model for the legacy `worker` category", async () => {
+    writeRoleModels({
+      orchestrator: { role: "orchestrator", primaryModel: "orch/provider-model", fallbackGroup: ["orch/provider-model"] },
+      "coding-agent": { role: "coding-agent", primaryModel: "coding/provider-model", fallbackGroup: ["coding/provider-model"] },
+    });
+    const { context, payload } = captureSpawn();
+
+    const res = await spawnPaseoAgent(
+      { title: "worker", prompt: "do work", category: "worker", callerAgentId: "orch-1" },
+      context,
+    );
+
+    assert.equal(res.ok, true, res.error ?? "");
+    assert.equal(res.agentId, "coding-agent-ok");
+    assert.equal(payload().provider, "coding");
+    assert.equal(payload().model, "provider-model");
+    assert.equal(payload().config.provider, "coding/provider-model");
+    assert.equal(payload().env?.PASEO_FLEET_ROLE, "worker");
+    assert.equal(payload().config.env?.PASEO_FLEET_ROLE, "worker");
+  });
+
+  it("uses the coding-agent role model for the canonical `coding-agent` category", async () => {
+    writeRoleModels({
+      orchestrator: { role: "orchestrator", primaryModel: "orch/provider-model", fallbackGroup: ["orch/provider-model"] },
+      "coding-agent": { role: "coding-agent", primaryModel: "codex/gpt-5.6-terra", fallbackGroup: ["codex/gpt-5.6-terra"] },
+    });
+    const { context, payload } = captureSpawn();
+
+    const res = await spawnPaseoAgent(
+      { title: "coding", prompt: "do work", category: "coding-agent", callerAgentId: "orch-1" },
+      context,
+    );
+
+    assert.equal(res.ok, true, res.error ?? "");
+    assert.equal(payload().provider, "codex");
+    assert.equal(payload().model, "gpt-5.6-terra");
+  });
+
+  it("rejects a front-desk coding-agent spawn for both spellings", () => {
+    const deps = {
+      frontDeskAgentId: () => "desk-1126",
+      deskWorkingDirs: () => new Set<string>(),
+    };
+    for (const category of ["worker", "coding-agent"] as const) {
+      const decision = evaluateSpawnAuthority(
+        { category, callerAgentId: "desk-1126" },
+        undefined,
+        deps,
+      );
+      assert.equal(decision.allowed, false, `category=${category}`);
+      assert.equal(decision.error, SPAWN_AUTHORITY_WORKER_ERROR);
     }
   });
 });

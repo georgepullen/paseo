@@ -1,0 +1,658 @@
+import { describe, expect, it, vi } from "vitest";
+import React, { useState } from "react";
+import TestRenderer, { act } from "react-test-renderer";
+import {
+  HostAboutSection,
+  HostActionBar,
+  HostAttentionBeacon,
+  HostBadge,
+  HostButton,
+  HostCard,
+  HostCardHeader,
+  HostCodeBlock,
+  HostCommandBox,
+  HostEmptyState,
+  HostFormRow,
+  HostHighlightedText,
+  HostInlineButton,
+  HostKeyValue,
+  HostKeyValueGroup,
+  HostMetricGauge,
+  HostModalBody,
+  HostProgressBar,
+  HostRow,
+  HostScroll,
+  HostSearchInput,
+  HostSectionHeader,
+  HostSelect,
+  HostStack,
+  HostStatusDot,
+  HostTabs,
+  HostTextInput,
+  HostThemeProvider,
+  HostToggle,
+  HostVital,
+  ListActionPageTemplate,
+  type ThemeColors,
+} from "../index.js";
+
+// Mock host SDK primitives
+vi.mock("@getpaseo/plugin/client/react-native", () => ({
+  Icon: () => null,
+  ScrollView: "ScrollView",
+  TextInput: "TextInput",
+  copyText: async () => {},
+  useToast: () => ({ show: () => {}, error: () => {} }),
+}));
+
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+const TEST_THEME_COLORS: Partial<ThemeColors> = {
+  background: "#18181b",
+  card: "#27272a",
+  foreground: "#f4f4f5",
+  muted: "#71717a",
+  border: "#3f3f46",
+  primary: "#3b82f6",
+  primaryForeground: "#ffffff",
+  destructive: "#ef4444",
+  success: "#22c55e",
+  warning: "#f59e0b",
+};
+
+function render(element: React.ReactElement) {
+  let root!: TestRenderer.ReactTestRenderer;
+  act(() => {
+    root = TestRenderer.create(element);
+  });
+  return root;
+}
+
+describe("Consumer Regression Harness (xpufx-org/paseo#1221)", () => {
+  it("renders plugin-updates page fixture adhering to single scroll owner contract", () => {
+    interface PluginUpdateFixture {
+      id: string;
+      name: string;
+      version: string;
+      status: "up-to-date" | "update-available" | "updating";
+    }
+
+    const samplePlugins: PluginUpdateFixture[] = [
+      { id: "p1", name: "MCP Tools", version: "0.9.1", status: "up-to-date" },
+      { id: "p2", name: "Twofado", version: "0.8.4", status: "update-available" },
+    ];
+
+    const onUpdate = vi.fn();
+    const onCheck = vi.fn();
+
+    const renderer = render(
+      <HostThemeProvider theme={{ colors: TEST_THEME_COLORS }}>
+        <ListActionPageTemplate
+          title="Plugin Updates"
+          subtitle="Manage installed plugins"
+          badge={<HostBadge label="2 plugins" tone="accent" />}
+          headerActions={[
+            { id: "check", label: "Check All", onPress: onCheck },
+          ]}
+          data={samplePlugins}
+          keyExtractor={(p) => p.id}
+          renderItem={(p) => (
+            <HostCard key={p.id}>
+              <HostCardHeader
+                title={p.name}
+                badge={
+                  <HostBadge
+                    label={p.status}
+                    tone={p.status === "update-available" ? "warning" : "success"}
+                  />
+                }
+              />
+              <HostKeyValueGroup columns={2}>
+                <HostKeyValue label="ID" value={p.id} />
+                <HostKeyValue label="Version" value={p.version} />
+              </HostKeyValueGroup>
+              <HostActionBar align="end">
+                <HostButton
+                  label="Update"
+                  tone="primary"
+                  disabled={p.status !== "update-available"}
+                  onPress={() => onUpdate(p.id)}
+                />
+              </HostActionBar>
+            </HostCard>
+          )}
+        />
+      </HostThemeProvider>,
+    );
+
+    // 1. Invariant: Only one single outer ScrollView owns scrolling
+    const scrollViews = renderer.root.findAllByType("ScrollView");
+    expect(scrollViews).toHaveLength(1);
+
+    // 2. Invariant: Text content renders properly across card children
+    const texts = renderer.root.findAllByType("Text").map((t) => t.props.children);
+    expect(texts).toContain("Plugin Updates");
+    expect(texts).toContain("Manage installed plugins");
+    expect(texts).toContain("2 plugins");
+    expect(texts).toContain("MCP Tools");
+    expect(texts).toContain("Twofado");
+    expect(texts).toContain("0.9.1");
+    expect(texts).toContain("0.8.4");
+
+    // 3. Invariant: Interactive button triggers action
+    const updateButtons = renderer.root.findAllByType(HostButton);
+    const enabledButton = updateButtons.find((b) => b.props.label === "Update" && !b.props.disabled);
+    expect(enabledButton).toBeDefined();
+
+    act(() => {
+      enabledButton?.props.onPress();
+    });
+    expect(onUpdate).toHaveBeenCalledWith("p2");
+  });
+
+  it("renders plugin-updates empty state fixture cleanly", () => {
+    const renderer = render(
+      <HostThemeProvider theme={{ colors: TEST_THEME_COLORS }}>
+        <ListActionPageTemplate
+          title="Plugin Updates"
+          data={[]}
+          renderItem={() => null}
+          emptyState={{
+            title: "No plugins installed",
+            description: "No managed plugins found in ~/.paseo/plugins.",
+          }}
+        />
+      </HostThemeProvider>,
+    );
+
+    const texts = renderer.root.findAllByType("Text").map((t) => t.props.children);
+    expect(texts).toContain("No plugins installed");
+    expect(texts).toContain("No managed plugins found in ~/.paseo/plugins.");
+  });
+
+  it("renders composite card with HostRow, HostStatusDot, and HostProgressBar", () => {
+    const renderer = render(
+      <HostThemeProvider theme={{ colors: TEST_THEME_COLORS }}>
+        <HostCard>
+          <HostRow justify="between">
+            <HostRow gap={8}>
+              <HostStatusDot status="warning" />
+              <HostStack gap={2}>
+                <span key="t1">Update in progress</span>
+                <span key="t2">Downloading 4 files...</span>
+              </HostStack>
+            </HostRow>
+            <HostBadge label="45%" tone="warning" />
+          </HostRow>
+          <HostProgressBar progress={0.45} tone="warning" />
+        </HostCard>
+      </HostThemeProvider>,
+    );
+
+    const texts = renderer.root.findAllByType(HostBadge).map((b) => b.props.label);
+    expect(texts).toContain("45%");
+  });
+
+  it("renders slash console command editor fixture with HostFormRow, HostTabs, HostTextInput, and HostActionBar (#1233)", () => {
+    const onTabChange = vi.fn();
+    const onTextChange = vi.fn();
+    const onSave = vi.fn();
+
+    const renderer = render(
+      <HostThemeProvider theme={{ colors: TEST_THEME_COLORS }}>
+        <HostCard variant="elevated">
+          <HostStack gap={8}>
+            <HostFormRow label="Name" description="Unique lowercase command name">
+              <HostTextInput
+                value="review"
+                placeholder="my-command"
+                onChangeText={onTextChange}
+              />
+            </HostFormRow>
+            <HostFormRow label="Action">
+              <HostTabs
+                tabs={[
+                  { id: "send", label: "Send", icon: "Send" },
+                  { id: "open", label: "Open", icon: "ExternalLink" },
+                  { id: "rpc", label: "RPC", icon: "Zap" },
+                ]}
+                activeTab="send"
+                onTabChange={onTabChange}
+              />
+            </HostFormRow>
+            <HostActionBar align="end">
+              <HostButton variant="secondary" label="Cancel" />
+              <HostButton variant="primary" label="Save Command" onPress={onSave} />
+            </HostActionBar>
+          </HostStack>
+        </HostCard>
+      </HostThemeProvider>,
+    );
+
+    const labels = renderer.root.findAllByType("Text").map((t) => t.props.children);
+    expect(labels).toContain("Name");
+    expect(labels).toContain("Unique lowercase command name");
+    expect(labels).toContain("Action");
+
+    const buttons = renderer.root.findAllByType(HostButton);
+    expect(buttons).toHaveLength(2);
+    const saveBtn = buttons.find((b) => b.props.label === "Save Command");
+    expect(saveBtn).toBeDefined();
+
+    act(() => {
+      saveBtn?.props.onPress?.();
+    });
+    expect(onSave).toHaveBeenCalled();
+  });
+
+  it("propagates light/dark host theme colors down through HostThemeProvider to card and text surfaces (#1235)", () => {
+    const LIGHT_THEME: ThemeColors = {
+      surface0: "#ffffff",
+      surface1: "#f4f4f5",
+      surface2: "#e4e4e7",
+      border: "#e4e4e7",
+      foreground: "#09090b",
+      foregroundMuted: "#71717a",
+      accent: "#2563eb",
+      accentForeground: "#ffffff",
+      statusSuccess: "#16a34a",
+      statusWarning: "#ca8a04",
+      statusDanger: "#dc2626",
+    };
+
+    const DARK_THEME: ThemeColors = {
+      surface0: "#18181b",
+      surface1: "#27272a",
+      surface2: "#3f3f46",
+      border: "#3f3f46",
+      foreground: "#fafafa",
+      foregroundMuted: "#a1a1aa",
+      accent: "#3b82f6",
+      accentForeground: "#ffffff",
+      statusSuccess: "#22c55e",
+      statusWarning: "#eab308",
+      statusDanger: "#ef4444",
+    };
+
+    const lightRenderer = render(
+      <HostThemeProvider theme={{ colors: LIGHT_THEME }}>
+        <HostCard variant="elevated">
+          <HostFormRow label="Command prefix">
+            <HostTextInput value="slash" />
+          </HostFormRow>
+        </HostCard>
+      </HostThemeProvider>,
+    );
+
+    const lightCard = lightRenderer.root.findByType(HostCard);
+    const lightView = lightCard.findByType("View");
+    const lightStyle = Array.isArray(lightView.props.style)
+      ? Object.assign({}, ...lightView.props.style.filter(Boolean))
+      : lightView.props.style;
+    expect(lightStyle.backgroundColor).toBe(LIGHT_THEME.surface1);
+
+    const darkRenderer = render(
+      <HostThemeProvider theme={{ colors: DARK_THEME }}>
+        <HostCard variant="elevated">
+          <HostFormRow label="Command prefix">
+            <HostTextInput value="slash" />
+          </HostFormRow>
+        </HostCard>
+      </HostThemeProvider>,
+    );
+
+    const darkCard = darkRenderer.root.findByType(HostCard);
+    const darkView = darkCard.findByType("View");
+    const darkStyle = Array.isArray(darkView.props.style)
+      ? Object.assign({}, ...darkView.props.style.filter(Boolean))
+      : darkView.props.style;
+    expect(darkStyle.backgroundColor).toBe(DARK_THEME.surface1);
+  });
+
+  it("renders twofado approval fixture with shared primitives and theme propagation (#1237)", () => {
+    const onApprove = vi.fn();
+    const onReject = vi.fn();
+
+    const renderer = render(
+      <HostThemeProvider theme={{ colors: TEST_THEME_COLORS }}>
+        <HostModalBody headerMode="pinned" header={<HostSectionHeader title="Pending 2FA Approvals" />}>
+          <HostCard variant="elevated">
+            <HostCardHeader
+              title="Execution Request #42"
+              badge={<HostBadge label="Pending" tone="warning" />}
+            />
+            <HostRow align="center" gap={8}>
+              <HostAttentionBeacon active tone="warning" mode="pulse" />
+              <HostKeyValueGroup columns={2}>
+                <HostKeyValue label="By" value="agent-1" />
+                <HostKeyValue label="CWD" value="/home/user/project" mono stackOnCompact />
+              </HostKeyValueGroup>
+            </HostRow>
+
+            <HostCommandBox argv={["rm", "-rf", "/tmp/cache"]} />
+
+            <HostCodeBlock
+              title="Preview"
+              code="Removing 14 cache directories..."
+              maxHeight={120}
+              copyable
+            />
+
+            <HostFormRow label="Reason">
+              <HostTextInput
+                value="Automated clearance"
+                disabled
+                onChangeText={() => {}}
+              />
+            </HostFormRow>
+
+            <HostActionBar align="flex-end" gap={8}>
+              <HostButton label="Reject" tone="danger" onPress={onReject} />
+              <HostButton label="Approve" tone="primary" onPress={onApprove} />
+            </HostActionBar>
+          </HostCard>
+        </HostModalBody>
+      </HostThemeProvider>,
+    );
+
+    // 1. Scroller hierarchy: 1 outer modal body scroller + 1 bounded inner code snippet scroller
+    const scrollViews = renderer.root.findAllByType("ScrollView");
+    expect(scrollViews).toHaveLength(2);
+    const codeBlockScroller = renderer.root.findByType(HostCodeBlock).findByType("ScrollView");
+    expect(codeBlockScroller.props.style).toEqual({ maxHeight: 120 });
+
+    // 2. Beacon renders with warning tone color
+    const beacon = renderer.root.findByType(HostAttentionBeacon);
+    expect(beacon).toBeDefined();
+
+    // 3. Command box renders with argv joined
+    const commandBox = renderer.root.findByType(HostCommandBox);
+    expect(commandBox).toBeDefined();
+
+    // 4. Code block renders preview code
+    const codeBlock = renderer.root.findByType(HostCodeBlock);
+    expect(codeBlock).toBeDefined();
+
+    // 5. Disabled text input renders with reduced opacity
+    const textInput = renderer.root.findByType(HostTextInput);
+    const inputPrimitive = textInput.findByType("TextInput");
+    const inputStyle = Array.isArray(inputPrimitive.props.style)
+      ? Object.assign({}, ...inputPrimitive.props.style.filter(Boolean))
+      : inputPrimitive.props.style;
+    expect(inputStyle.opacity).toBe(0.5);
+    expect(inputPrimitive.props.editable).toBe(false);
+
+    // 6. Action buttons trigger handlers
+    const buttons = renderer.root.findAllByType(HostButton);
+    const approveBtn = buttons.find((b) => b.props.label === "Approve");
+    act(() => {
+      approveBtn?.props.onPress();
+    });
+    expect(onApprove).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders forges issue browser fixture with search input, highlighted text, and inline actions (#1240)", () => {
+    const onSelectIssue = vi.fn();
+    const onClearSearch = vi.fn();
+
+    const renderer = render(
+      <HostThemeProvider theme={{ colors: TEST_THEME_COLORS }}>
+        <HostModalBody
+          headerMode="pinned"
+          header={
+            <HostSearchInput
+              value="reconcile"
+              placeholder="Search issues..."
+              onChangeText={() => {}}
+              onClear={onClearSearch}
+            />
+          }
+        >
+          <HostCard variant="elevated">
+            <HostCard.Header
+              title="fix(registry): reconcile orchestrators on startup"
+              highlightQuery="reconcile"
+              badge={<HostBadge label="bug" variant="danger" highlightQuery="reconcile" />}
+            />
+            <HostRow align="center" justify="between">
+              <HostHighlightedText
+                text="reconcile orchestrators across the cluster without desyncing state"
+                query="reconcile"
+              />
+              <HostInlineButton label="#1143" onPress={() => onSelectIssue(1143)} />
+            </HostRow>
+          </HostCard>
+        </HostModalBody>
+      </HostThemeProvider>,
+    );
+
+    // 1. Single scroll owner in modal body
+    const scrollViews = renderer.root.findAllByType("ScrollView");
+    expect(scrollViews).toHaveLength(1);
+
+    // 2. Search input renders query and clear affordance
+    const searchInput = renderer.root.findByType(HostSearchInput);
+    expect(searchInput).toBeDefined();
+
+    // 3. Highlighted text renders matching fragments
+    const highlights = renderer.root.findAllByType(HostHighlightedText);
+    expect(highlights.length).toBeGreaterThanOrEqual(1);
+
+    // 4. Inline button click triggers action
+    const inlineBtn = renderer.root.findByType(HostInlineButton);
+    act(() => {
+      inlineBtn.props.onPress();
+    });
+    expect(onSelectIssue).toHaveBeenCalledWith(1143);
+  });
+
+  it("renders mcp-tools inspector fixture with HostTabs, HostCard, HostToggle, HostAboutSection, and HostActionBar (#1254)", () => {
+    const onTabChange = vi.fn();
+    const onToggle = vi.fn();
+    const onClose = vi.fn();
+
+    const renderer = render(
+      <HostThemeProvider theme={{ colors: TEST_THEME_COLORS }}>
+        <HostModalBody
+          scrollable={false}
+          header={
+            <HostTabs
+              tabs={[
+                { id: "servers", label: "Servers", icon: "Server" },
+                { id: "settings", label: "Settings", icon: "Settings" },
+                { id: "about", label: "About", icon: "Info" },
+              ]}
+              activeTab="about"
+              onTabChange={onTabChange}
+            />
+          }
+        >
+          <HostStack gap={12}>
+            <HostCard variant="elevated">
+              <HostCard.Header
+                title="Health Polling"
+                subtitle="Background refresh rate for server health"
+                badge={<HostBadge label="healthy" variant="success" />}
+              />
+              <HostFormRow
+                label="Timeline digest rows"
+                description="Append a health digest row to the agent timeline after each check"
+              >
+                <HostToggle value={true} onValueChange={onToggle} />
+              </HostFormRow>
+            </HostCard>
+
+            <HostAboutSection
+              name="MCP Tools"
+              description="Live MCP server inspector, health probes, diagnostics and tool runner for Paseo agents."
+              version="0.1.7"
+              author="xpufx"
+              repository="https://github.com/xpufx/paseo-mcp-tools"
+              issues="https://github.com/xpufx/paseo-mcp-tools/issues"
+              license="MIT"
+              density="tiny"
+              extraItems={[
+                { label: "Servers", value: "3", copyable: false },
+                { label: "Provider", value: "antigravity", copyable: true },
+              ]}
+            />
+
+            <HostActionBar align="space-between">
+              <HostButton label="Reset Defaults" variant="secondary" size="sm" />
+              <HostButton label="Close" variant="ghost" size="sm" onPress={onClose} />
+            </HostActionBar>
+          </HostStack>
+        </HostModalBody>
+      </HostThemeProvider>,
+    );
+
+    // 1. Fluid modal body renders without inner ScrollView
+    expect(renderer.root.findAllByType("ScrollView")).toHaveLength(0);
+
+    // 2. Tabs rendered
+    const tabs = renderer.root.findByType(HostTabs);
+    expect(tabs).toBeDefined();
+
+    // 3. Card and FormRow rendered
+    const card = renderer.root.findByType(HostCard);
+    expect(card).toBeDefined();
+    const toggle = renderer.root.findByType(HostToggle);
+    expect(toggle.props.value).toBe(true);
+    act(() => {
+      toggle.props.onValueChange(false);
+    });
+    expect(onToggle).toHaveBeenCalledWith(false);
+
+    // 4. AboutSection rendered with metadata
+    const about = renderer.root.findByType(HostAboutSection);
+    expect(about.props.name).toBe("MCP Tools");
+    expect(about.props.version).toBe("0.1.7");
+
+    // 5. Action bar buttons work
+    const closeBtn = renderer.root
+      .findAllByType(HostButton)
+      .find((b) => b.props.label === "Close");
+    expect(closeBtn).toBeDefined();
+    act(() => {
+      closeBtn?.props.onPress?.();
+    });
+    expect(onClose).toHaveBeenCalled();
+  });
+
+  it("renders top telemetry and resource monitor fixture with HostMetricGauge, HostVital, HostCard, and HostTabs (#1258)", () => {
+    const onTabChange = vi.fn();
+
+    const renderer = render(
+      <HostThemeProvider theme={{ colors: TEST_THEME_COLORS }}>
+        <HostModalBody
+          scrollable={false}
+          header={
+            <HostTabs
+              tabs={[
+                { id: "system", label: "System", icon: "Cpu" },
+                { id: "fleet", label: "Fleet", icon: "Server" },
+                { id: "audit", label: "Audit", icon: "Shield" },
+                { id: "settings", label: "Settings", icon: "Settings" },
+                { id: "about", label: "About", icon: "Info" },
+              ]}
+              activeTab="system"
+              onTabChange={onTabChange}
+            />
+          }
+        >
+          <HostStack gap={12}>
+            {/* System Resource Gauges */}
+            <HostRow gap={12} justify="center">
+              <HostMetricGauge
+                value={42}
+                label="CPU"
+                showPercent={true}
+                thresholds={{ warning: 70, danger: 90 }}
+                autoStatusColor={true}
+              />
+              <HostMetricGauge
+                value={68}
+                label="Memory"
+                showPercent={true}
+                thresholds={{ warning: 75, danger: 90 }}
+                autoStatusColor={true}
+              />
+            </HostRow>
+
+            {/* Vitals Summary Row */}
+            <HostCard variant="elevated">
+              <HostCard.Header
+                title="Agent Activity"
+                subtitle="Live performance metrics for current turn"
+                badge={<HostBadge label="healthy" variant="success" />}
+              />
+              <HostRow gap={8} wrap={true}>
+                <HostVital color="#22c55e" icon="Zap">
+                  14.2 TPS
+                </HostVital>
+                <HostVital color="#3b82f6" icon="Clock">
+                  3m 24s
+                </HostVital>
+                <HostVital color="#f59e0b" icon="Layers">
+                  1,250 tokens
+                </HostVital>
+              </HostRow>
+              <HostProgressBar
+                value={45}
+                label="Turn Context Pressure"
+                showValueText={true}
+                autoStatusColor={true}
+              />
+            </HostCard>
+
+            {/* About Section */}
+            <HostAboutSection
+              name="Top"
+              description="Real-time system telemetry, process monitor, and resource gauges for Paseo agents."
+              version="0.4.4"
+              author="xpufx"
+              repository="https://github.com/xpufx/paseo-top"
+              issues="https://github.com/xpufx/paseo-top/issues"
+              license="MIT"
+              extraItems={[
+                { label: "Host Uptime", value: "24h 12m", copyable: false },
+                { label: "Platform", value: "Linux x86_64", copyable: true },
+              ]}
+            />
+          </HostStack>
+        </HostModalBody>
+      </HostThemeProvider>,
+    );
+
+    // 1. Fluid modal body renders without inner ScrollView
+    expect(renderer.root.findAllByType("ScrollView")).toHaveLength(0);
+
+    // 2. Tabs rendered with active tab
+    const tabs = renderer.root.findByType(HostTabs);
+    expect(tabs.props.activeTab).toBe("system");
+    expect(tabs.props.tabs).toHaveLength(5);
+
+    // 3. Metric gauges rendered
+    const gauges = renderer.root.findAllByType(HostMetricGauge);
+    expect(gauges).toHaveLength(2);
+    expect(gauges[0].props.label).toBe("CPU");
+    expect(gauges[0].props.value).toBe(42);
+    expect(gauges[1].props.label).toBe("Memory");
+    expect(gauges[1].props.value).toBe(68);
+
+    // 4. Vitals rendered
+    const vitals = renderer.root.findAllByType(HostVital);
+    expect(vitals).toHaveLength(3);
+
+    // 5. Progress bar rendered
+    const progress = renderer.root.findByType(HostProgressBar);
+    expect(progress.props.value).toBe(45);
+
+    // 6. About section metadata
+    const about = renderer.root.findByType(HostAboutSection);
+    expect(about.props.name).toBe("Top");
+    expect(about.props.version).toBe("0.4.4");
+  });
+});
+
+

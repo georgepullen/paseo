@@ -1,5 +1,7 @@
 # Uppidi Fleet
 
+> Fleetception warning: Fleet is building itself live inside Fleet. Some features may be more fictional than functional.
+
 **An opinionated, full-lifecycle autonomous engineering fleet for Paseo, driven by a Forgejo/Gitea-family board.**
 
 `uppidi-fleet` turns a Forgejo issue tracker into the control plane for a small
@@ -67,6 +69,12 @@ which pieces you must supply because the plugin does not ship them ([§10](#10-g
 12. [Runtime state & file map](#12-runtime-state--file-map)
 13. [Development](#13-development)
 14. [License](#14-license)
+
+---
+
+### Quick links
+
+- **[End-User Guide](./docs/user-guide.md)** — non-technical walkthrough for operators: dashboard, monitoring, interacting with agents, managing tasks, and troubleshooting.
 
 ---
 
@@ -171,7 +179,7 @@ The plugin registers one primary surface with three tabs:
 
 | Tab | What it shows |
 | --- | --- |
-| **Agents & Fleet** (tree) | Hierarchical view: projects → orchestrators → workers, with deterministic state badges (working / running / permission-prompt / attention-required / sleeping / idle / quota / failed), worktree names, parentage, and per-repo enrolment/mute flags. Hosts the `+ Create Front Desk`, `+ Add Orchestrator`, `Replace`, archive, and repo-mute controls. |
+| **Agents & Fleet** (tree) | Hierarchical view: projects → orchestrators → workers, with deterministic state badges (working / running / permission-prompt / attention-required / sleeping / idle / quota / failed), worktree names, parentage, and per-repo enrolment/pause flags. Hosts the `+ Create Front Desk`, `+ Add Orchestrator`, `Replace`, archive, and repo-pause controls. |
 | **Work Queue** (dashboard) | Open issues from the board with status, owner, and labels; a **Fleet Needs Attention** board at the top surfaces blocked agents, filter presets (Needs Attention, Triage/Review, In Progress, Verify). Also the collapsible Hook Service, Hook Queues, log tail, Agent Role Models, CI Runner fleet, and fleet-metrics sections. |
 | **Settings** | Hook service management (start/stop/restart, listen host + port), Repository Enrollment (browse Forgejo repos, enroll/unenroll repos into the fleet roster, status badges), and links into role-model editing. |
 
@@ -297,6 +305,16 @@ and adapt for your own environment:
 | `orchestrator` | orchestrator — triage, decompose, dispatch, pre-flight PRs | [`examples/skills/orchestrator/SKILL.md`](./examples/skills/orchestrator/SKILL.md) |
 | `front-desk` | Front Desk — operator-facing liaison and triage intake | [`examples/skills/front-desk/SKILL.md`](./examples/skills/front-desk/SKILL.md) |
 
+### 6.0 Canonical skills and the bundled fallback
+
+The effective skill text resolves in this order:
+
+1. **Operator override** — `~/.paseo/plugin-data/xpufx/uppidi-fleet/skills/<id>.md` (Settings → Fleet Skills).
+2. **Canonical `platform/skills/<id>/SKILL.md`** — the single source of truth. The root is configurable via `PASEO_UPPIDI_FLEET_CANONICAL_SKILLS_ROOT` (or the `canonicalSkillsRoot` option); otherwise the sibling `platform` checkout of the plugin root is probed (`<code>/platform/skills` beside `<code>/paseo/plugins/uppidi-fleet`).
+3. **Bundled fallback** — `examples/skills/<id>/SKILL.md`, kept in sync with the canonical copy by a drift test so the fleet works without a `platform` checkout.
+
+The resolved **content** is inlined into the spawn prompt (not a path), so a spawned agent never needs a permission-gated tool read of a checkout outside its workspace, and the text is always the current effective copy. A platform/bundled drift test skips (with an explicit message) on hosts where no `platform` checkout is reachable.
+
 > [!NOTE]
 > **CLI tooling ships `teax` (over `tea`).** The fleet's rich CLI variant drives
 > the board through **`teax`**, an enhanced wrapper around the Gitea/Forgejo
@@ -335,8 +353,8 @@ and adapt for your own environment:
 **Front Desk** — the operator-facing liaison and triage intake:
 
 - The operator talks only to Front Desk. Orchestrators reach it with
-  `paseo send --steer --no-wait <frontDeskId> "..."`
-  (`--steer` is mandatory so it never clobbers an active turn).
+  `paseo send --no-wait <frontDeskId> "..."`
+  (`--no-wait` returns immediately without waiting for the target turn).
 - It registers itself with the router via `POST /frontdesk`
   ([§7.4](#74-control-endpoints)).
 - It receives only **frontdesk-directed events** — `attention/frontdesk`,
@@ -368,7 +386,7 @@ and adapt for your own environment:
    installed; or through a board CLI of your choice. The plugin never loads
    either.
 5. **Pick your models per role** and record them (Cockpit → Agent Role Models,
-   or `~/.paseo/uppidi-fleet-role-models.json`). See
+   or `~/.paseo/plugin-data/xpufx/uppidi-fleet/role-models.json`). See
    [§12](#12-runtime-state--file-map).
 6. **Adapt the Front Desk skill.** Review [`examples/skills/front-desk/SKILL.md`](./examples/skills/front-desk/SKILL.md):
    how to register with the router, how to ingest escalations (`attention/2-user`,
@@ -458,14 +476,19 @@ https://forge.example.com/your-org/your-repo/issues/42
   busy and schedules an exponential backoff retry (3 s → 30 s). It also
   subscribes to Paseo's `agent.turn_ended` lifecycle event and drains the
   matching queue immediately when that agent's turn ends, so a missed retry
-  self-corrects.
+  self-corrects. After `HOOK_DRAIN_BUSY_ATTEMPT_LIMIT` consecutive busy checks
+  (default: 10), it stops retrying indefinitely and delivers the queued work
+  with steering enabled so a stalled active turn can receive it. The
+  `drainBusyAttemptLimit` constructor option provides the equivalent
+  programmatic setting.
 - Delivery uses the SDK (`paseo.agents.ref(id).send`) when available and falls
   back to `paseo send --no-wait <agentId> <msg>`. SOS messages are delivered
   without steering; normal messages steer into the active turn queue.
-- **Muting** a repo is a circuit breaker: drains for that key are suppressed
-  until unmuted. Toggle it from the Cockpit or `uppidi-fleet.toggle-repo-mute`.
+- **Pausing** a repo is a circuit breaker: drains for that key are suppressed
+  until unpaused. Toggle it from the Cockpit, the paused badge, or
+  `uppidi-fleet.toggle-repo-pause`.
 - **Enrollment** manages fleet roster membership:
-  - `uppidi-fleet.repos`: lists Forgejo repositories with enrollment, mute status, orchestrator presence, and queue depth.
+  - `uppidi-fleet.repos`: lists Forgejo repositories with enrollment, pause status, orchestrator presence, and queue depth.
   - `uppidi-fleet.enroll-repo`: enrolls a repository key (`canonicalRepoKey()`, normalized to `forge.mrs.uppidi.com/owner/repo`) into the router and settings storage.
   - `uppidi-fleet.unenroll-repo`: unenrolls a repository from the roster without destroying orchestrator registrations or queue history.
 
@@ -484,6 +507,9 @@ Beyond ingress, the router exposes:
 | `POST /orchestrator` (alias `/orchestrate`) | Register `{repo, agentId}`. |
 | `POST /orchestrators/spawn` | Provision `{repo, provider?, model?, mode?, force?}` server-side and atomically register it as a peer orchestrator (idempotent; no Front Desk parent). |
 | `POST /orchestrators/prune` | Delete registrations whose agent no longer exists on the daemon. |
+| `POST /orchestrator-rotate` | Rotate a long-lived role onto a fresh agent (`{role?, repo?, reason?, force?}`): spawn → verify → brief → archive; aborts cleanly on spawn failure. |
+| `GET /orchestrator-rotation` | Rotation policy + guardrail state per role (`?role=&repo=`). |
+| `GET /rotation-policy` · `POST /rotation-policy` | Read / hot-apply the global or per-repo rotation policy (`{role, repo?, policy}`). |
 | `POST /board-sweep` | Run the in-process deterministic board check (`{repos?: string[]}`); notify Front Desk of actionable tickets and failed repo checks. |
 | `POST /queues/:key/pause` · `/resume` · `/drain` | Per-queue control (also `POST /queue/{pause,resume,drain}` with `{repo}`). |
 
@@ -551,11 +577,12 @@ Legacy (pre-taxonomy) findings are still raised alongside:
 
 | Type | Trigger |
 | --- | --- |
-| `AGENT_PERMISSION_REQUIRED` | Agent has `pendingPermissions`. |
+| `AGENT_PERMISSION_REQUIRED` | Agent has `pendingPermissions` and did not match the safe-pattern allowlist. |
+| `AGENT_PERMISSION_AUTO_ALLOWED` | Fleet agent pending permission matched the safe-pattern allowlist and was auto-allowed (#1084). |
 | `AGENT_ATTENTION_REQUIRED` | `requiresAttention` with a reason other than `error`/`finished` (which the taxonomy owns). |
 | `AGENT_ERROR` | Registered orchestrator is `status: error` and the taxonomy pass did not already handle it. |
 | `ORCHESTRATOR_MISSING` | A `<key>.json` state file references an agent id that no longer exists on the daemon. |
-| `QUEUE_WEDGED` | A queue has accumulated `WATCHDOG_BUSY_THRESHOLD` (default `10`) failed delivery attempts. |
+| `QUEUE_WEDGED` | A queue has accumulated `WATCHDOG_BUSY_THRESHOLD` (default `5`) failed delivery attempts. Alerted once per wedge episode (event-based dedup, #1123): the key re-arms when the queue drains. |
 | `CHILD_WAKEUP` | A worker labelled `paseo.parent-agent-id` transitioned into a block / error / completion; a reactive pulse is steered into the parent (#537). See [§13.6](#136-subagent-lifecycle-contract-reactive-wakeups--capability-grants). |
 
 #### 7.7.2 Alert message formats
@@ -566,7 +593,7 @@ the agent id, `<key>` is the enrolled repo key:
 
 | Anomaly | Alert string |
 | --- | --- |
-| `AGENT_PERMISSION_REQUIRED` | `[Fleet Watchdog] Agent <name> (<id7>) requires permission: <action>. Front Desk adjudication command: paseo permit allow <agentId> <requestId>` — `<action>` is the pending permission's title/tool; the command drops `<requestId>` when the request carries none. |
+| `AGENT_PERMISSION_REQUIRED` | `[Fleet Watchdog] Agent <name> (<id7>) requires permission: <action> tool=<tool>. command=<json command> Front Desk adjudication command: paseo permit allow <agentId> <requestId>` — `<action>` is the pending permission's title/tool, `tool`/`command` are omitted when absent; the command drops `<requestId>` when the request carries none. |
 | `AGENT_ATTENTION_REQUIRED` | `[Fleet Watchdog] Agent <name> (<id7>) requires attention (<attentionReason \| "stalled">). Operator or Front Desk triage required.` |
 | Quota circuit-break | `[Fleet Watchdog] Agent <name> (<id7>) hit provider/quota exhaustion: "<lastError>". Circuit-break: no auto-steer; operator required.` |
 | Taxonomy auto-recovered | `[Fleet Watchdog] Auto-recovered agent <name> (<id7>) [<TYPE, TYPE>] via <actions joined by " -> ">.` — actions read `stop:ok`, `clear_error:ok`, `clear_attention:noop`, `steer:ok`. |
@@ -592,7 +619,7 @@ the agent id, `<key>` is the enrolled repo key:
   but the watchdog is silent — register one via `POST /frontdesk` (§7.4).
 - Every alert is delivered with `{noWait: true, steer: true}`: SDK
   `paseo.agents.ref(id).send(msg, {steer: true})`, falling back to
-  `paseo send --no-wait --steer <id> <msg>`. The alert lands immediately and
+  `paseo send --no-wait <id> <msg>`. The alert lands immediately and
   steers into (interrupts) the Front Desk's active turn.
 
 #### 7.7.4 Configuration & throttling
@@ -600,8 +627,8 @@ the agent id, `<key>` is the enrolled repo key:
 | Env | Default | Purpose |
 | --- | --- | --- |
 | `WATCHDOG_INTERVAL_MS` | `60000` | Audit loop cadence (`0` disables the loop; test mode starts at `0`). |
-| `WATCHDOG_ALERT_COOLDOWN_MS` | `900000` (15 min) | Per-subject deduplication cooldown. |
-| `WATCHDOG_BUSY_THRESHOLD` | `10` | Failed delivery attempts before `QUEUE_WEDGED`. |
+| `WATCHDOG_ALERT_COOLDOWN_MS` | `120000` (2 min) | Per-subject deduplication cooldown. |
+| `WATCHDOG_BUSY_THRESHOLD` | `5` | Failed delivery attempts before `QUEUE_WEDGED`. |
 
 Cooldown semantics (`canWatchdogAlert`): each alert subject is keyed —
 `permission:<agentId>:<reqId>`, `attention:<agentId>:<reason>`,
@@ -617,7 +644,57 @@ wedged agent is not stop/steered on every tick. The taxonomy key embeds the
 full type list, so a materially different finding re-keys (and re-alerts)
 immediately.
 
-#### 7.7.5 Operator runbook
+`QUEUE_WEDGED` is the exception: it is deduplicated by episode, not by the
+wall-clock cooldown (#1123). A queue alerts once when it wedges, stays muted
+while it remains wedged, and re-arms as soon as it drains or its delivery
+streak resets below `WATCHDOG_BUSY_THRESHOLD` — so a queue that re-wedges two
+minutes after an auto-reload alerts again instead of being silenced for the
+rest of the cooldown.
+
+#### 7.7.5 Permission auto-adjudication allowlist (#1084)
+
+Orchestrators and workers wedge on `pi` "dangerous command" prompts for routine
+safe commands — a heredoc composing a `teax issue comment` body, a scoped
+`.tmp` cleanup, or a read-only repo probe — because nothing answers the prompt
+and their queue stops draining. Watchdog reloads do not help: the agent is
+blocked on a prompt, not wedged.
+
+On every pending permission the watchdog first classifies the *requested
+command* against a conservative, documented allowlist. A fleet agent (a
+label-identified orchestrator/worker, a labelled child, or a registered Front
+Desk/orchestrator) whose command matches is auto-allowed through the existing
+seam (`respondToPermission`, falling back to
+`paseo permit allow <agentId> <permissionId>`), allowing exactly that one
+request. Anything else — a non-fleet agent, an unmatched or ambiguous command,
+a missing request id, or an unavailable seam — is **not** auto-allowed and
+escalates to Front Desk with the agent id, permission id, tool, and full
+command.
+
+Documented rules (`server/permission-adjudication.ts`):
+
+| Rule | Shape |
+| --- | --- |
+| `teax-board` | `teax ...` board composition/read commands, including quoted heredocs. |
+| `paseo-send` | `paseo send ...` |
+| `paseo-permit-ls` | `paseo permit ls` |
+| `paseo-plugin-reload` | `paseo plugin reload <id>` |
+| `scratch-cleanup` | `rm -rf` scoped to `./.tmp`, `<workspace>/.tmp`, or `~/.cache/...`, with no `..` escape. |
+| `read-only-probe` | `git status/rev-parse/fetch/log/diff/show`, `ls`, `cat`, `pwd`. |
+
+Conservative by construction: the command must be composed entirely of
+recognized safe shell segments. An unquoted heredoc delimiter, an output
+redirection, an unknown command head, or a command substitution that is not
+itself safe disqualifies the whole request. A destructive command
+(`rm -rf /`, `git push --force`, `git reset --hard`, `git branch -D`) is never
+auto-allowed and always escalates.
+
+Every decision appends one JSONL record to
+`<stateDir>/permission-decisions.jsonl` (default
+`~/.paseo/forgejo-hook/permission-decisions.jsonl`) with the timestamp, action,
+agent id/name, permission id, tool, full command, matched rule, scope, and
+reason. Query it after the fact with `jq` or `readAdjudicationDecisions`.
+
+#### 7.7.6 Operator runbook
 
 **Reading watchdog logs.** The router keeps a 1000-line in-memory ring buffer;
 tail it with the `uppidi-fleet.hook-log-tail` plugin tool. Watchdog lines:
@@ -666,7 +743,7 @@ registered orchestrator and drains the queue.
   quota-dead turn only burns more of an exhausted budget). The alert repeats
   every cooldown with the raw `lastError` inline. Fix the cause (top up
   credits, wait out the rate limit, or switch model), then wake the agent with
-  `paseo send --no-wait --steer <id> <msg>` or restart it from the Paseo UI.
+  `paseo send --no-wait <id> <msg>` or restart it from the Paseo UI.
 - **`AGENT_ERROR` escalation**: the auto-reload failed (or the error text
   matched a quota pattern) — triage the error string in the alert, then reload
   manually.
@@ -679,7 +756,7 @@ registered orchestrator and drains the queue.
 
 ### 7.8 Deterministic board sweep
 
-`BOARD_SWEEP_INTERVAL_MS` (default `900000`, 15 min) runs the deterministic
+`BOARD_SWEEP_INTERVAL_MS` (default `180000`, 3 min) runs the deterministic
 board checker (`server/issues-check.ts`, ported in-process from the Python
 script) across enrolled repos and alerts Front Desk when new actionable tickets
 surface. A failed repo check is never silent: it is logged as
@@ -690,6 +767,26 @@ clean board. Run it on demand with `POST /board-sweep`.
 `FORGEJO_ISSUES_CHECK` is a **debug-only override** that execs an external
 checker binary instead of the in-process implementation. It is not a runtime
 dependency; do not set it in production.
+
+### 7.9 Fleet MCP server (stdio tools)
+
+The 10 autonomous tools (`fleet_check_board`, `fleet_watchdog_audit`,
+`fleet_board_sweep`, `fleet_prune_orchestrators`, `fleet_queue_inspect`,
+`fleet_queue_purge`, `fleet_handoff_generate`, `fleet_rotate_role`,
+`fleet_ensure_orchestrator`, `fleet_validate_workspace`) are also served over a
+standalone stdio JSON-RPC 2.0 server, `bin/fleet-mcp-server.mjs`, for any
+MCP-compatible agent harness:
+
+```sh
+node plugins/uppidi-fleet/bin/fleet-mcp-server.mjs   # newline-delimited JSON-RPC on stdin/stdout
+```
+
+Exact signatures, per-tool parameters, `json`/markdown output, `dryRun`/`confirm`
+safety guards, fail-closed error responses, and the
+`AgentSessionConfig.mcpServers` registration contract (with the per-class tool
+matrix) are documented in
+[docs/fleet-mcp-server.md](./docs/fleet-mcp-server.md). The E2E protocol suite
+lives in `test/fleet-mcp-server.test.mjs`.
 
 ---
 
@@ -723,7 +820,7 @@ curl -s http://127.0.0.1:8099/queues | jq '.queues[] | {key, depth, isBusy}'
 ```
 
 If events arrive but nothing reaches an agent, the queue has **no registered
-orchestrator** (or the repo is muted). Register one ([§7.4](#74-control-endpoints))
+orchestrator** (or the repo is paused). Register one ([§7.4](#74-control-endpoints))
 or enrol the repo from the Cockpit's `+ Add Orchestrator`.
 
 ---
@@ -871,7 +968,7 @@ these gaps yourself.
   data — it remains exported for tests/back-compat, but a missing/empty file
   yields an explicit empty state ("no empirical data yet"), never placeholders.
 - **Action:** override role models from the Cockpit or
-  `~/.paseo/uppidi-fleet-role-models.json`; the runner panel needs a token that
+  `~/.paseo/plugin-data/xpufx/uppidi-fleet/role-models.json`; the runner panel needs a token that
   can read at least one runner scope, and a fleet with no registered runners
   shows as `empty` until one is registered. Metrics need no seeding — they
   populate as agents run ([§13.4](#134-fleet-metrics-empirical-receipts-empty-until-earned)).
@@ -923,10 +1020,10 @@ these gaps yourself.
 | `~/.paseo/forgejo-hook/orchestrators/<key>.json` | Repo → orchestrator agent id. |
 | `~/.paseo/forgejo-hook/frontdesk.json` | Front Desk agent id (watchdog recipient; resolved via fallbacks — see [§7.7.3](#773-recipient-routing--delivery)). |
 | `~/.paseo/forgejo-hook/latest-handoff.md` | Active Front Desk hand-off snapshot. |
-| `~/.paseo/uppidi-fleet-role-models.json` | Per-role primary model + fallback group. |
+| `~/.paseo/plugin-data/xpufx/uppidi-fleet/role-models.json` | Per-role primary model + fallback group (scoped storage; migrates legacy `~/.paseo/uppidi-fleet-role-models.json` and `$HOME/uppidi-fleet-role-models.json` on first read). |
 | `~/.paseo/plugin-data/xpufx/uppidi-fleet/metrics.json` | Fleet capability metrics (scoped storage; fallback/migration from legacy `~/.paseo/uppidi-fleet-metrics.json`). |
-| `~/.paseo/plugin-data/xpufx/uppidi-fleet/settings.json` | Plugin settings (`hookHost`, `hookPort`, `enrolledRepos`, `mutedRepos`). |
-| `~/.paseo/plugin-data/xpufx/uppidi-fleet/skills/<id>.md` | Operator overrides for the fleet skills (Settings → Fleet Skills). Absent means the bundled `examples/skills/<id>/SKILL.md` is effective. |
+| `~/.paseo/plugin-data/xpufx/uppidi-fleet/settings.json` | Plugin settings (`hookHost`, `hookPort`, `enrolledRepos`, `pausedRepos`; the pre-#984 `mutedRepos` key is still read and migrated). |
+| `~/.paseo/plugin-data/xpufx/uppidi-fleet/skills/<id>.md` | Operator overrides for the fleet skills (Settings → Fleet Skills). Absent means the canonical `platform/skills/<id>/SKILL.md` (when a checkout is reachable) is effective, else the bundled `examples/skills/<id>/SKILL.md`. |
 | `<repo-root>/.agents/skills/` | The fleet's operational skills, at the repository root (outside the plugin package). |
 
 Environment variables: `FORGE_HOOK_HOST`, `FORGE_HOOK_PORT`/`HOOK_PORT`,
@@ -936,7 +1033,8 @@ Environment variables: `FORGE_HOOK_HOST`, `FORGE_HOOK_PORT`/`HOOK_PORT`,
 `HOOK_COALESCE_MAX`, `HOOK_COALESCE_WINDOW_MAX_MS`, `WATCHDOG_INTERVAL_MS`,
 `WATCHDOG_BUSY_THRESHOLD`, `WATCHDOG_ALERT_COOLDOWN_MS`,
 `BOARD_SWEEP_INTERVAL_MS` (a non-empty `FORGEJO_ISSUES_CHECK` enables the
-debug-only external-checker override).
+debug-only external-checker override), and `PASEO_UPPIDI_FLEET_CANONICAL_SKILLS_ROOT`
+(pins the canonical `platform/skills` root used to resolve and inline fleet skills).
 
 ---
 
@@ -1026,7 +1124,7 @@ topology is a strict two-tier authority chain, enforced deterministically in
    [paseo#530](https://forge.mrs.uppidi.com/xpufx-org/paseo/issues/530)).
 2. The **front desk must never spawn workers**. Worker spawning is
    orchestrator-exclusive; the desk's dispatch paths are steering a registered
-   orchestrator (`paseo send --steer --no-wait <orchId>`), the router API
+   orchestrator (`paseo send --no-wait <orchId>`), the router API
    (`POST <hook-host>:<port>/orchestrator`, `/board-sweep`), or operator
    escalation.
 
@@ -1174,6 +1272,41 @@ report the active registration plus a snapshot summary). Body:
    excerpt) and notify every registered orchestrator with the handover notice
    and the escalation route (`paseo send --no-wait <id> <msg>`).
 
+## 13.5.1 Role rotation protocol (#1019)
+
+The long-lived roles (orchestrator, Front Desk) are rotated onto a fresh agent
+rather than compacted in place, so the mechanism is provider-independent. The
+implementation lives in [`server/rotation.ts`](./server/rotation.ts) (pure
+policy + trigger evaluation + brief + one-at-a-time lock) and
+`HookRouter.rotateRole` in [`server/hook-router.ts`](./server/hook-router.ts)
+(the side-effecting protocol). It reuses the existing spawn primitives
+(`ensureOrchestrator` with `rotation: true`, `handleUppidiCreateFrontDesk`),
+`generateHandoff`-style board reads, and `archiveAgent`; it does not add a
+second lifecycle mechanism.
+
+**Protocol.** `spawn replacement → verify it registered (role/title) → deliver a
+rotation brief → archive the incumbent`. If the spawn fails the incumbent is
+left untouched; if verification fails the replacement is archived and the
+incumbent's registry entry is restored. A repo is never left without an
+orchestrator, and at most one rotation per role (per repo for orchestrators)
+can be in flight at once.
+
+**Triggers.** Automatic rotation fires on age OR turns (whichever first), plus
+token pressure and repeated failures. Manual rotation (Cockpit action, RPC,
+MCP `fleet_rotate_role`, or `POST /orchestrator-rotate`) is always available,
+ignores cooldown/mid-turn, but still cannot overlap an in-flight rotation. A
+cooldown separates automatic rotations.
+
+**Defaults** (all configurable, hot-applied, global + per-repo + per-role via
+the `rotationPolicy` setting and `POST /rotation-policy`):
+
+| Role | enabled | maxAge | maxTurns | tokenPressure | failures/window | cooldown |
+| --- | :-: | --- | --- | --- | --- | --- |
+| orchestrator | true | 2h | 50 | 85% | 3 / 15m | 30m |
+| front-desk | true | 3h | 75 | 85% | 3 / 15m | 30m |
+| auditor | false | — | — | — | — | — |
+| coding-agent | false | — | — | — | — | — |
+
 ## 13.6 Subagent lifecycle contract, reactive wakeups & capability grants
 
 The deterministic subagent contract from #537. It **extends** the #534 blocked
@@ -1227,7 +1360,7 @@ transitions:
 - into idle/`finished` completion → `agent.child_completed`
 
 …the pulse is delivered **directly to the parent** with
-`paseo send --steer --no-wait <parentId>` (the same `deliver()` primitive as
+`paseo send --no-wait <parentId>` (the same `deliver()` primitive as
 Front Desk alerts; no Front Desk routing). Dedup reuses `canWatchdogAlert` with
 per-`(child,event)` keys — `child_waiting:<id>:<reqId|reason>`,
 `child_errored:<id>`, `child_completed:<id>` — so a persistently blocked child
@@ -1250,7 +1383,13 @@ fall back to it (e.g. a slash-less provider the SDK cannot express) do not get
 the toggle. `allowPaths` seeds a bounded, best-effort auto-allow:
 after spawn the plugin polls `pendingPermissions` (SDK `ref()`, falling back to
 `paseo permit ls --json`) and allows **exactly one** request whose scope falls
-under a declared prefix, logging the outcome. This is a plugin-surface shim —
+under a declared prefix, logging the outcome. Orchestrator provisioning
+(`POST /orchestrators/spawn`, `fleet-ensure-orchestrator`) carries the same
+unattendedness (#974): the SDK create payload sets
+`config.featureValues.auto_accept`, and the CLI fallback — used when there is no
+in-process SDK, notably the standalone `fleet-ensure-orchestrator` bin — applies
+the workspace-root-scoped auto-allow, because `paseo run` still exposes no
+auto-accept flag. This is a plugin-surface shim —
 **the daemon has no pre-grant/permission-inheritance surface today**, so
 capability inheritance is best-effort, not enforced (daemon-side gap tracked in
 [#537](https://forge.mrs.uppidi.com/xpufx-org/paseo/issues/537)). Cross-ref:

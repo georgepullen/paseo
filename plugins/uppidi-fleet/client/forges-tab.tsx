@@ -107,26 +107,34 @@ export function resolveForgeSelection(
   return resolveCanonicalRepo(value, { knownRepos });
 }
 
-class SafeWorkspaceBoundary extends React.Component<
-  { children: React.ReactNode },
-  { hasError: boolean }
-> {
-  state = { hasError: false };
-  static getDerivedStateFromError() {
-    return { hasError: true };
-  }
-  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
-    // The boundary renders null on failure, so without this log a broken
-    // workspace watcher would blank the directory with no trace at all.
-    console.error(
-      `[uppidi-fleet] SafeWorkspaceBoundary caught an error (componentStack: ${errorInfo?.componentStack ?? "n/a"}): ${error?.message ?? String(error)}`,
-    );
-  }
-  render() {
-    if (this.state.hasError) return null;
-    return this.props.children;
-  }
+function SafeWorkspaceBoundaryImpl(
+  this: any,
+  props: { children: React.ReactNode },
+) {
+  (React.Component as any).call(this, props);
+  this.state = { hasError: false };
 }
+SafeWorkspaceBoundaryImpl.prototype = Object.create(React.Component.prototype);
+SafeWorkspaceBoundaryImpl.prototype.constructor = SafeWorkspaceBoundaryImpl;
+SafeWorkspaceBoundaryImpl.getDerivedStateFromError = function () {
+  return { hasError: true };
+};
+SafeWorkspaceBoundaryImpl.prototype.componentDidCatch = function (
+  error: Error,
+  errorInfo: React.ErrorInfo,
+) {
+  console.error(
+    `[uppidi-fleet] SafeWorkspaceBoundary caught an error: ${error?.message ?? String(error)}`,
+  );
+};
+SafeWorkspaceBoundaryImpl.prototype.render = function (this: any) {
+  if (this.state.hasError) return null;
+  return this.props.children;
+};
+
+const SafeWorkspaceBoundary = SafeWorkspaceBoundaryImpl as unknown as React.ComponentType<{
+  children: React.ReactNode;
+}>;
 
 function WorkspaceDirectoryWatcher({
   workspaceId,
@@ -228,8 +236,12 @@ function ForgeIssuesViewInner({
 
   const repoOptions = useMemo<SelectOption[]>(() => [
     { label: "All Enrolled Repositories", value: "all" },
-    ...reposList.map((r) => ({ label: r, value: r })),
-  ], [reposList]);
+    ...reposList.map((r) => ({
+      label: r,
+      value: r,
+      display: resolveForgeSelection(r, rawRepos)?.compact ?? r,
+    })),
+  ], [reposList, rawRepos]);
 
   const issuesQuery = useRpcQuery(forgeOpenIssuesContract, {
     workspaceId: workspaceId || undefined,

@@ -6,7 +6,14 @@
       "paseo-plugin-helper/lifecycle": ["../../packages/paseo-plugin-helper/src/lifecycle/index.ts"],
       "paseo-plugin-helper/server": ["../../packages/paseo-plugin-helper/src/server/index.ts"],
       "paseo-plugin-helper/shared": ["../../packages/paseo-plugin-helper/src/shared/index.ts"],
-      "paseo-plugin-helper/mcp": ["../../packages/paseo-plugin-helper/src/mcp/index.ts"]
+      "paseo-plugin-helper/mcp": ["../../packages/paseo-plugin-helper/src/mcp/index.ts"],
+      "@xpufx/paseo-plugin-ui": ["../../packages/paseo-plugin-ui/src/index.tsx"],
+      "@xpufx/backend-tickets": ["../../packages/backend/tickets/src/index.ts"],
+      "@xpufx/backend-tickets/client": ["../../packages/backend/tickets/src/client/index.ts"],
+      "@xpufx/backend-tickets/shared": ["../../packages/backend/tickets/src/shared/index.ts"],
+      "@xpufx/backend-tickets/server": ["../../packages/backend/tickets/src/server/index.ts"],
+      "@xpufx/mcp-gateway": ["../../packages/mcp-gateway/src/index.ts"],
+      "@xpufx/mcp-gateway/*": ["../../packages/mcp-gateway/src/*"]
     },
     "target": "ES2020",
     "module": "ESNext",
@@ -19,5 +26,9 @@
     "esModuleInterop": true,
     "allowSyntheticDefaultImports": true
   },
-  "include": ["**/*.ts", "**/*.tsx"]
+  "include": ["**/*.ts", "**/*.tsx"],
+  // `vitest/config` drags Vite's DOM `setTimeout` overload in, which flips the
+  // return type in the vendored helper's `mcp/client.ts` from `NodeJS.Timeout`
+  // to `number`. The config has no other consumer, so keep it out of tsc.
+  "exclude": ["client/vitest.config.ts"]
 }

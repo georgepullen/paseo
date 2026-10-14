@@ -1,11 +1,13 @@
-import { getPaseoClient, useHosts, usePaseo, useRpc } from "@getpaseo/plugin/client";
+import { usePaseo, useRpc } from "@getpaseo/plugin/client";
 import type { PluginTheme } from "@getpaseo/plugin";
 import { Modal, ScrollView } from "@getpaseo/plugin/client/react-native";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, Clipboard, Text, View } from "react-native";
 import type { NativeScrollEvent, NativeSyntheticEvent, ScrollView as NativeScrollView, StyleProp, ViewStyle } from "react-native";
+import { getOptionalPaseoClient, useOptionalHosts } from "paseo-plugin-helper/lifecycle";
 import { Button, InlineButton, ModalContent, TextInput } from "./host-ui";
+import { HOST_SHADOW_COLOR } from "paseo-plugin-helper/lifecycle";
 import { conversationSendRpc, introspectAgentsRpc, registryReadRpc, uiPrefsGetRpc } from "../shared/registry";
 import { deriveConversationThreads, deriveConversations, isCounterpartyMatch, mergeMessages, threadKeyForCounterparty, type ConversationMessage, type ConversationPartner, type ConversationThread } from "./conversations";
 import { listConfiguredHostAgents } from "./configured-hosts";
@@ -103,7 +105,7 @@ export function CrossDaemonConversation({
   const paseo = usePaseo();
   // This hook is deliberately confined to the mounted client surface. Server,
   // MCP, outbox, and peer-channel code retain their existing routes.
-  const hosts = useHosts();
+  const hosts = useOptionalHosts();
   const callSend = useRpc(conversationSendRpc);
   const callIntrospect = useRpc(introspectAgentsRpc);
   const callRegistryRead = useRpc(registryReadRpc);
@@ -174,9 +176,10 @@ export function CrossDaemonConversation({
   );
   const configuredHosts = useQuery({
     queryKey: ["x-comms-configured-hosts", hostStatusKey],
-    // getPaseoClient is called only in this query, when the host is online.
-    // A status transition changes the query key and drops the old borrowed API.
-    queryFn: () => listConfiguredHostAgents(hosts, getPaseoClient),
+    // getOptionalPaseoClient is called only in this query, when the host is
+    // online and supplies the seam; a status transition changes the query key
+    // and drops the old borrowed API.
+    queryFn: () => listConfiguredHostAgents(hosts, getOptionalPaseoClient),
     refetchOnWindowFocus: false,
   });
 
@@ -424,7 +427,7 @@ export function CrossDaemonConversation({
                       borderBottomLeftRadius: 12,
                       borderBottomRightRadius: 12,
                       padding: 8,
-                      shadowColor: "#000",
+                      shadowColor: HOST_SHADOW_COLOR,
                       shadowOpacity: 0.05,
                       shadowOffset: { width: 0, height: 1 },
                       shadowRadius: 2,
@@ -519,7 +522,7 @@ export function CrossDaemonConversation({
         </View>
       ) : null}
       <Modal title="New conversation" open={pickerOpen} onOpenChange={setPickerOpen}>
-        <ModalContent size="large">
+        <ModalContent>
           <View>
             <Text style={{ color: theme.colors.foregroundMuted, fontSize: 12, fontWeight: "700" as const, marginTop: 4, textTransform: "uppercase" as const }}>
               Configured hosts

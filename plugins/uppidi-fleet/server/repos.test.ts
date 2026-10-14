@@ -1,27 +1,37 @@
 import { describe, it, afterEach, beforeEach } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
-import { join } from "node:path";
+import { mkdtempSync, rmSync, existsSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import {
   handleUppidiRepos,
   handleUppidiEnrollRepo,
   handleUppidiUnenrollRepo,
 } from "./repos.js";
+import { handleUppidiAddOrchestrator } from "./agents.js";
 import { setFetchForTest, setTokenResolverForTest } from "./forgejo-api.js";
 import {
   HookRouter,
   setActiveHookRouter,
   getActiveHookRouter,
   clearHookLogs,
+  loadRouterConfig,
 } from "./hook-router.js";
 import { getUppidiFleetSettingsStorage, resetUppidiFleetSettingsStorageInstance } from "./settings.js";
 
 /** Drop the persisted plugin settings so each test starts from schema defaults. */
 function clearSettingsStorage(): void {
   try {
-    rmSync(getUppidiFleetSettingsStorage().filePath, { force: true });
-  } catch {
+    const targetPath = getUppidiFleetSettingsStorage().filePath;
+    const resolvedTarget = resolve(targetPath);
+    const resolvedTmp = resolve(tmpdir());
+    if (resolvedTarget.startsWith(resolvedTmp) || resolvedTarget.includes("test")) {
+      rmSync(resolvedTarget, { force: true });
+    } else {
+      throw new Error(`[SAFETY] Refusing to unlink non-test settings file: ${resolvedTarget}`);
+    }
+  } catch (err: any) {
+    if (err?.message?.includes("[SAFETY]")) throw err;
     // ignore missing file
   }
   resetUppidiFleetSettingsStorageInstance();
@@ -68,7 +78,7 @@ describe("uppidi-fleet repos handler (#867)", () => {
     } catch {}
   });
 
-  it("lists repos from Forgejo with enrollment, mute, and queue status", async () => {
+  it("lists repos from Forgejo with enrollment, pause, and queue status", async () => {
     const router = new HookRouter(null, {
       queueDir,
       stateDir,
@@ -77,7 +87,7 @@ describe("uppidi-fleet repos handler (#867)", () => {
     setActiveHookRouter(router);
 
     router.enrollRepo("forge.mrs.uppidi.com/xpufx-org/paseo");
-    router.muteRepo("forge.mrs.uppidi.com/xpufx-org/paseo");
+    router.pauseRepo("forge.mrs.uppidi.com/xpufx-org/paseo");
     router.writeOrchestrator("forge.mrs.uppidi.com/xpufx-org/paseo", "agent-orch-1");
     router.enqueue("forge.mrs.uppidi.com/xpufx-org/paseo", "msg1");
 
@@ -112,7 +122,7 @@ describe("uppidi-fleet repos handler (#867)", () => {
     assert.ok(paseo);
     assert.equal(paseo.key, "forge.mrs.uppidi.com/xpufx-org/paseo");
     assert.equal(paseo.enrolled, true);
-    assert.equal(paseo.muted, true);
+    assert.equal(paseo.paused, true);
     assert.equal(paseo.hasOrchestrator, true);
     assert.equal(paseo.queueDepth, 1);
     assert.equal(paseo.private, false);
@@ -120,7 +130,7 @@ describe("uppidi-fleet repos handler (#867)", () => {
     const fado = res.repos.find((r) => r.name === "2fado");
     assert.ok(fado);
     assert.equal(fado.enrolled, false);
-    assert.equal(fado.muted, false);
+    assert.equal(fado.paused, false);
     assert.equal(fado.hasOrchestrator, false);
     assert.equal(fado.queueDepth, 0);
     assert.equal(fado.private, true);
@@ -210,6 +220,78 @@ describe("uppidi-fleet repos handler (#867)", () => {
     assert.ok(!router.getEnrolledRepos().includes("forge.mrs.uppidi.com/xpufx-org/paseo"));
   });
 
+  it("reports a runtime queue/orchestrator as not enrolled unless declared (#1165)", async () => {
+    const router = new HookRouter(null, {
+      queueDir,
+      stateDir,
+      port: 0,
+    });
+    setActiveHookRouter(router);
+
+    router.enqueue("forge.mrs.uppidi.com/xpufx-org/ghost", "msg1");
+    router.writeOrchestrator("forge.mrs.uppidi.com/xpufx-org/ghost", "agent-ghost");
+
+    setTokenResolverForTest(async () => "test-token");
+    setFetchForTest(async () =>
+      jsonResponse({
+        data: [
+          {
+            name: "ghost",
+            full_name: "xpufx-org/ghost",
+            owner: { login: "xpufx-org" },
+            private: false,
+          },
+        ],
+      }),
+    );
+
+    const res = await handleUppidiRepos({});
+    assert.equal(res.ok, true);
+    const ghost = res.repos.find((r) => r.name === "ghost");
+    assert.ok(ghost);
+    assert.equal(ghost.enrolled, false);
+    assert.equal(ghost.queueDepth, 1);
+    assert.equal(ghost.hasOrchestrator, true);
+
+    router.enrollRepo("forge.mrs.uppidi.com/xpufx-org/ghost");
+    const enrolledRes = await handleUppidiRepos({});
+    assert.equal(enrolledRes.repos.find((r) => r.name === "ghost")?.enrolled, true);
+  });
+
+  it("stays unenrolled after UNENROLL while a queue and orchestrator remain (#1154, #1165)", async () => {
+    const router = new HookRouter(null, {
+      queueDir,
+      stateDir,
+      port: 0,
+    });
+    setActiveHookRouter(router);
+
+    router.enrollRepo("forge.mrs.uppidi.com/xpufx-org/durable");
+    router.enqueue("forge.mrs.uppidi.com/xpufx-org/durable", "msg1");
+    router.writeOrchestrator("forge.mrs.uppidi.com/xpufx-org/durable", "agent-durable");
+
+    setTokenResolverForTest(async () => "test-token");
+    setFetchForTest(async () =>
+      jsonResponse({
+        data: [
+          {
+            name: "durable",
+            full_name: "xpufx-org/durable",
+            owner: { login: "xpufx-org" },
+            private: false,
+          },
+        ],
+      }),
+    );
+
+    const unenrollRes = await handleUppidiUnenrollRepo({ repo: "forge.mrs.uppidi.com/xpufx-org/durable" });
+    assert.equal(unenrollRes.ok, true);
+    assert.ok(!unenrollRes.enrolledRepos.includes("forge.mrs.uppidi.com/xpufx-org/durable"));
+
+    const res = await handleUppidiRepos({});
+    assert.equal(res.repos.find((r) => r.name === "durable")?.enrolled, false);
+  });
+
   it("enrolls and unenrolls repositories with config fallback when router is inactive", async () => {
     setActiveHookRouter(null);
 
@@ -221,5 +303,92 @@ describe("uppidi-fleet repos handler (#867)", () => {
     const unenrollRes = await handleUppidiUnenrollRepo({ repo: "xpufx-org/standalone-repo" });
     assert.equal(unenrollRes.ok, true);
     assert.ok(!unenrollRes.enrolledRepos.includes("forge.mrs.uppidi.com/xpufx-org/standalone-repo"));
+  });
+
+  it("spawning an orchestrator for an unenrolled repo does not add it to enrolledRepos or mutate settings.json (#1312)", async () => {
+    const router = new HookRouter(null, {
+      queueDir,
+      stateDir,
+      port: 0,
+    });
+    setActiveHookRouter(router);
+
+    const unenrolled = "forge.mrs.uppidi.com/xpufx-org/unregistered";
+    assert.equal(router.isEnrolledRepo(unenrolled), false);
+
+    const mockContext: any = {
+      paseo: {
+        agents: {
+          create: async () => ({ id: "agent-orch-1312", status: "running" }),
+          ref: () => ({
+            current: () => ({ id: "agent-orch-1312", status: "running" }),
+            send: async () => {},
+          }),
+        },
+      },
+    };
+
+    const res = await handleUppidiAddOrchestrator(
+      { repo: unenrolled, workspacePath: "/home/user/code/unregistered" },
+      mockContext,
+    );
+    assert.equal(res.ok, true);
+    assert.equal(res.agentId, "agent-orch-1312");
+
+    // Verified: orchestrator record exists, but repo is NOT enrolled in router or settings.json
+    assert.equal(router.readOrchestrator(unenrolled)?.agentId, "agent-orch-1312");
+    assert.equal(router.isEnrolledRepo(unenrolled), false);
+    assert.ok(!router.getEnrolledRepos().includes(unenrolled));
+    const persisted = loadRouterConfig();
+    assert.ok(!(persisted.enrolledRepos ?? []).includes(unenrolled));
+  });
+
+  it("ingesting webhooks for unenrolled repositories drops/ignores the event and does not build queue depth (#1312)", async () => {
+    const router = new HookRouter(null, {
+      queueDir,
+      stateDir,
+      port: 0,
+    });
+    setActiveHookRouter(router);
+
+    const unenrolled = "forge.mrs.uppidi.com/xpufx-org/ignored-repo";
+    const payload = {
+      repository: { full_name: "xpufx-org/ignored-repo", html_url: "https://forge.mrs.uppidi.com/xpufx-org/ignored-repo" },
+      sender: { login: "someone" },
+      issue: { number: 10, title: "Test issue" },
+      action: "opened",
+    };
+
+    const res = await router.ingestWebhook("issues", payload);
+    assert.equal(res.result, "ignored");
+    assert.equal(res.frontDesk, false);
+    assert.equal(router.getQueue(unenrolled).length, 0);
+    assert.equal(router.getQueue("xpufx-org/ignored-repo").length, 0);
+  });
+
+  it("unenrolling a repo clears its in-memory and on-disk queue (#1312)", async () => {
+    const router = new HookRouter(null, {
+      queueDir,
+      stateDir,
+      port: 0,
+    });
+    setActiveHookRouter(router);
+
+    const repoKey = "forge.mrs.uppidi.com/xpufx-org/queue-clear-test";
+    router.enrollRepo(repoKey);
+    router.enqueue(repoKey, "Test queued message 1");
+    router.enqueue(repoKey, "Test queued message 2");
+
+    assert.equal(router.getQueue(repoKey).length, 2);
+    assert.equal(existsSync(router.queueFilePath(repoKey)), true);
+
+    const unenrollRes = await handleUppidiUnenrollRepo({ repo: repoKey });
+    assert.equal(unenrollRes.ok, true);
+    assert.ok(!unenrollRes.enrolledRepos.includes(repoKey));
+
+    // In-memory queue is purged
+    assert.equal(router.getQueue(repoKey).length, 0);
+    // On-disk queue file is unlinked
+    assert.equal(existsSync(router.queueFilePath(repoKey)), false);
   });
 });

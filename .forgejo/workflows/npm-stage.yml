@@ -51,7 +51,10 @@ jobs:
             printf "## Runner diagnostics\n\n- OS: \`%s\`\n- Architecture: \`%s\`\n- Host: \`%s\`\n" "$RUNNER_OS" "$RUNNER_ARCH" "$runner_host" >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      - uses: actions/checkout@v4
+      # Pin to a full commit SHA: the runner resolves `uses:` refs itself and always
+      # runs `git fetch` for tag refs, which fails without GitHub credentials. A SHA
+      # already in the runner cache resolves offline (paseo#972 / runner-containers#22).
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Toolchain
         run: |
@@ -108,27 +111,9 @@ jobs:
           npm stage --help >/dev/null || { echo "::error::npm stage not available after upgrade"; exit 1; }
           # Authenticate for `npm stage publish` (any token type works, no 2FA).
           printf '//registry.npmjs.org/:_authToken=%s\n' "$NPM_TOKEN" > "$HOME/.npmrc"
-          export TWOFADO_NOTIFY_BIN="${TWOFADO_NOTIFY_BIN:-2fado}"
-          # Notify daemon is required by default; fail loudly if unavailable unless TWOFADO_NOTIFY_OPTIONAL=1
-          if ! command -v "$TWOFADO_NOTIFY_BIN" >/dev/null 2>&1; then
-            if [ "${TWOFADO_NOTIFY_OPTIONAL:-0}" = "1" ]; then
-              echo "::warning::2fado notify CLI is unavailable; continuing because TWOFADO_NOTIFY_OPTIONAL=1"
-            else
-              echo "::error::2fado notify CLI is unavailable ($TWOFADO_NOTIFY_BIN); daemon preflight failed"
-              exit 1
-            fi
-          else
-            echo "2fado notify CLI found at $(command -v "$TWOFADO_NOTIFY_BIN"); checking daemon..."
-            if ! "$TWOFADO_NOTIFY_BIN" list >/dev/null 2>&1; then
-              if [ "${TWOFADO_NOTIFY_OPTIONAL:-0}" = "1" ]; then
-                echo "::warning::2fado daemon unreachable; continuing because TWOFADO_NOTIFY_OPTIONAL=1"
-              else
-                echo "::error::2fado notify daemon unreachable; preflight failed"
-                exit 1
-              fi
-            fi
-          fi
-          # Stage all packages and notify
+          # Staging is decoupled from the notify-only 2fado daemon. A missing
+          # CLI/daemon must never fail this step, and notification belongs to the
+          # human publish/approve handoff rather than the staging run.
           node scripts/npm-stage-native.mjs --manifest=publish-stage/manifest.json
 
       - name: Post-stage verification (verify staged packages in npm registry)
@@ -137,34 +122,12 @@ jobs:
           set -euo pipefail
           export PATH="$HOME/npm/node_modules/.bin:$PATH"
           echo "Verifying staged packages in the registry staging area..."
-          node <<'NODE_EOF'
-            const fs = require("fs");
-            const { execFileSync } = require("child_process");
-            const manifest = JSON.parse(fs.readFileSync("publish-stage/manifest.json", "utf8"));
-            const packages = Array.isArray(manifest.packages) ? manifest.packages : [];
-            let unverified = 0;
-            for (const p of packages) {
-              try {
-                const out = execFileSync("npm", ["stage", "list", p.publishAs, "--json"], { encoding: "utf8" });
-                const stages = JSON.parse(out);
-                const hasVersion = Array.isArray(stages) && stages.some((s) => s.packageName === p.publishAs && s.version === p.version);
-                if (hasVersion) {
-                  console.log(`[post-stage-verify] OK: ${p.publishAs}@${p.version} found in staging area.`);
-                } else {
-                  console.error(`[post-stage-verify] FAIL: ${p.publishAs}@${p.version} missing from npm stage list!`);
-                  unverified++;
-                }
-              } catch (err) {
-                console.error(`[post-stage-verify] ERROR inspecting stage list for ${p.publishAs}: ${err.message}`);
-                unverified++;
-              }
-            }
-            if (unverified > 0) {
-              console.error(`::error::Post-stage verification failed: ${unverified} package(s) unverified in registry staging area`);
-              process.exit(1);
-            }
-            console.log("[post-stage-verify] All staged packages successfully verified in registry staging area.");
-          NODE_EOF
+          # Reads the per-package staging outcome the stager wrote to
+          # manifest.json. Already-published versions were deliberately skipped
+          # by the stager (npm cannot restage them), so they are live rather than
+          # missing; only versions the stager actually submitted are checked
+          # against `npm stage list` (xpufx-org/paseo#1002).
+          node scripts/npm-stage-native.mjs --verify-manifest=publish-stage/manifest.json
 
       - name: Upload publish-stage/ artifact
         # The Forgejo-maintained fork has the GHES check removed; the upstream

@@ -42,6 +42,8 @@ after(() => {
 import {
   categorizeAgent,
   normalizeRawAgent,
+  getActiveAgentCountByProvider,
+  normalizeProviderKey,
   handleUppidiAgents,
   extractAttributedWork,
   deriveDeterministicState,
@@ -52,7 +54,7 @@ import {
   handleUppidiReplaceFrontDesk,
   handleUppidiAddOrchestrator,
   handleUppidiReplaceOrchestrator,
-  handleUppidiToggleRepoMute,
+  handleUppidiToggleRepoPause,
   spawnPaseoAgent,
   setExecFileAsyncForTest,
   resolveRepoWorkspace,
@@ -70,13 +72,24 @@ import { getUppidiFleetSettingsStorage } from "./settings.js";
 import { buildProjectGroups } from "../shared/sort-filter.js";
 
 describe("fleet and agents classification", () => {
-  it("categorizes agent names accurately", () => {
-    assert.equal(categorizeAgent("Front Desk"), "front-desk");
-    assert.equal(categorizeAgent("frontdesk"), "front-desk");
-    assert.equal(categorizeAgent("Orchestrator · xpufx-org/paseo"), "orchestrator");
-    assert.equal(categorizeAgent("Orchestrator · xpufx/platform"), "orchestrator");
-    assert.equal(categorizeAgent("feat-367-worker"), "worker");
-    assert.equal(categorizeAgent("platform #99 caller"), "worker");
+  it("resolves agent roles from registry and labels, never bare names (#1143)", () => {
+    // Bare display names alone never grant a role: without a registry entry or
+    // explicit role metadata every agent is a coding-agent (#1126).
+    assert.equal(categorizeAgent("Front Desk"), "coding-agent");
+    assert.equal(categorizeAgent("frontdesk"), "coding-agent");
+    assert.equal(categorizeAgent("Orchestrator · xpufx-org/paseo"), "coding-agent");
+    assert.equal(categorizeAgent("Orchestrator · xpufx/platform"), "coding-agent");
+    assert.equal(categorizeAgent("feat-367-worker"), "coding-agent");
+    assert.equal(categorizeAgent("platform #99 caller"), "coding-agent");
+    // Explicit spawn metadata grants roles deterministically.
+    assert.equal(
+      categorizeAgent({ id: "fd", name: "Some Session Title", labels: { role: "front-desk" } }),
+      "front-desk"
+    );
+    assert.equal(
+      categorizeAgent({ id: "orch", name: "whatever", labels: { role: "orchestrator" } }),
+      "orchestrator"
+    );
   });
 
   it("extracts attributed work from titles, names, branches, and labels", () => {
@@ -117,10 +130,11 @@ describe("fleet and agents classification", () => {
     const s2 = deriveDeterministicState({ id: "a2", status: "running" }, null);
     assert.equal(s2.state, "running");
 
-    // 3. Sleeping orchestrator (idle > 15m)
+    // 3. Sleeping orchestrator (idle > 15m) — roles come from explicit
+    // spawn metadata, never the display name (#1143).
     const oldTime = new Date(Date.now() - 20 * 60 * 1000).toISOString();
     const s3 = deriveDeterministicState(
-      { id: "a3", name: "Orchestrator · test", status: "idle", lastActivityAt: oldTime },
+      { id: "a3", name: "Orchestrator · test", status: "idle", lastActivityAt: oldTime, labels: { role: "orchestrator" } },
       null
     );
     assert.equal(s3.state, "sleeping");
@@ -128,7 +142,7 @@ describe("fleet and agents classification", () => {
     // 4. Idle waiting
     const recentTime = new Date(Date.now() - 2 * 60 * 1000).toISOString();
     const s4 = deriveDeterministicState(
-      { id: "a4", name: "Orchestrator · test", status: "idle", lastActivityAt: recentTime },
+      { id: "a4", name: "Orchestrator · test", status: "idle", lastActivityAt: recentTime, labels: { role: "orchestrator" } },
       null
     );
     assert.equal(s4.state, "idle:waiting");
@@ -247,13 +261,13 @@ describe("fleet and agents classification", () => {
 
   it("buildProjectGroups extracts an orchestrator spawned by Front Desk into projectGroups (#430)", () => {
     const agents = [
-      normalizeRawAgent({ id: "root-1", name: "Front Desk", status: "running" }),
+      normalizeRawAgent({ id: "root-1", name: "Front Desk", status: "running", labels: { role: "front-desk" } }),
       normalizeRawAgent({
         id: "orch-1",
         name: "Orchestrator · xpufx-org/paseo",
         status: "running",
         parentId: "root-1",
-        labels: { "forgejo.issue": "430", repo: "xpufx-org/paseo" },
+        labels: { "forgejo.issue": "430", repo: "xpufx-org/paseo", role: "orchestrator" },
       }),
       normalizeRawAgent({
         id: "worker-1",
@@ -290,13 +304,13 @@ describe("fleet and agents classification", () => {
 
   it("assigns parentName and parentCategory to child agents in buildAgentTree (#430)", () => {
     const agents = [
-      normalizeRawAgent({ id: "root-1", name: "Front Desk", status: "running" }),
+      normalizeRawAgent({ id: "root-1", name: "Front Desk", status: "running", labels: { role: "front-desk" } }),
       normalizeRawAgent({
         id: "orch-1",
         name: "Orchestrator · xpufx-org/paseo",
         status: "running",
         parentId: "root-1",
-        labels: { "forgejo.issue": "430", repo: "xpufx-org/paseo" },
+        labels: { "forgejo.issue": "430", repo: "xpufx-org/paseo", role: "orchestrator" },
       }),
       normalizeRawAgent({
         id: "worker-1",
@@ -342,6 +356,7 @@ describe("fleet and agents classification", () => {
       status: "idle",
       provider: "antigravity-acp/gemini-3.8-flash-low",
       cwd: "~/code/meta",
+      labels: { role: "front-desk" },
     });
 
     assert.equal(agent.id, "64d89202-acaa-4071-b658-90db710875bd");
@@ -367,9 +382,9 @@ describe("fleet and agents classification", () => {
         agents: {
           list: async () => ({
             entries: [
-              { agent: { id: "fd-1", name: "Front Desk", status: "idle" } },
-              { agent: { id: "orch-1", name: "Orchestrator · test", status: "running" } },
-              { agent: { id: "orch-2", name: "Orchestrator · platform", status: "idle" } },
+              { agent: { id: "fd-1", name: "Front Desk", status: "idle", labels: { role: "front-desk" } } },
+              { agent: { id: "orch-1", name: "Orchestrator · test", status: "running", labels: { role: "orchestrator" } } },
+              { agent: { id: "orch-2", name: "Orchestrator · platform", status: "idle", labels: { role: "orchestrator" } } },
               { agent: { id: "w-1", name: "Worker fix 1", status: "error" } },
             ],
           }),
@@ -608,7 +623,7 @@ describe("archive agent actions (#402)", () => {
   });
 });
 
-describe("fleet roster lifecycle actions and per-repo mute RPCs (#426)", () => {
+describe("fleet roster lifecycle actions and per-repo pause RPCs (#426)", () => {
   it("creates Front Desk session via handleUppidiCreateFrontDesk", async () => {
     let createdPayload: any = null;
     const mockContext: any = {
@@ -725,6 +740,21 @@ describe("fleet roster lifecycle actions and per-repo mute RPCs (#426)", () => {
     let createdPayload: any = null;
     const mockContext: any = {
       paseo: {
+        workspaces: {
+          list: async () => ({
+            entries: [
+              {
+                id: "wks_aur_main",
+                projectId: "prj_aur",
+                projectRootPath: "/home/user/code/aur-automation",
+                workspaceDirectory: "/home/user/code/aur-automation",
+                workspaceKind: "checkout",
+                name: "main",
+                project: { projectKey: "remote:forge.mrs.uppidi.com:222/xpufx-org/aur-automation" },
+              },
+            ],
+          }),
+        },
         agents: {
           create: async (opts: any) => {
             createdPayload = opts;
@@ -749,6 +779,8 @@ describe("fleet roster lifecycle actions and per-repo mute RPCs (#426)", () => {
     assert.equal(res.repo, "xpufx-org/aur-automation");
     assert.equal(res.agentId, "agent-orch-created");
     assert.equal(createdPayload?.role, "orchestrator");
+    assert.equal(createdPayload?.cwd, "/home/user/code/aur-automation");
+    assert.equal(createdPayload?.workspaceId, "wks_aur_main");
     assert.ok(createdPayload?.title?.includes("xpufx-org/aur-automation"));
   });
 
@@ -758,6 +790,21 @@ describe("fleet roster lifecycle actions and per-repo mute RPCs (#426)", () => {
 
     const mockContext: any = {
       paseo: {
+        workspaces: {
+          list: async () => ({
+            entries: [
+              {
+                id: "wks_paseo_main",
+                projectId: "prj_paseo",
+                projectRootPath: "/home/user/code/paseo",
+                workspaceDirectory: "/home/user/code/paseo",
+                workspaceKind: "checkout",
+                name: "main",
+                project: { projectKey: "remote:forge.mrs.uppidi.com:222/xpufx-org/paseo" },
+              },
+            ],
+          }),
+        },
         agents: {
           create: async (opts: any) => {
             createdAgent = opts;
@@ -795,25 +842,25 @@ describe("fleet roster lifecycle actions and per-repo mute RPCs (#426)", () => {
     assert.equal(archivedId, "agent-orch-old");
   });
 
-  it("toggles repository mute status via handleUppidiToggleRepoMute", async () => {
-    const resMute = await handleUppidiToggleRepoMute(
-      { repo: "xpufx-org/mute-test", muted: true },
+  it("toggles repository pause status via handleUppidiToggleRepoPause", async () => {
+    const resPause = await handleUppidiToggleRepoPause(
+      { repo: "xpufx-org/pause-test", paused: true },
       {} as any
     );
-    assert.equal(resMute.ok, true);
-    assert.equal(resMute.isMuted, true);
-    assert.ok(resMute.mutedRepos?.includes("xpufx-org/mute-test"));
+    assert.equal(resPause.ok, true);
+    assert.equal(resPause.isPaused, true);
+    assert.ok(resPause.pausedRepos?.includes("xpufx-org/pause-test"));
 
-    const resUnmute = await handleUppidiToggleRepoMute(
-      { repo: "xpufx-org/mute-test", muted: false },
+    const resUnpause = await handleUppidiToggleRepoPause(
+      { repo: "xpufx-org/pause-test", paused: false },
       {} as any
     );
-    assert.equal(resUnmute.ok, true);
-    assert.equal(resUnmute.isMuted, false);
-    assert.ok(!resUnmute.mutedRepos?.includes("xpufx-org/mute-test"));
+    assert.equal(resUnpause.ok, true);
+    assert.equal(resUnpause.isPaused, false);
+    assert.ok(!resUnpause.pausedRepos?.includes("xpufx-org/pause-test"));
   });
 
-  it("handleUppidiAgents outputs enrolledRepos, mutedRepos, and repoQueuedHooks", async () => {
+  it("handleUppidiAgents outputs enrolledRepos, pausedRepos, and repoQueuedHooks", async () => {
     const mockContext: any = {
       paseo: {
         agents: {
@@ -844,7 +891,7 @@ describe("fleet roster lifecycle actions and per-repo mute RPCs (#426)", () => {
 
     const output = await handleUppidiAgents({}, mockContext);
     assert.ok(Array.isArray(output.enrolledRepos));
-    assert.ok(Array.isArray(output.mutedRepos));
+    assert.ok(Array.isArray(output.pausedRepos));
     assert.equal(typeof output.repoQueuedHooks, "object");
     assert.ok(output.tree.length > 0);
   });
@@ -853,6 +900,21 @@ describe("fleet roster lifecycle actions and per-repo mute RPCs (#426)", () => {
     let createdPayload: any = null;
     const mockContext: any = {
       paseo: {
+        workspaces: {
+          list: async () => ({
+            entries: [
+              {
+                id: "wks_runner_containers",
+                projectId: "prj_runner_containers",
+                projectRootPath: "/home/user/code/runner-containers",
+                workspaceDirectory: "/home/user/code/runner-containers",
+                workspaceKind: "checkout",
+                name: "main",
+                project: { projectKey: "remote:forge.mrs.uppidi.com:222/xpufx-org/runner-containers" },
+              },
+            ],
+          }),
+        },
         agents: {
           create: async (opts: any) => {
             createdPayload = opts;
@@ -877,17 +939,19 @@ describe("fleet roster lifecycle actions and per-repo mute RPCs (#426)", () => {
     assert.equal(createdPayload.role, "front-desk");
     assert.equal(createdPayload.mode, "yolo");
 
-    // 2. handleUppidiAddOrchestrator without explicit model
+    // 2. handleUppidiAddOrchestrator without explicit model resolves to the
+    // enabled-provider orchestrator default (#987).
     createdPayload = null;
     const orchRes = await handleUppidiAddOrchestrator(
       { repo: "xpufx-org/runner-containers" },
       mockContext
     );
     assert.equal(orchRes.ok, true);
-    assert.equal(createdPayload.provider, "antigravity-acp");
-    assert.equal(createdPayload.model, "gemini-3.8-flash-low");
+    assert.equal(createdPayload.provider, "pi");
+    assert.equal(createdPayload.model, "commandcode/deepseek/deepseek-v4-flash");
     assert.equal(createdPayload.role, "orchestrator");
-    assert.equal(createdPayload.mode, "yolo");
+    // `pi` advertises no session modes, so the orchestrator spawn carries none.
+    assert.equal(createdPayload.mode, undefined);
 
     // 3. handleUppidiAddOrchestrator with explicit model
     createdPayload = null;
@@ -1004,6 +1068,7 @@ describe("fleet roster lifecycle actions and per-repo mute RPCs (#426)", () => {
           prompt: "Supervising workers",
           category: "orchestrator",
           model: "codex/gpt-5.6-luna",
+          cwd: "/home/user/code/paseo",
         },
         {} as any
       );
@@ -1012,6 +1077,7 @@ describe("fleet roster lifecycle actions and per-repo mute RPCs (#426)", () => {
       assert.equal(capturedArgs[capturedArgs.indexOf("--provider") + 1], "codex");
       assert.equal(capturedArgs[capturedArgs.indexOf("--model") + 1], "gpt-5.6-luna");
       assert.equal(capturedArgs.includes("--mode"), false);
+      assert.equal(capturedArgs[capturedArgs.indexOf("--cwd") + 1], "/home/user/code/paseo");
 
       // 3. Explicit provider without model slash
       const resProviderOnly = await spawnPaseoAgent(
@@ -1056,44 +1122,62 @@ describe("fleet roster lifecycle actions and per-repo mute RPCs (#426)", () => {
 });
 
 describe("orchestrator workspace resolution and state isolation (#485, #486)", () => {
-  it("resolveRepoWorkspace extracts workspaceId and prefers local workspace over worktrees", async () => {
-    setExecFileAsyncForTest(async (cmd: string, args: readonly string[]) => {
-      if (cmd === "paseo" && args[0] === "workspace" && args[1] === "ls") {
-        return {
-          stdout: JSON.stringify([
-            {
-              workspaceId: "wks_worktree_1",
-              project: "paseo",
-              name: "fix-branch",
-              isolation: "worktree",
-              cwd: "/home/user/.paseo/worktrees/fix-branch",
-            },
-            {
-              workspaceId: "wks_local_main",
-              project: "paseo",
-              name: "Paseo",
-              isolation: "local",
-              cwd: "/home/user/code/paseo",
-            },
-          ]),
-        };
-      }
-      return { stdout: "[]" };
-    });
+  it("resolveRepoWorkspace resolves workspaceId and prefers the checkout over a worktree", async () => {
+    const context: any = {
+      paseo: {
+        workspaces: {
+          list: async () => ({
+            entries: [
+              {
+                id: "wks_worktree_1",
+                projectId: "prj_paseo",
+                projectRootPath: "/home/user/code/paseo",
+                workspaceDirectory: "/home/user/.paseo/worktrees/fix-branch",
+                workspaceKind: "worktree",
+                name: "fix-branch",
+                gitRuntime: { isPaseoOwnedWorktree: true },
+                project: { projectKey: "remote:forge.mrs.uppidi.com:222/xpufx-org/paseo" },
+              },
+              {
+                id: "wks_local_main",
+                projectId: "prj_paseo",
+                projectRootPath: "/home/user/code/paseo",
+                workspaceDirectory: "/home/user/code/paseo",
+                workspaceKind: "checkout",
+                name: "Paseo",
+                gitRuntime: { isPaseoOwnedWorktree: false },
+                project: { projectKey: "remote:forge.mrs.uppidi.com:222/xpufx-org/paseo" },
+              },
+            ],
+          }),
+        },
+      },
+    };
 
-    try {
-      const res = await resolveRepoWorkspace("xpufx-org/paseo");
-      assert.equal(res.workspaceId, "wks_local_main");
-      assert.equal(res.cwd, "/home/user/code/paseo");
-    } finally {
-      setExecFileAsyncForTest(null);
-    }
+    const res = await resolveRepoWorkspace("xpufx-org/paseo", context);
+    assert.equal(res.workspaceId, "wks_local_main");
+    assert.equal(res.cwd, "/home/user/code/paseo");
   });
 
   it("handleUppidiAddOrchestrator supplies workspaceId and default orchestrator skill prompt", async () => {
     let capturedPayload: any = null;
     const mockContext: any = {
       paseo: {
+        workspaces: {
+          list: async () => ({
+            entries: [
+              {
+                id: "wks_sample_repo",
+                projectId: "prj_sample_repo",
+                projectRootPath: "/home/user/code/sample-repo",
+                workspaceDirectory: "/home/user/code/sample-repo",
+                workspaceKind: "checkout",
+                name: "Main",
+                project: { projectKey: "remote:forge.mrs.uppidi.com:222/xpufx-org/sample-repo" },
+              },
+            ],
+          }),
+        },
         agents: {
           create: async (opts: any) => {
             capturedPayload = opts;
@@ -1110,46 +1194,26 @@ describe("orchestrator workspace resolution and state isolation (#485, #486)", (
       },
     };
 
-    setExecFileAsyncForTest(async (cmd: string, args: readonly string[]) => {
-      if (cmd === "paseo" && args[0] === "workspace" && args[1] === "ls") {
-        return {
-          stdout: JSON.stringify([
-            {
-              workspaceId: "wks_sample_repo",
-              project: "sample-repo",
-              name: "Main",
-              isolation: "local",
-              cwd: "/home/user/code/sample-repo",
-            },
-          ]),
-        };
-      }
-      return { stdout: "[]" };
-    });
+    const res = await handleUppidiAddOrchestrator(
+      { repo: "xpufx-org/sample-repo" },
+      mockContext
+    );
 
-    try {
-      const res = await handleUppidiAddOrchestrator(
-        { repo: "xpufx-org/sample-repo" },
-        mockContext
-      );
-
-      assert.equal(res.ok, true);
-      assert.equal(res.agentId, "agent-orch-skill-test");
-      assert.equal(capturedPayload.workspaceId, "wks_sample_repo");
-      assert.equal(capturedPayload.cwd, "/home/user/code/sample-repo");
-      const orchestratorBundledPath = getBundledSkillPath("orchestrator");
-      const codingAgentBundledPath = getBundledSkillPath("coding-agent");
-      assert.ok(
-        orchestratorBundledPath !== null &&
-          capturedPayload.prompt.includes(orchestratorBundledPath)
-      );
-      assert.ok(
-        codingAgentBundledPath !== null && capturedPayload.prompt.includes(codingAgentBundledPath)
-      );
-      assert.ok(capturedPayload.prompt.includes("teax"));
-    } finally {
-      setExecFileAsyncForTest(null);
-    }
+    assert.equal(res.ok, true);
+    assert.equal(res.agentId, "agent-orch-skill-test");
+    assert.equal(capturedPayload.workspaceId, "wks_sample_repo");
+    assert.equal(capturedPayload.cwd, "/home/user/code/sample-repo");
+    const orchestratorBundledPath = getBundledSkillPath("orchestrator");
+    assert.ok(orchestratorBundledPath !== null);
+    assert.ok(
+      capturedPayload.prompt.includes("<workspace>/.tmp/"),
+      "prompt inlines the effective orchestrator + coding-agent scratch rule",
+    );
+    assert.ok(
+      !capturedPayload.prompt.includes(orchestratorBundledPath),
+      "prompt must inline skill content rather than point at a permission-gated path",
+    );
+    assert.ok(capturedPayload.prompt.includes("teax"));
   });
 
   it("getPersistedStateDir isolates test state and respects HOOK_STATE_DIR", () => {
@@ -1214,7 +1278,7 @@ describe("two-tier spawn authority guard (#573)", () => {
         );
         assert.equal(res.ok, false);
         assert.ok(res.error?.includes("two-tier spawn authority"));
-        assert.ok(res.error?.includes("paseo send --steer --no-wait <orchId>"));
+        assert.ok(res.error?.includes("paseo send --no-wait <orchId>"));
         assert.ok(res.error?.includes("POST <hook-host>:<port>/orchestrator"));
         assert.equal(created, false);
       } finally {
@@ -1228,6 +1292,21 @@ describe("two-tier spawn authority guard (#573)", () => {
       let createdPayload: any = null;
       const mockContext: any = {
         paseo: {
+          workspaces: {
+            list: async () => ({
+              entries: [
+                {
+                  id: "wks_paseo_573",
+                  projectId: "prj_paseo_573",
+                  projectRootPath: "/home/user/code/paseo",
+                  workspaceDirectory: "/home/user/code/paseo",
+                  workspaceKind: "checkout",
+                  name: "Paseo",
+                  project: { projectKey: "remote:forge.mrs.uppidi.com:222/xpufx-org/paseo" },
+                },
+              ],
+            }),
+          },
           agents: {
             create: async (opts: any) => {
               createdPayload = opts;
@@ -1237,34 +1316,13 @@ describe("two-tier spawn authority guard (#573)", () => {
         },
       };
 
-      setExecFileAsyncForTest(async (cmd: string, args: readonly string[]) => {
-        if (cmd === "paseo" && args[0] === "workspace" && args[1] === "ls") {
-          return {
-            stdout: JSON.stringify([
-              {
-                workspaceId: "wks_paseo_573",
-                project: "paseo",
-                name: "Paseo",
-                isolation: "local",
-                cwd: "/home/user/code/paseo",
-              },
-            ]),
-          };
-        }
-        return { stdout: "[]" };
-      });
-
-      try {
-        const res = await handleUppidiAddOrchestrator(
-          { repo: "xpufx-org/paseo", callerAgentId: DESK },
-          mockContext
-        );
-        assert.equal(res.ok, true);
-        assert.equal(res.agentId, "orch-desk-573");
-        assert.equal(createdPayload.workspaceId, "wks_paseo_573");
-      } finally {
-        setExecFileAsyncForTest(null);
-      }
+      const res = await handleUppidiAddOrchestrator(
+        { repo: "xpufx-org/paseo", callerAgentId: DESK },
+        mockContext
+      );
+      assert.equal(res.ok, true);
+      assert.equal(res.agentId, "orch-desk-573");
+      assert.equal(createdPayload.workspaceId, "wks_paseo_573");
     });
   });
 
@@ -1272,6 +1330,21 @@ describe("two-tier spawn authority guard (#573)", () => {
     await withPersistedFrontDesk(async () => {
       const mockContext: any = {
         paseo: {
+          workspaces: {
+            list: async () => ({
+              entries: [
+                {
+                  id: "wks_aur_573",
+                  projectId: "prj_aur_573",
+                  projectRootPath: "/home/user/code/aur-automation",
+                  workspaceDirectory: "/home/user/code/aur-automation",
+                  workspaceKind: "checkout",
+                  name: "main",
+                  project: { projectKey: "remote:forge.mrs.uppidi.com:222/xpufx-org/aur-automation" },
+                },
+              ],
+            }),
+          },
           agents: {
             list: async () => ({ entries: [] }),
             create: async () => ({ agent: { id: "orch-self-573" } }),
@@ -1279,17 +1352,12 @@ describe("two-tier spawn authority guard (#573)", () => {
         },
       };
 
-      setExecFileAsyncForTest(async () => ({ stdout: "[]" }));
-      try {
-        const res = await handleUppidiAddOrchestrator(
-          { repo: "xpufx-org/aur-automation" },
-          mockContext
-        );
-        assert.equal(res.ok, true);
-        assert.equal(res.agentId, "orch-self-573");
-      } finally {
-        setExecFileAsyncForTest(null);
-      }
+      const res = await handleUppidiAddOrchestrator(
+        { repo: "xpufx-org/aur-automation" },
+        mockContext
+      );
+      assert.equal(res.ok, true);
+      assert.equal(res.agentId, "orch-self-573");
     });
   });
 
@@ -1305,7 +1373,7 @@ describe("two-tier spawn authority guard (#573)", () => {
         {} as any
       );
       assert.equal(res.ok, false);
-      assert.ok(res.error?.includes("paseo send --steer --no-wait <orchId>"));
+      assert.ok(res.error?.includes("paseo send --no-wait <orchId>"));
       assert.ok(res.error?.includes("POST <hook-host>:<port>/orchestrator"));
     });
   });
@@ -1332,6 +1400,196 @@ describe("two-tier spawn authority guard (#573)", () => {
         setExecFileAsyncForTest(null);
       }
     });
+  });
+});
+
+// ── Provider concurrency limits (#1198) ────────────────────────────────────
+
+describe("normalizeProviderKey (#1198)", () => {
+  it("strips model suffix from compound keys", () => {
+    assert.equal(normalizeProviderKey("openai/gpt-4o"), "openai");
+    assert.equal(normalizeProviderKey("anthropic/claude-sonnet-4-20250514"), "anthropic");
+    assert.equal(normalizeProviderKey("opencode/foo"), "opencode");
+  });
+
+  it("returns the input when no slash present", () => {
+    assert.equal(normalizeProviderKey("openai"), "openai");
+    assert.equal(normalizeProviderKey("anthropic"), "anthropic");
+  });
+
+  it("handles null/undefined/empty gracefully", () => {
+    assert.equal(normalizeProviderKey(null), "");
+    assert.equal(normalizeProviderKey(undefined), "");
+    assert.equal(normalizeProviderKey(""), "");
+    assert.equal(normalizeProviderKey("  "), "");
+  });
+});
+
+describe("getActiveAgentCountByProvider (#1198)", () => {
+  const mockAgents = [
+    { id: "a1", provider: "openai/gpt-4o", status: "running" },
+    { id: "a2", provider: "openai/gpt-3.5", status: "running" },
+    { id: "a3", provider: "anthropic/claude-sonnet", status: "idle" },
+    { id: "a4", provider: "anthropic/claude-opus", lifecycleState: "running" },
+    { id: "a5", provider: "openai/gpt-4o", deterministicState: "working" },
+    { id: "a6", provider: "openai/gpt-4o", deterministicState: "running" },
+    { id: "a7", provider: null, status: "running" },
+    { id: "a8", status: "running" },
+  ];
+
+  it("counts running agents per provider", () => {
+    const counts = getActiveAgentCountByProvider(mockAgents as any);
+    assert.deepStrictEqual(counts, {
+      openai: 4, // a1 (running), a2 (running), a5 (working), a6 (running)
+      anthropic: 1, // a4 (lifecycleState=running)
+    });
+  });
+
+  it("normalizes compound provider/model to root provider", () => {
+    const agents = [
+      { id: "x1", provider: "openai/gpt-4o", status: "running" },
+      { id: "x2", provider: "openai/gpt-3.5", status: "running" },
+    ];
+    const counts = getActiveAgentCountByProvider(agents as any);
+    assert.deepStrictEqual(counts, { openai: 2 });
+  });
+
+  it("excludes non-running agents", () => {
+    const agents = [
+      { id: "b1", provider: "openai", status: "idle" },
+      { id: "b2", provider: "openai", status: "error" },
+      { id: "b3", provider: "openai", lifecycleState: "idle" },
+    ];
+    const counts = getActiveAgentCountByProvider(agents as any);
+    assert.deepStrictEqual(counts, {});
+  });
+
+  it("skips agents without a provider", () => {
+    const agents = [
+      { id: "c1", status: "running" },
+      { id: "c2", provider: null, status: "running" },
+    ];
+    const counts = getActiveAgentCountByProvider(agents as any);
+    assert.deepStrictEqual(counts, {});
+  });
+
+  it("returns empty record for empty array", () => {
+    const counts = getActiveAgentCountByProvider([]);
+    assert.deepStrictEqual(counts, {});
+  });
+});
+
+describe("spawn rejection when provider concurrency limit is reached (#1198)", () => {
+  it("handleSpawnAgent returns provider_concurrency_limit error code", async () => {
+    const { handleSpawnAgent } = await import("./hook-router.js");
+
+    // Create a mock agent list where codex has 4 active agents (at the limit)
+    const mockAgents = Array.from({ length: 4 }, (_, i) => ({
+      id: `codex-agent-${i}`,
+      provider: "codex/gpt-5.6-terra",
+      status: "running",
+    }));
+
+    const paseoApi = {
+      agents: {
+        list: async () => ({ entries: mockAgents }),
+      },
+    };
+
+    // Set up settings with a limit of 4 for codex
+    const { getUppidiFleetSettingsStorage } = await import("./settings.js");
+    const storage = getUppidiFleetSettingsStorage();
+    const original = storage.read();
+    try {
+      storage.update(() => ({
+        ...original,
+        providerConcurrencyLimits: { codex: 4 },
+      }));
+
+      const result = await handleSpawnAgent(
+        { role: "worker", repo: "xpufx-org/paseo", issueIndex: 100, model: "codex/gpt-5.6-terra" },
+        { paseo: paseoApi as any }
+      );
+
+      assert.equal(result.ok, false);
+      assert.equal(result.errorCode, "provider_concurrency_limit");
+      assert.ok(result.error?.includes("Concurrency limit"));
+      assert.ok(result.error?.includes("codex"));
+    } finally {
+      storage.update(() => original);
+    }
+  });
+
+  it("allows spawn when below the concurrency limit", async () => {
+    const { handleSpawnAgent } = await import("./hook-router.js");
+
+    // Only 2 active codex agents, limit is 4
+    const mockAgents = Array.from({ length: 2 }, (_, i) => ({
+      id: `codex-agent-${i}`,
+      provider: "codex/gpt-5.6-terra",
+      status: "running",
+    }));
+
+    const paseoApi = {
+      agents: {
+        list: async () => ({ entries: mockAgents }),
+      },
+    };
+
+    const { getUppidiFleetSettingsStorage } = await import("./settings.js");
+    const storage = getUppidiFleetSettingsStorage();
+    const original = storage.read();
+    try {
+      storage.update(() => ({
+        ...original,
+        providerConcurrencyLimits: { codex: 4 },
+      }));
+
+      const result = await handleSpawnAgent(
+        { role: "worker", repo: "xpufx-org/paseo", issueIndex: 100, model: "codex/gpt-5.6-terra" },
+        { paseo: paseoApi as any }
+      );
+
+      // Should not be blocked by concurrency limit; may fail due to no spawn mechanism
+      assert.notEqual(result.errorCode, "provider_concurrency_limit");
+    } finally {
+      storage.update(() => original);
+    }
+  });
+
+  it("allows spawn when no limit is configured for the provider", async () => {
+    const { handleSpawnAgent } = await import("./hook-router.js");
+
+    const mockAgents = Array.from({ length: 10 }, (_, i) => ({
+      id: `unknown-provider-agent-${i}`,
+      provider: "unknown-provider/model",
+      status: "running",
+    }));
+
+    const paseoApi = {
+      agents: {
+        list: async () => ({ entries: mockAgents }),
+      },
+    };
+
+    const { getUppidiFleetSettingsStorage } = await import("./settings.js");
+    const storage = getUppidiFleetSettingsStorage();
+    const original = storage.read();
+    try {
+      storage.update(() => ({
+        ...original,
+        providerConcurrencyLimits: { codex: 4 }, // unknown-provider not configured
+      }));
+
+      const result = await handleSpawnAgent(
+        { role: "worker", repo: "xpufx-org/paseo", issueIndex: 100, model: "unknown-provider/some-model" },
+        { paseo: paseoApi as any }
+      );
+
+      assert.notEqual(result.errorCode, "provider_concurrency_limit");
+    } finally {
+      storage.update(() => original);
+    }
   });
 });
 

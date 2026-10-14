@@ -2,7 +2,86 @@ import { z } from "zod";
 import { defineContract, defineSettingsContract } from "paseo-plugin-helper/shared";
 import { DEFAULT_FORGEJO_HOST } from "./repo-identity.js";
 
+// ──────────────────────────────────────────────────────────────────────────
+// Unified fleet control model (#1034)
+// ──────────────────────────────────────────────────────────────────────────
+
+/** Canonical fleet lifecycle modes (§4.1). `HOLD` is accepted as a request alias for `HALT` (§4.3). */
+export const FleetModeSchema = z.enum(["RUN", "DRAIN", "HALT", "STOP"]);
+export type FleetMode = z.infer<typeof FleetModeSchema>;
+
+/** Accepts `HOLD` and coerces it to `HALT` per §4.3. */
+export function coerceFleetMode(input: string): FleetMode {
+  const upper = input.toUpperCase();
+  if (upper === "HOLD") return "HALT";
+  const parsed = FleetModeSchema.safeParse(upper);
+  if (parsed.success) return parsed.data;
+  // Fall back to RUN on unknown input rather than throwing
+  return "RUN";
+}
+
+/** Six event classes that gate delivery per mode (§5.1 / §5.2). */
+export const EventClassSchema = z.enum([
+  "sos",
+  "administrative",
+  "health",
+  "attention",
+  "work",
+  "noise",
+]);
+export type EventClass = z.infer<typeof EventClassSchema>;
+
+/** Per-class delivery action used in event-class policy overrides. */
+export const EventClassActionSchema = z.enum([
+  "deliver",
+  "hold",
+  "detect",
+  "drop",
+]);
+export type EventClassAction = z.infer<typeof EventClassActionSchema>;
+
+/** Default event-class policy for each fleet mode (§5.2). */
+export const defaultEventClassPolicyByMode: Record<FleetMode, Partial<Record<EventClass, EventClassAction>>> = {
+  RUN: {
+    sos: "deliver",
+    administrative: "deliver",
+    attention: "deliver",
+    health: "detect",
+    work: "deliver",
+    noise: "drop",
+  },
+  DRAIN: {
+    sos: "deliver",
+    administrative: "deliver",
+    attention: "deliver",
+    health: "detect",
+    work: "hold",
+    noise: "drop",
+  },
+  HALT: {
+    sos: "deliver",
+    administrative: "deliver",
+    attention: "deliver",
+    health: "detect",
+    work: "hold",
+    noise: "drop",
+  },
+  STOP: {
+    sos: "deliver",
+    administrative: "deliver",
+    attention: "deliver",
+    health: "drop",
+    work: "hold",
+    noise: "drop",
+  },
+};
+
+// Dual-read: canonical numberless spellings (platform#247) plus the legacy
+// numeric ones during the migration.
 export const AttentionLabelSchema = z.enum([
+  "attention/orchestrator",
+  "attention/agent",
+  "attention/user",
   "attention/0-orchestrator",
   "attention/1-agent",
   "attention/2-user",
@@ -10,6 +89,11 @@ export const AttentionLabelSchema = z.enum([
 export type AttentionLabel = z.infer<typeof AttentionLabelSchema>;
 
 export const StateLabelSchema = z.enum([
+  "state/triage",
+  "state/wip",
+  "state/review",
+  "state/verify",
+  "state/done",
   "state/0-triage",
   "state/1-wip",
   "state/2-review",
@@ -24,7 +108,7 @@ export const UppidiIssueSchema = z.object({
   state: z.string(),
   repo: z.string(),
   status: z.enum(["Backlog", "In progress", "Review", "Done"]),
-  attention: AttentionLabelSchema.default("attention/1-agent"),
+  attention: AttentionLabelSchema.default("attention/agent"),
   branch: z.string().optional(),
   comments: z.number().default(0),
   labels: z.array(z.string()).default([]),
@@ -128,6 +212,26 @@ export const HookStatusOutputSchema = z.object({
     .nullable()
     .optional(),
   paused: z.array(z.string()).default([]),
+  // Unified fleet control mode (#1034)
+  mode: FleetModeSchema.default("RUN"),
+  /** Per-class delivery overrides; absent entries fall back to the default for `mode`. */
+  eventClassPolicy: z
+    .record(z.string(), EventClassActionSchema)
+    .refine(
+      (obj) => {
+        for (const key of Object.keys(obj)) {
+          if (!EventClassSchema.safeParse(key).success) return false;
+        }
+        return true;
+      },
+      { message: "eventClassPolicy keys must be valid event classes" },
+    )
+    .optional(),
+  // Canonical ALL HALT state (#994) and the teardown window that activates it.
+  // The dashboard banner and RESUME guard read these off the status snapshot.
+  // Derived alias — see §8.2: `halted` is true when `mode === "HALT"`.
+  halted: z.boolean().default(false),
+  teardownInProgress: z.boolean().default(false),
   totalQueued: z.number().default(0),
   repoCount: z.number().default(0),
   // Cross-plugin presence, resolved per call from the daemon (never file
@@ -316,8 +420,27 @@ export const uppidiHookLogTailContract = defineContract({
 });
 
 // Agents & Fleet Tree View (Issue #367, Issue #385)
-export const UppidiAgentCategorySchema = z.enum(["front-desk", "orchestrator", "worker"]);
+//
+// `coding-agent` is the canonical delegated-worker category (#1126). `worker`
+// is retained as a legacy alias so older payloads, saved state and external
+// callers keep validating; use `isCodingAgentCategory` to match either spelling.
+export const CODING_AGENT_CATEGORY = "coding-agent" as const;
+export const UppidiAgentCategorySchema = z.enum([
+  "front-desk",
+  "orchestrator",
+  "coding-agent",
+  "worker",
+]);
 export type UppidiAgentCategory = z.infer<typeof UppidiAgentCategorySchema>;
+
+/**
+ * True for the canonical `coding-agent` category or its legacy `worker` alias
+ * (#1126). Accepts any casing/whitespace so label-derived values match too.
+ */
+export function isCodingAgentCategory(category?: string | null): boolean {
+  const normalized = String(category ?? "").trim().toLowerCase();
+  return normalized === CODING_AGENT_CATEGORY || normalized === "worker";
+}
 
 export const DeterministicAgentStateSchema = z.enum([
   "working",                // Running with attributed work: e.g. #385
@@ -410,6 +533,7 @@ export function getAgentCategoryIcon(category?: UppidiAgentCategory | string): s
       return "Inbox";
     case "orchestrator":
       return "Network";
+    case "coding-agent":
     case "worker":
       return "Terminal";
     default:
@@ -749,7 +873,23 @@ export const UppidiAgentSchema = z.object({
   id: z.string(),
   shortId: z.string(),
   name: z.string(),
+  /**
+   * Canonical role. When the hook router registry is reachable this is resolved
+   * from `GET /frontdesk` / `GET /orchestrators`, never from the agent name;
+   * otherwise it falls back to the name heuristic (#1078).
+   */
   category: UppidiAgentCategorySchema,
+  /**
+   * Where `category` came from: the router registry or the display-name
+   * heuristic. `name-heuristic` is display-only and not authoritative (#1078).
+   */
+  roleSource: z.enum(["registry", "name-heuristic"]).optional(),
+  /** Name-derived category retained for divergence display; never authoritative (#1078). */
+  nameCategory: UppidiAgentCategorySchema.optional(),
+  /** True when the name heuristic disagrees with the registry role (#1078). */
+  roleDivergent: z.boolean().optional(),
+  /** Registry repo key this agent is the orchestrator for, from `GET /orchestrators` (#1078). */
+  registryRepoKey: z.string().optional(),
   provider: z.string().optional(),
   model: z.string().nullable().optional(),
   status: z.string(),
@@ -782,7 +922,7 @@ export const UppidiAgentSchema = z.object({
   worktree: z.string().optional(),
   project: z.string().optional(),
   isEnrolled: z.boolean().optional(),
-  isMuted: z.boolean().optional(),
+  isPaused: z.boolean().optional(),
   hasOrchestrator: z.boolean().optional(),
   queuedHooksCount: z.number().optional(),
   isDetached: z.boolean().optional(),
@@ -807,7 +947,7 @@ export interface UppidiAgentTreeNode {
   depth: number;
   children: UppidiAgentTreeNode[];
   isEnrolled?: boolean;
-  isMuted?: boolean;
+  isPaused?: boolean;
   hasOrchestrator?: boolean;
   queuedHooksCount?: number;
   isDetached?: boolean;
@@ -819,21 +959,41 @@ export const UppidiAgentTreeNodeSchema: z.ZodType<UppidiAgentTreeNode> = z.lazy(
     depth: z.number(),
     children: z.array(UppidiAgentTreeNodeSchema).default([]),
     isEnrolled: z.boolean().optional(),
-    isMuted: z.boolean().optional(),
+    isPaused: z.boolean().optional(),
     hasOrchestrator: z.boolean().optional(),
     queuedHooksCount: z.number().optional(),
     isDetached: z.boolean().optional(),
   })
 );
 
+export const AgentRoleDivergenceSchema = z.object({
+  agentId: z.string(),
+  agentName: z.string(),
+  /** Category implied by the display name only. */
+  nameCategory: UppidiAgentCategorySchema,
+  /** Role the canonical registry actually assigns. */
+  registryRole: UppidiAgentCategorySchema,
+  reason: z.string(),
+});
+export type AgentRoleDivergence = z.infer<typeof AgentRoleDivergenceSchema>;
+
 export const UppidiAgentsOutputSchema = z.object({
   ok: z.boolean(),
+  /**
+   * True when the hook router registry was reachable, so `category`, `frontDesk`
+   * and `orchestrators` are registry-backed. False means they are the
+   * display-name heuristic and must be shown as display-only (#1078).
+   */
+  registryAuthoritative: z.boolean().default(false),
+  /** Agents whose display name contradicts their registry role (#1078). */
+  roleDivergences: z.array(AgentRoleDivergenceSchema).default([]),
   frontDesk: z.array(UppidiAgentSchema).default([]),
   orchestrators: z.array(UppidiAgentSchema).default([]),
   workers: z.array(UppidiAgentSchema).default([]),
   tree: z.array(UppidiAgentTreeNodeSchema).default([]),
   enrolledRepos: z.array(z.string()).default([]),
-  mutedRepos: z.array(z.string()).default([]),
+  pausedRepos: z.array(z.string()).default([]),
+  kanbanOnlyRepos: z.array(z.string()).default([]),
   repoQueuedHooks: z.record(z.string(), z.number()).default({}),
   totalCount: z.number().default(0),
   runningCount: z.number().default(0),
@@ -843,12 +1003,7 @@ export const UppidiAgentsOutputSchema = z.object({
 });
 export type UppidiAgentsOutput = z.infer<typeof UppidiAgentsOutputSchema>;
 
-export const uppidiAgentsContract = defineContract({
-  name: "uppidi-fleet.agents",
-  description: "Get active Paseo agents grouped into tree hierarchy: Frontdesk, Orchestrators, and Workers",
-  input: z.object({}),
-  output: UppidiAgentsOutputSchema,
-});
+export { fleetRosterContract } from "@xpufx/backend-fleet/shared";
 
 // Role Model Configuration (Issue #371)
 export const RoleModelConfigSchema = z.object({
@@ -894,12 +1049,49 @@ export const uppidiSetRoleModelContract = defineContract({
   output: UppidiSetRoleModelOutputSchema,
 });
 
+// Fleet model-resolution alerts (#1011). A persistent record raised when the
+// configured orchestrator chain cannot be satisfied by any live enabled
+// provider: the spawn fails loud and the operator sees this banner instead of a
+// silent hardcoded substitution.
+export const DroppedModelCandidateSchema = z.object({
+  key: z.string(),
+  provider: z.string(),
+  model: z.string(),
+  reason: z.enum(["provider_disabled", "quota_exhausted"]),
+});
+export type DroppedModelCandidate = z.infer<typeof DroppedModelCandidateSchema>;
+
+export const FleetModelAlertSchema = z.object({
+  repo: z.string(),
+  role: z.string().default("orchestrator"),
+  message: z.string(),
+  configuredChain: z.array(z.string()).default([]),
+  dropped: z.array(DroppedModelCandidateSchema).default([]),
+  availableProviders: z.array(z.string()).nullable().default(null),
+  createdAt: z.string(),
+});
+export type FleetModelAlert = z.infer<typeof FleetModelAlertSchema>;
+
+export const UppidiFleetAlertsOutputSchema = z.object({
+  ok: z.boolean(),
+  alerts: z.array(FleetModelAlertSchema).default([]),
+  error: z.string().optional(),
+});
+export type UppidiFleetAlertsOutput = z.infer<typeof UppidiFleetAlertsOutputSchema>;
+
+export const uppidiFleetAlertsContract = defineContract({
+  name: "uppidi-fleet.model-alerts",
+  description: "List persistent fleet model-resolution alerts raised on total chain exhaustion (#1011)",
+  input: z.object({}),
+  output: UppidiFleetAlertsOutputSchema,
+});
+
 // Fleet Skills (Issue #883)
 export const FleetSkillIdSchema = z.enum(["orchestrator", "front-desk", "coding-agent"]);
 export type FleetSkillId = z.infer<typeof FleetSkillIdSchema>;
 
-/** Where the effective skill text was read from: a saved override or the bundled default. */
-export const SkillOriginSchema = z.enum(["override", "bundled"]);
+/** Where the effective skill text was read from: a saved override, the canonical `platform/skills` copy, or the bundled fallback. */
+export const SkillOriginSchema = z.enum(["override", "canonical", "bundled"]);
 export type SkillOrigin = z.infer<typeof SkillOriginSchema>;
 
 export const FleetSkillSchema = z.object({
@@ -921,7 +1113,7 @@ export type UppidiSkillsOutput = z.infer<typeof UppidiSkillsOutputSchema>;
 
 export const uppidiSkillsContract = defineContract({
   name: "uppidi-fleet.skills",
-  description: "Get every fleet skill with its effective content and origin (override or bundled)",
+  description: "Get every fleet skill with its effective content and origin (override, canonical, or bundled)",
   input: z.object({}),
   output: UppidiSkillsOutputSchema,
 });
@@ -998,7 +1190,12 @@ export type UppidiLocalRunner = z.infer<typeof UppidiLocalRunnerSchema>;
 export const RunnerSourceSchema = z.object({
   /** `repo` / `org` / `user` for Forgejo scopes, `local` for podman. */
   key: z.string(),
-  kind: z.enum(["forgejo-runners", "local-containers"]),
+  kind: z.enum([
+    "forgejo-runners",
+    "local-containers",
+    "scaler-telemetry",
+    "admin-runners",
+  ]),
   /** API path or command that was queried, for display. */
   endpoint: z.string().optional(),
   ok: z.boolean(),
@@ -1070,6 +1267,38 @@ export const uppidiRunnersContract = defineContract({
   description: "Get CI runner fleet status and labels for repository actions",
   input: z.object({}),
   output: UppidiRunnersOutputSchema,
+});
+
+export const UppidiFleetScaleHostSchema = z.object({
+  ok: z.boolean(),
+  cpuPct: z.number().optional(),
+  memoryPct: z.number().optional(),
+  runnerCount: z.number().optional(),
+  onlineCount: z.number().optional(),
+  error: z.string().optional(),
+});
+export type UppidiFleetScaleHost = z.infer<typeof UppidiFleetScaleHostSchema>;
+
+export const uppidiFleetScaleHostContract = defineContract({
+  name: "uppidi-fleet.scale-host",
+  description: "Get scaler host telemetry (CPU, memory, runner capacity)",
+  input: z.object({}),
+  output: UppidiFleetScaleHostSchema,
+});
+
+export const UppidiFleetDrainHostSchema = z.object({
+  ok: z.boolean(),
+  dinDRunning: z.boolean().optional(),
+  dinDHealthy: z.boolean().optional(),
+  error: z.string().optional(),
+});
+export type UppidiFleetDrainHost = z.infer<typeof UppidiFleetDrainHostSchema>;
+
+export const uppidiFleetDrainHostContract = defineContract({
+  name: "uppidi-fleet.drain-host",
+  description: "Get DinD (Docker-in-Docker) status",
+  input: z.object({}),
+  output: UppidiFleetDrainHostSchema,
 });
 
 // Autonomous Fleet Capability & Benchmark Metrics (Issue #373 / Platform #18)
@@ -1165,6 +1394,70 @@ export const uppidiFleetMetricsContract = defineContract({
   description: "Get autonomous fleet capability and task benchmark metrics matrix (platform#18)",
   input: UppidiFleetMetricsInputSchema,
   output: UppidiFleetMetricsOutputSchema,
+});
+
+// In-Process Telemetry & Composite Indices Contracts (#1173 / platform#350)
+export const ModelCompositeIndicesSchema = z.object({
+  fdsi: z.number().default(0),
+  workerRoi: z.number().default(0),
+  orchestratorVigilance: z.number().default(0),
+  toolThrashingIndex: z.number().default(0),
+  contextDecayRisk: z.number().default(0),
+});
+export type ModelCompositeIndices = z.infer<typeof ModelCompositeIndicesSchema>;
+
+export const ModelTelemetrySummarySchema = z.object({
+  provider: z.string(),
+  model: z.string(),
+  role: z.string().optional(),
+  window: z.enum(["7d", "30d", "all"]).default("7d"),
+  turnsCompleted: z.number().default(0),
+  turnsFailed: z.number().default(0),
+  turnsInterrupted: z.number().default(0),
+  totalTokens: z.number().default(0),
+  inputTokens: z.number().default(0),
+  outputTokens: z.number().default(0),
+  cachedTokens: z.number().default(0),
+  reasoningTokens: z.number().default(0),
+  medianTokensPerSecond: z.number().default(0),
+  medianTurnDurationMs: z.number().default(0),
+  medianContextUtilizationPct: z.number().default(0),
+  cacheHitRatioPct: z.number().default(0),
+  costUsd: z.number().default(0),
+  compositeIndices: ModelCompositeIndicesSchema.default({
+    fdsi: 0,
+    workerRoi: 0,
+    orchestratorVigilance: 0,
+    toolThrashingIndex: 0,
+    contextDecayRisk: 0,
+  }),
+  lastTurnAt: z.string().optional(),
+});
+export type ModelTelemetrySummary = z.infer<typeof ModelTelemetrySummarySchema>;
+
+export const UppidiModelTelemetryQueryInputSchema = z.object({
+  provider: z.string().optional(),
+  model: z.string().optional(),
+  window: z.enum(["7d", "30d", "all"]).default("7d"),
+  role: z.string().optional(),
+});
+export type UppidiModelTelemetryQueryInput = z.infer<typeof UppidiModelTelemetryQueryInputSchema>;
+
+export const UppidiModelTelemetryQueryOutputSchema = z.object({
+  ok: z.boolean(),
+  window: z.enum(["7d", "30d", "all"]),
+  models: z.array(ModelTelemetrySummarySchema).default([]),
+  recordsCount: z.number().default(0),
+  updatedAt: z.string(),
+  error: z.string().optional(),
+});
+export type UppidiModelTelemetryQueryOutput = z.infer<typeof UppidiModelTelemetryQueryOutputSchema>;
+
+export const uppidiModelTelemetryQueryContract = defineContract({
+  name: "uppidi-fleet.model-telemetry-query",
+  description: "Query in-process telemetry tap, model profiling matrix, and metrics rollup matching composite index schemas",
+  input: UppidiModelTelemetryQueryInputSchema,
+  output: UppidiModelTelemetryQueryOutputSchema,
 });
 
 // Agent Archive Contracts (Issue #402)
@@ -1312,27 +1605,61 @@ export const uppidiReplaceOrchestratorContract = defineContract({
   output: UppidiReplaceOrchestratorOutputSchema,
 });
 
-export const UppidiToggleRepoMuteInputSchema = z.object({
+export const UppidiToggleRepoPauseInputSchema = z.object({
   repo: z.string(),
-  muted: z.boolean().optional(),
+  paused: z.boolean().optional(),
 });
-export type UppidiToggleRepoMuteInput = z.infer<typeof UppidiToggleRepoMuteInputSchema>;
+export type UppidiToggleRepoPauseInput = z.infer<typeof UppidiToggleRepoPauseInputSchema>;
 
-export const UppidiToggleRepoMuteOutputSchema = z.object({
+export const UppidiToggleRepoPauseOutputSchema = z.object({
   ok: z.boolean(),
   repo: z.string(),
-  isMuted: z.boolean(),
-  mutedRepos: z.array(z.string()).default([]),
+  isPaused: z.boolean(),
+  pausedRepos: z.array(z.string()).default([]),
   message: z.string().optional(),
   error: z.string().optional(),
 });
-export type UppidiToggleRepoMuteOutput = z.infer<typeof UppidiToggleRepoMuteOutputSchema>;
+export type UppidiToggleRepoPauseOutput = z.infer<typeof UppidiToggleRepoPauseOutputSchema>;
 
-export const uppidiToggleRepoMuteContract = defineContract({
-  name: "uppidi-fleet.toggle-repo-mute",
-  description: "Toggle per-repository webhook muting / circuit breaker",
-  input: UppidiToggleRepoMuteInputSchema,
-  output: UppidiToggleRepoMuteOutputSchema,
+export const uppidiToggleRepoPauseContract = defineContract({
+  name: "uppidi-fleet.toggle-repo-pause",
+  description: "Pause or unpause per-repository webhook processing / circuit breaker",
+  input: UppidiToggleRepoPauseInputSchema,
+  output: UppidiToggleRepoPauseOutputSchema,
+});
+
+// Repository Automation Tier (#1282)
+export const AutomationTierSchema = z.enum(["full-active", "paused", "kanban-only"]);
+export type AutomationTierValue = z.infer<typeof AutomationTierSchema>;
+
+export const UppidiToggleRepoAutomationTierInputSchema = z.object({
+  repo: z.string(),
+  tier: AutomationTierSchema,
+});
+export type UppidiToggleRepoAutomationTierInput = z.infer<
+  typeof UppidiToggleRepoAutomationTierInputSchema
+>;
+
+export const UppidiToggleRepoAutomationTierOutputSchema = z.object({
+  ok: z.boolean(),
+  repo: z.string(),
+  tier: AutomationTierSchema,
+  isPaused: z.boolean().default(false),
+  isKanbanOnly: z.boolean().default(false),
+  pausedRepos: z.array(z.string()).default([]),
+  kanbanOnlyRepos: z.array(z.string()).default([]),
+  message: z.string().optional(),
+  error: z.string().optional(),
+});
+export type UppidiToggleRepoAutomationTierOutput = z.infer<
+  typeof UppidiToggleRepoAutomationTierOutputSchema
+>;
+
+export const uppidiToggleRepoAutomationTierContract = defineContract({
+  name: "uppidi-fleet.toggle-repo-automation-tier",
+  description: "Set a repository's 3-tier automation posture (full-active, paused, kanban-only)",
+  input: UppidiToggleRepoAutomationTierInputSchema,
+  output: UppidiToggleRepoAutomationTierOutputSchema,
 });
 
 // Repository Enrollment (Issue #867)
@@ -1345,7 +1672,9 @@ export const UppidiRepoSchema = z.object({
   url: z.string(),
   private: z.boolean(),
   enrolled: z.boolean(),
-  muted: z.boolean(),
+  paused: z.boolean(),
+  /** 3-tier automation posture (#1282). */
+  automationTier: AutomationTierSchema.default("full-active"),
   hasOrchestrator: z.boolean().default(false).optional(),
   queueDepth: z.number().default(0).optional(),
 });
@@ -1365,7 +1694,7 @@ export type UppidiReposOutput = z.infer<typeof UppidiReposOutputSchema>;
 
 export const uppidiReposContract = defineContract({
   name: "uppidi-fleet.repos",
-  description: "List repositories from Forgejo with enrollment and mute status",
+  description: "List repositories from Forgejo with enrollment and pause status",
   input: UppidiReposInputSchema,
   output: UppidiReposOutputSchema,
 });
@@ -1420,6 +1749,8 @@ export type FleetTeardownTarget = z.infer<typeof FleetTeardownTargetSchema>;
 export const FleetTeardownInputSchema = z.object({
   targets: z.array(FleetTeardownTargetSchema).min(1),
   confirm: z.literal(true),
+  drain: z.boolean().optional(),
+  drainTimeoutMs: z.number().int().positive().default(30000).optional(),
 });
 export type FleetTeardownInput = z.infer<typeof FleetTeardownInputSchema>;
 
@@ -1471,12 +1802,297 @@ export const uppidiFleetResetStateContract = defineContract({
   output: FleetResetStateOutputSchema,
 });
 
+// Fleet HALT / RESUME (Issue #1013) — operator controls over the canonical ALL
+// HALT from #994. The input confirm literal mirrors teardown/reset so the
+// dashboard must arm an explicit confirmation before freezing the fleet.
+export const FleetHaltInputSchema = z.object({
+  confirm: z.literal(true),
+});
+export type FleetHaltInput = z.infer<typeof FleetHaltInputSchema>;
+
+export const FleetHaltOutputSchema = z.object({
+  ok: z.boolean(),
+  halted: z.boolean().default(false),
+  alreadyHalted: z.boolean().default(false),
+  teardownInProgress: z.boolean().default(false),
+  message: z.string().optional(),
+  error: z.string().optional(),
+});
+export type FleetHaltOutput = z.infer<typeof FleetHaltOutputSchema>;
+
+export const uppidiFleetHaltContract = defineContract({
+  name: "uppidi-fleet.fleet-halt",
+  description:
+    "Engage the canonical ALL HALT: pause queue ingress/processing, stop background loops, suppress auto-provisioning",
+  input: FleetHaltInputSchema,
+  output: FleetHaltOutputSchema,
+});
+
+export const FleetResumeInputSchema = z.object({
+  confirm: z.literal(true),
+});
+export type FleetResumeInput = z.infer<typeof FleetResumeInputSchema>;
+
+export const FleetResumeOutputSchema = z.object({
+  ok: z.boolean(),
+  halted: z.boolean().default(false),
+  teardownInProgress: z.boolean().default(false),
+  message: z.string().optional(),
+  error: z.string().optional(),
+});
+export type FleetResumeOutput = z.infer<typeof FleetResumeOutputSchema>;
+
+export const uppidiFleetResumeContract = defineContract({
+  name: "uppidi-fleet.fleet-resume",
+  description: "Clear the canonical ALL HALT and resume queue ingress/processing",
+  input: FleetResumeInputSchema,
+  output: FleetResumeOutputSchema,
+});
+
+// Agent Rotation Policy (Issue #1019)
+//
+// Provider-independent rotation of the long-lived roles. Policy is declared
+// here so it can live in fleet settings (hot-applied, no redeploy) and be
+// layered globally -> per-role -> per-repo. The evaluator itself is in
+// `server/rotation.ts`; this file only owns the shape and defaults contract.
+export const RotationRoleSchema = z.enum(["orchestrator", "front-desk", "auditor", "coding-agent"]);
+export type RotationRole = z.infer<typeof RotationRoleSchema>;
+
+export const RotationRolePolicySchema = z.object({
+  enabled: z.boolean().optional(),
+  maxAgeMs: z.number().int().positive().optional(),
+  maxTurns: z.number().int().positive().optional(),
+  /** Fraction of the context window (0..1) at which rotation is triggered. */
+  tokenPressure: z.number().min(0).max(1).optional(),
+  /** Sliding window for repeated failures/timeouts. */
+  failureWindowMs: z.number().int().positive().optional(),
+  failureThreshold: z.number().int().positive().optional(),
+  /** Minimum age of the previous automatic rotation before another can fire. */
+  cooldownMs: z.number().int().positive().optional(),
+  /**
+   * A turn younger than this is shielded from automatic rotation. An older
+   * mid-turn is treated as a stalled runaway and becomes rotatable (#1265).
+   */
+  midTurnImmunityMs: z.number().int().positive().optional(),
+});
+export type RotationRolePolicy = z.infer<typeof RotationRolePolicySchema>;
+
+export const RotationPolicySchema = z.object({
+  /** Global per-role overrides layered over the built-in defaults. */
+  roles: z.record(z.string(), RotationRolePolicySchema).default({}),
+  /** Per-repository overrides: repo key -> role -> policy. */
+  byRepo: z.record(z.string(), z.record(z.string(), RotationRolePolicySchema)).default({}),
+});
+export type RotationPolicy = z.infer<typeof RotationPolicySchema>;
+
+export const UppidiRotateRoleInputSchema = z.object({
+  role: RotationRoleSchema,
+  /** Required for orchestrator rotation; ignored for singleton roles. */
+  repo: z.string().optional(),
+  reason: z.string().optional(),
+  /** Manual force bypasses cooldown/mid-turn but never spawns two at once. */
+  force: z.boolean().optional(),
+});
+export type UppidiRotateRoleInput = z.infer<typeof UppidiRotateRoleInputSchema>;
+
+export const UppidiRotateRoleOutputSchema = z.object({
+  ok: z.boolean(),
+  role: z.string().default(""),
+  repo: z.string().optional(),
+  oldAgentId: z.string().optional(),
+  agentId: z.string().optional(),
+  reason: z.string().optional(),
+  triggers: z.array(z.string()).default([]),
+  briefPath: z.string().optional(),
+  errorCode: z.enum(["in_flight", "disabled", "spawn_failed", "verify_failed", "not_found", "invalid"]).optional(),
+  error: z.string().optional(),
+});
+export type UppidiRotateRoleOutput = z.infer<typeof UppidiRotateRoleOutputSchema>;
+
+export const uppidiRotateRoleContract = defineContract({
+  name: "uppidi-fleet.rotate-role",
+  description: "Rotate a long-lived role (orchestrator/front-desk) onto a fresh agent: spawn, verify, brief, archive",
+  input: UppidiRotateRoleInputSchema,
+  output: UppidiRotateRoleOutputSchema,
+});
+
+export const RotationRoleStatusSchema = z.object({
+  role: z.string(),
+  repo: z.string().nullable().default(null),
+  enabled: z.boolean(),
+  agentId: z.string().nullable().default(null),
+  lastRotationAt: z.string().nullable().default(null),
+  cooldownRemainingMs: z.number().default(0),
+  inProgress: z.boolean().default(false),
+  policy: RotationRolePolicySchema,
+});
+export type RotationRoleStatus = z.infer<typeof RotationRoleStatusSchema>;
+
+export const UppidiRotationStatusInputSchema = z.object({
+  role: RotationRoleSchema.optional(),
+  repo: z.string().optional(),
+});
+export type UppidiRotationStatusInput = z.infer<typeof UppidiRotationStatusInputSchema>;
+
+export const UppidiRotationStatusOutputSchema = z.object({
+  ok: z.boolean(),
+  statuses: z.array(RotationRoleStatusSchema).default([]),
+  error: z.string().optional(),
+});
+export type UppidiRotationStatusOutput = z.infer<typeof UppidiRotationStatusOutputSchema>;
+
+export const uppidiRotationStatusContract = defineContract({
+  name: "uppidi-fleet.rotation-status",
+  description: "Get rotation policy and guardrail state for the fleet roles",
+  input: UppidiRotationStatusInputSchema,
+  output: UppidiRotationStatusOutputSchema,
+});
+
+export const UppidiSetRotationPolicyInputSchema = z.object({
+  role: RotationRoleSchema,
+  /** When set, writes a per-repo override; otherwise the global role policy. */
+  repo: z.string().optional(),
+  policy: RotationRolePolicySchema,
+});
+export type UppidiSetRotationPolicyInput = z.infer<typeof UppidiSetRotationPolicyInputSchema>;
+
+export const UppidiSetRotationPolicyOutputSchema = z.object({
+  ok: z.boolean(),
+  policy: RotationPolicySchema,
+  message: z.string().optional(),
+  error: z.string().optional(),
+});
+export type UppidiSetRotationPolicyOutput = z.infer<typeof UppidiSetRotationPolicyOutputSchema>;
+
+export const uppidiSetRotationPolicyContract = defineContract({
+  name: "uppidi-fleet.set-rotation-policy",
+  description: "Set the global or per-repo rotation policy for a role (hot-applied)",
+  input: UppidiSetRotationPolicyInputSchema,
+  output: UppidiSetRotationPolicyOutputSchema,
+});
+
+/** Opt-in checkout/plugin binding for the merge-event hook (#1076). */
+export const MergeEventHookSchema = z.object({
+  /** Absolute or `~`-relative path to the primary checkout to fast-forward. */
+  checkoutPath: z.string().min(1),
+  /** Directory-installed plugin to reload after the checkout advances. */
+  pluginId: z.string().min(1).optional(),
+});
+export type MergeEventHook = z.infer<typeof MergeEventHookSchema>;
+
+/** Repo key (`host/owner/repo`, `owner/repo`, or a URL) -> merge-event binding. */
+export const MergeEventHooksSchema = z.record(z.string(), MergeEventHookSchema);
+
 // Uppidi Fleet Plugin Settings Contract (Issue #444)
+/**
+ * Available MCP injection profiles. Each profile names a server config that
+ * will be injected into agent sessions via the `agent.create` lifecycle hook.
+ */
+export const McpInjectionProfileSchema = z.object({
+  /** Unique, human-readable identifier for this profile (e.g. "serena"). */
+  id: z.string(),
+  /** Display name shown in the dropdown. */
+  label: z.string(),
+  /** Server command used by this MCP server, shown as a description hint. */
+  command: z.string(),
+  /** Human-readable description of what this server provides. */
+  description: z.string(),
+  /** stdio command to launch the MCP server. */
+  mcpCommand: z.string(),
+  /** stdio args array for the MCP server. */
+  mcpArgs: z.array(z.string()),
+  /** Whether this server is enabled by default. */
+  enabled: z.boolean().default(true),
+});
+export type McpInjectionProfile = z.infer<typeof McpInjectionProfileSchema>;
+
+/** Built-in Serena profile shipped with the fleet plugin. */
+export const SERENA_MCP_PROFILE: McpInjectionProfile = {
+  id: "serena",
+  label: "Serena",
+  command: "serena start-mcp-server --project-from-cwd --context ide",
+  description:
+    "Serena — code-aware MCP server with symbol search, file editing, and language-server integration",
+  mcpCommand: "serena",
+  mcpArgs: ["start-mcp-server", "--project-from-cwd", "--context", "ide"],
+  enabled: true,
+};
+
 export const uppidiFleetSettingsSchema = z.object({
   hookHost: z.string().default("127.0.0.1"),
   hookPort: z.number().int().min(1).max(65535).default(8099),
   enrolledRepos: z.array(z.string()).default([]),
-  mutedRepos: z.array(z.string()).default([]),
+  pausedRepos: z.array(z.string()).default([]),
+  /** Repos where autonomous dispatch is barred entirely (#1282). */
+  kanbanOnlyRepos: z.array(z.string()).default([]),
+  /**
+   * Pre-#984 persisted key. Still read (and merged into `pausedRepos`) so an
+   * existing install keeps its paused repositories; cleared on the next write.
+   */
+  mutedRepos: z.array(z.string()).optional(),
+  /** Agent rotation policy (#1019). Omitted means built-in defaults. */
+  rotationPolicy: RotationPolicySchema.optional(),
+  /** Opt-in repo -> checkout/plugin bindings for the merge-event hook (#1076). */
+  mergeEventHooks: MergeEventHooksSchema.default({}),
+  /**
+   * MCP Injection settings (#1020).
+   * Controls which MCP servers are injected into spawned agent sessions.
+   */
+  mcpInjection: z
+    .object({
+      /** Global toggle: when false, no MCP servers are injected regardless of profile selections. */
+      enabled: z.boolean().default(false),
+      /** Map of profile id → enabled state. Profiles not listed use their built-in default. */
+      profiles: z.record(z.string(), z.boolean()).default({}),
+    })
+    .default({ enabled: false, profiles: {} }),
+  /** Unified fleet lifecycle mode (#1034). Defaults to `RUN`. */
+  mode: FleetModeSchema.default("RUN"),
+  /**
+   * Boot-time behaviour for the daemon when it starts (#1112).
+   *
+   * - `'previous-state'` — resume whatever mode was active before shutdown
+   *   (the persisted mode from `RouterConfig`, falling back to settings mode).
+   * - `'halt'`             — always start in HALT mode, suspending background
+   *   loops and auto-provisioning until an operator resumes.
+   * - `'run'`              — always start in RUN mode, overriding any
+   *   previously persisted state.
+   *
+   * Defaults to `'previous-state'` so existing installs keep their last mode.
+   */
+  startModeOnBoot: z.enum(["previous-state", "halt", "run"]).default("previous-state"),
+  /**
+   * Per-class delivery overrides for the current mode (#1034).
+   * Absent entries fall back to the defaults from `defaultEventClassPolicyByMode[mode]`.
+   */
+  /**
+   * Per-class delivery overrides for the current mode (#1034).
+   * Absent entries fall back to the defaults from `defaultEventClassPolicyByMode[mode]`.
+   * Keys are validated as valid event classes; values must be valid actions.
+   */
+  eventClassPolicy: z
+    .record(z.string(), EventClassActionSchema)
+    .refine(
+      (obj) => {
+        for (const key of Object.keys(obj)) {
+          if (!EventClassSchema.safeParse(key).success) return false;
+        }
+        return true;
+      },
+      { message: "eventClassPolicy keys must be valid event classes" },
+    )
+    .optional(),
+  /**
+   * Optional per-provider max concurrent agent limit across fleet (#1198).
+   * Maps provider id (e.g. "openai", "anthropic") to an integer cap ≥ 1.
+   * When a spawn target's provider reaches its configured limit, spawn fails
+   * fast with errorCode `provider_concurrency_limit` instead of spawning into
+   * immediate API rate-limit failures.
+   */
+  providerConcurrencyLimits: z
+    .record(z.string(), z.number().int().min(1))
+    .optional()
+    .default({}),
 });
 export type UppidiFleetSettings = z.infer<typeof uppidiFleetSettingsSchema>;
 
@@ -1654,6 +2270,145 @@ export const uppidiFleetToolExecuteContract = defineContract({
   output: UppidiFleetToolExecuteOutputSchema,
 });
 
+// --- Audit Receipts & Quality RPC (platform#348 Phase A / #1172) ---
+
+export const UppidiAuditVerdictSchema = z.enum([
+  "approved",
+  "changes_requested",
+  "rejected_duplicate",
+  "rejected_spec_flaw",
+  "adhoc_bypass",
+]);
+export type UppidiAuditVerdict = z.infer<typeof UppidiAuditVerdictSchema>;
+
+export const UppidiAuditTaxonomySchema = z.enum([
+  "test_failure",
+  "typecheck_failure",
+  "runtime_boundary_leak",
+  "test_isolation_leak",
+  "spec_mismatch",
+  "scope_creep",
+  "false_positive_claim",
+  "duplicate",
+  "formatting_cleanliness",
+]);
+export type UppidiAuditTaxonomy = z.infer<typeof UppidiAuditTaxonomySchema>;
+
+export const UppidiFleetAuditReceiptSchema = z.object({
+  v: z.literal(1),
+  auditId: z.string(),
+  timestamp: z.string(),
+  repo: z.string(),
+  pr: z.number(),
+  issue: z.number().nullable().optional(),
+  headCommit: z.string(),
+  iteration: z.number().default(1),
+  actors: z.object({
+    auditor: z.object({
+      agentId: z.string(),
+      role: z.enum(["orchestrator", "reviewer", "operator"]),
+      model: z.string(),
+    }),
+    author: z.object({
+      agentId: z.string().optional(),
+      role: z.enum(["coding-agent", "worker", "orchestrator", "operator"]),
+      model: z.string().optional(),
+    }),
+  }),
+  verdict: UppidiAuditVerdictSchema,
+  taxonomy: z.array(UppidiAuditTaxonomySchema).default([]),
+  verification: z.object({
+    workerClaimed: z.enum(["passed", "failed", "unverified"]),
+    auditorVerified: z.enum(["passed", "failed", "skipped"]),
+    checksRun: z.array(z.string()),
+    isolatedEnv: z.boolean(),
+  }),
+  summary: z.string(),
+});
+export type UppidiFleetAuditReceipt = z.infer<typeof UppidiFleetAuditReceiptSchema>;
+
+export const UppidiAuditRecordInputSchema = UppidiFleetAuditReceiptSchema.omit({
+  v: true,
+  auditId: true,
+  timestamp: true,
+});
+export type UppidiAuditRecordInput = z.infer<typeof UppidiAuditRecordInputSchema>;
+
+export const UppidiAuditRecordOutputSchema = z.object({
+  ok: z.boolean(),
+  auditId: z.string(),
+  recordedAt: z.string(),
+  error: z.string().optional(),
+});
+export type UppidiAuditRecordOutput = z.infer<typeof UppidiAuditRecordOutputSchema>;
+
+export const uppidiAuditRecordContract = defineContract({
+  name: "uppidi-fleet.record-audit",
+  description: "Record a pre-flight PR audit receipt",
+  input: UppidiAuditRecordInputSchema,
+  output: UppidiAuditRecordOutputSchema,
+});
+
+export const UppidiAuditCheckOutputSchema = z.object({
+  ok: z.boolean(),
+  audited: z.boolean(),
+  repo: z.string(),
+  pr: z.number(),
+  commit: z.string(),
+  audit: z
+    .object({
+      auditId: z.string(),
+      verdict: UppidiAuditVerdictSchema,
+      timestamp: z.string(),
+      iteration: z.number(),
+    })
+    .nullable()
+    .default(null),
+  error: z.string().optional(),
+});
+export type UppidiAuditCheckOutput = z.infer<typeof UppidiAuditCheckOutputSchema>;
+
+export const uppidiAuditCheckContract = defineContract({
+  name: "uppidi-fleet.audit-check",
+  description: "Check whether an audit receipt exists for a given repo, PR and commit",
+  input: z.object({
+    repo: z.string(),
+    pr: z.number(),
+    commit: z.string(),
+  }),
+  output: UppidiAuditCheckOutputSchema,
+});
+
+export const UppidiAuditSummaryOutputSchema = z.object({
+  ok: z.boolean(),
+  totalAudits: z.number(),
+  auditedMerges: z.number(),
+  unauditedMerges: z.number(),
+  complianceRate: z.number(),
+  firstPassSuccessRate: z.number(),
+  defectTaxonomyCounts: z.record(z.string(), z.number()),
+  modelScorecard: z.array(
+    z.object({
+      model: z.string(),
+      reviewsReceived: z.number(),
+      firstPassApproved: z.number(),
+      changesRequested: z.number(),
+    }),
+  ),
+});
+export type UppidiAuditSummaryOutput = z.infer<typeof UppidiAuditSummaryOutputSchema>;
+
+export const uppidiAuditSummaryContract = defineContract({
+  name: "uppidi-fleet.audit-summary",
+  description: "Query server-projected PR audit telemetry and quality metrics",
+  input: z.object({
+    repo: z.string().optional(),
+    since: z.string().optional(),
+  }),
+  output: UppidiAuditSummaryOutputSchema,
+});
+export type UppidiAuditSummaryInput = { repo?: string; since?: string };
+
 // --- Front Desk Watch Surface & Console Drawer (Issue #710) ---
 
 export const UppidiFrontDeskActivityTypeSchema = z.enum([
@@ -1729,6 +2484,99 @@ export const uppidiFrontDeskPromptContract = defineContract({
   description: "Send a direct operator message/prompt to the Front Desk agent",
   input: UppidiFrontDeskPromptInputSchema,
   output: UppidiFrontDeskPromptOutputSchema,
+});
+
+// ---------------------------------------------------------------- Action Runs ---
+
+export const ForgeActionRunConclusionSchema = z.enum([
+  "success",
+  "failure",
+  "neutral",
+  "cancelled",
+  "skipped",
+  "timed_out",
+  "requested",
+  "in_progress",
+]);
+export type ForgeActionRunConclusion = z.infer<typeof ForgeActionRunConclusionSchema>;
+
+export const ForgeActionRunStatusSchema = z.enum([
+  "completed",
+  "in_progress",
+  "queued",
+  "pending",
+  "waiting",
+]);
+export type ForgeActionRunStatus = z.infer<typeof ForgeActionRunStatusSchema>;
+
+export const ForgeActionRunEventSchema = z.enum([
+  "push",
+  "issue",
+  "issues",
+  "pull_request",
+  "pull_request_review",
+  "pull_request_review_comment",
+  "commit_comment",
+  "workflow_dispatch",
+  "schedule",
+  "release",
+  "fork",
+  "wiki",
+  "gollum",
+  "check_run",
+  "check_suite",
+  "delete",
+  "create",
+  "merge_group",
+]);
+export type ForgeActionRunEvent = z.infer<typeof ForgeActionRunEventSchema>;
+
+export const ForgeActionRunSchema = z.object({
+  id: z.number(),
+  name: z.string(),
+  html_url: z.string().default(""),
+  status: ForgeActionRunStatusSchema.default("completed"),
+  conclusion: ForgeActionRunConclusionSchema.nullable().default(null),
+  workflow_id: z.string().default(""),
+  ref: z.string().default(""),
+  branch: z.string().nullable().default(null),
+  event: ForgeActionRunEventSchema.default("push"),
+  head_commit: z.object({
+    message: z.string().default(""),
+    sha: z.string().default(""),
+  }).default({ message: "", sha: "" }),
+  created_at: z.string().default(""),
+  updated_at: z.string().default(""),
+  run_started_at: z.string().nullable().default(null),
+  completed_at: z.string().nullable().default(null),
+  user: z.object({
+    login: z.string().default(""),
+    avatar_url: z.string().nullable().default(null),
+  }).default({ login: "", avatar_url: null }),
+  repo: z.string().default(""),
+  repo_url: z.string().default(""),
+});
+export type ForgeActionRun = z.infer<typeof ForgeActionRunSchema>;
+
+export const ForgeActionRunsInputSchema = z.object({
+  repo: z.string().optional(),
+  status: z.enum(["all", "running", "failed", "succeeded"]).default("all"),
+  limit: z.number().default(50),
+});
+export type ForgeActionRunsInput = z.infer<typeof ForgeActionRunsInputSchema>;
+
+export const ForgeActionRunsOutputSchema = z.object({
+  ok: z.boolean(),
+  runs: z.array(ForgeActionRunSchema).default([]),
+  error: z.string().optional(),
+});
+export type ForgeActionRunsOutput = z.infer<typeof ForgeActionRunsOutputSchema>;
+
+export const forgeActionRunsContract = defineContract({
+  name: "uppidi-fleet.action-runs",
+  description: "List recent Forgejo Actions CI/CD workflow runs, optionally scoped to a single repository",
+  input: ForgeActionRunsInputSchema,
+  output: ForgeActionRunsOutputSchema,
 });
 
 export const DISPATCH_COMMAND_PATTERNS = [

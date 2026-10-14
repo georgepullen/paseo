@@ -70,7 +70,9 @@ export function defaultMetricsFilePath(context?: any): string {
   }
 
   const home = process.env.HOME ?? os.homedir();
-  return path.join(home, ".paseo", "plugin-data", "xpufx", "uppidi-fleet", "metrics.json");
+  const custom = (process.env.PASEO_HOME || "").trim();
+  const root = custom || path.join(home, ".paseo");
+  return path.join(root, "plugin-data", "xpufx", "uppidi-fleet", "metrics.json");
 }
 
 let metricsFilePathOverride: string | null = null;
@@ -837,4 +839,23 @@ export async function handleUppidiFleetMetrics(
     modelCount,
     updatedAt: new Date().toISOString(),
   };
+}
+
+/**
+ * Computes 7-day, 30-day, or all-time sliding window aggregations from in-process telemetry records (#1173).
+ */
+export async function computeSlidingAggregations(
+  window: "7d" | "30d" | "all" = "7d",
+  context?: any,
+): Promise<import("../shared/contracts.js").ModelTelemetrySummary[]> {
+  const { readTelemetryRecords, aggregateModelTelemetry } = await import("./telemetry.js");
+  const windowMs =
+    window === "7d"
+      ? 7 * 24 * 60 * 60 * 1000
+      : window === "30d"
+        ? 30 * 24 * 60 * 60 * 1000
+        : undefined;
+
+  const records = await readTelemetryRecords({ windowMs }, context);
+  return aggregateModelTelemetry(records, window);
 }

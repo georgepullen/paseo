@@ -6,6 +6,7 @@ import path, { join } from "node:path";
 import type { PluginHandlerContext } from "@getpaseo/plugin/server";
 import type {
   UppidiAgent,
+  UppidiAgentCategory,
   UppidiAgentsOutput,
   UppidiAgentTreeNode,
   UppidiAgentWork,
@@ -15,6 +16,7 @@ import type {
   AgentAttentionReason,
   AgentBlockDetail,
   AgentLifecycleState,
+  AgentRoleDivergence,
   UppidiArchiveAgentInput,
   UppidiArchiveAgentOutput,
   UppidiArchiveInactiveAgentsInput,
@@ -27,12 +29,19 @@ import type {
   UppidiAddOrchestratorOutput,
   UppidiReplaceOrchestratorInput,
   UppidiReplaceOrchestratorOutput,
-  UppidiToggleRepoMuteInput,
-  UppidiToggleRepoMuteOutput,
+  UppidiToggleRepoPauseInput,
+  UppidiToggleRepoPauseOutput,
+  UppidiToggleRepoAutomationTierInput,
+  UppidiToggleRepoAutomationTierOutput,
+  AutomationTierValue,
   FleetTeardownInput,
   FleetTeardownOutput,
   FleetResetStateInput,
   FleetResetStateOutput,
+  FleetHaltInput,
+  FleetHaltOutput,
+  FleetResumeInput,
+  FleetResumeOutput,
   UppidiFrontDeskActivityInput,
   UppidiFrontDeskActivityOutput,
   UppidiFrontDeskActivityItem,
@@ -50,9 +59,12 @@ import {
   deriveLifecycleState,
   normalizeProjectName,
   DEFAULT_PROJECT,
+  isCodingAgentCategory,
+  CODING_AGENT_CATEGORY,
 } from "../shared/contracts.js";
 import type { WorkspaceProjectMap } from "../shared/contracts.js";
 import { isAgentEligibleForBulkArchive, isRepoMatching } from "../shared/sort-filter.js";
+import { buildAgentLink, resolveAgentLinkConfig } from "../shared/agent-links.js";
 import {
   appendHookLog,
   formatFleetTeardownNotice,
@@ -61,14 +73,26 @@ import {
   loadRouterConfig,
   saveRouterConfig,
 } from "./hook-router.js";
+import { isFleetMember, type FleetRoster } from "./fleet-membership.js";
 import { resolveHookAuthPosture, resolveHookEndpoint } from "./hook.js";
-import { resolveWorkspaceForRepo } from "./workspace-lookup.js";
+import {
+  candidateHostCheckoutDir,
+  resolveWorkspaceForRepo,
+  resolveWorkspaceForRepoViaDaemon,
+  workspaceNotFoundError,
+  type ResolvedWorkspace,
+} from "./workspace-lookup.js";
 import {
   evaluateWorkerSpawnWorkspace,
   WORKER_PRIMARY_CHECKOUT_ERROR,
 } from "./workspace-guard.js";
-import { loadSavedRoleModels, DEFAULT_ROLE_MODELS } from "./role-models.js";
-import { getEffectiveSkillPath } from "./skills.js";
+import { loadSavedRoleModels, DEFAULT_ROLE_MODELS, resolveHostHome, resolveRoleModelKey } from "./role-models.js";
+import { renderSkillDirective } from "./skills.js";
+import {
+  readWorkspaceProjectMap as readBackendWorkspaceProjectMap,
+  buildWorkspaceProjectMapFromRegistry,
+  canonicalDescriptorsToRegistry,
+} from "@xpufx/backend-fleet/server";
 
 
 export type ExecFileAsyncFn = (
@@ -116,17 +140,182 @@ export interface RawAgentRecord {
     contextWindowMaxTokens?: number;
   } | null;
   url?: string;
+  category?: UppidiAgentCategory;
+  role?: string;
 }
 
-export function categorizeAgent(name: string): "front-desk" | "orchestrator" | "worker" {
-  const lower = (name || "").toLowerCase();
-  if (lower.includes("front desk") || lower === "frontdesk") {
-    return "front-desk";
+export type AgentRole = "front-desk" | "orchestrator" | "coding-agent";
+
+/** Minimal authoritative role input: registry id + explicit spawn metadata (#1143). */
+export interface AgentRoleInput {
+  id?: string | null;
+  role?: string | null;
+  category?: string | null;
+  labels?: Record<string, string> | string[] | null;
+  name?: string | null;
+  title?: string | null;
+}
+
+export function isValidAgentRole(value: unknown): value is AgentRole {
+  return value === "front-desk" || value === "orchestrator" || value === "coding-agent";
+}
+
+/**
+ * Normalizes one explicit role value from spawn metadata. Operates only on
+ * structured role fields — never on freeform display names (#1143). Any
+ * retired marker resolves to "retired" so callers deterministically reject it
+ * to the coding-agent fallback instead of re-adopting a retired session.
+ * The legacy `worker` spelling maps to the canonical coding-agent category (#1126).
+ */
+function normalizeExplicitRole(value: unknown): AgentRole | "retired" | null {
+  if (typeof value !== "string") return null;
+  const v = value.trim().toLowerCase();
+  if (!v) return null;
+  if (v.includes("retired")) return "retired";
+  if (v === "front-desk" || v === "frontdesk") return "front-desk";
+  if (v === "orchestrator") return "orchestrator";
+  if (v === "worker" || v === "coding-agent" || v === "coding_worker") return CODING_AGENT_CATEGORY;
+  return null;
+}
+
+/**
+ * Reads the explicit role from spawn metadata: record `category`/`role`,
+ * record labels (`role` / `category`), or array-style `role=*` tags. Display
+ * names and titles are never consulted (#1143).
+ */
+function readExplicitLabelRole(agent: AgentRoleInput | null | undefined): AgentRole | "retired" | null {
+  if (!agent || typeof agent !== "object") return null;
+  const candidates: unknown[] = [
+    (agent as { category?: unknown }).category,
+    (agent as { role?: unknown }).role,
+  ];
+  const labels: unknown = (agent as { labels?: unknown }).labels;
+  if (Array.isArray(labels)) {
+    for (const entry of labels) {
+      if (typeof entry !== "string") continue;
+      const tag = entry.match(/^\s*role\s*=\s*(.+?)\s*$/i);
+      candidates.push(tag ? tag[1] : entry);
+    }
+  } else if (labels && typeof labels === "object") {
+    const record = labels as Record<string, unknown>;
+    candidates.push(record.role, record.category);
   }
-  if (lower.includes("orchestrator")) {
-    return "orchestrator";
+  for (const candidate of candidates) {
+    const normalized = normalizeExplicitRole(candidate);
+    if (normalized) return normalized;
   }
-  return "worker";
+  return null;
+}
+
+/**
+ * Authoritative deterministic role resolver (#1143). Roles resolve strictly
+ * from the roster/registry entry and explicit spawn metadata:
+ * 1. Direct registry ID lookup (highest authority): `frontDeskAgentId` and
+ *    the orchestrator id -> repo map from `readCanonicalFleetRegistry()`.
+ * 2. Explicit agent metadata/label tags set at spawn time (`role=*`).
+ * 3. Fallback: the coding-agent category — never guess `front-desk` or
+ *    `orchestrator` from a display name, title, or branch string.
+ */
+export function resolveAgentRole(
+  agent: AgentRoleInput & { id: string },
+  registry?: CanonicalFleetRegistry | null
+): AgentRole {
+  const id = typeof agent?.id === "string" ? agent.id : "";
+  if (id && registry) {
+    if (registry.frontDeskAgentId && id === registry.frontDeskAgentId) {
+      return "front-desk";
+    }
+    if (registry.orchestratorAgentIdToRepo?.has(id)) {
+      return "orchestrator";
+    }
+  }
+  const labelRole = readExplicitLabelRole(agent);
+  if (labelRole === "retired") return CODING_AGENT_CATEGORY;
+  if (labelRole) return labelRole;
+  return CODING_AGENT_CATEGORY;
+}
+
+/**
+ * Authoritative agent classification (#1143). Display names and titles alone
+ * never grant a role: a bare name string with no registry entry or explicit
+ * role metadata resolves to the coding-agent category. Record inputs resolve
+ * through `resolveAgentRole` (registry id -> explicit `role=*` labels ->
+ * coding-agent). Retired sessions and workers whose branch/title merely
+ * mentions Front Desk are always coding-agents.
+ */
+/**
+ * Normalizes a compound provider/model key to the root provider name.
+ * E.g. "openai/gpt-4o" -> "openai", "opencode/foo" -> "opencode".
+ */
+export function normalizeProviderKey(input?: string | null): string {
+  if (!input) return "";
+  const trimmed = String(input).trim();
+  if (!trimmed) return "";
+  // Strip model suffix: first slash separates provider from model
+  const slashIdx = trimmed.indexOf("/");
+  return slashIdx > 0 ? trimmed.slice(0, slashIdx) : trimmed;
+}
+
+/**
+ * Counts active (running) agents per provider from a roster.
+ * An agent is counted when its status or lifecycleState indicates running
+ * and it has a matching provider.
+ *
+ * Input can be UppidiAgent[], RawAgentRecord[], WatchdogAgent[], or any
+ * shape with optional `provider`, `status`, `lifecycleState` fields.
+ */
+export function getActiveAgentCountByProvider(
+  agents: Array<{
+    provider?: string | null;
+    status?: string | null;
+    lifecycleState?: string | null;
+    deterministicState?: string | null;
+    config?: { provider?: string | null } | null;
+  }>
+): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const agent of agents) {
+    // Determine if this agent is actively running
+    const isActive =
+      agent.status === "running" ||
+      agent.lifecycleState === "running" ||
+      agent.deterministicState === "working" ||
+      agent.deterministicState === "running";
+    if (!isActive) continue;
+
+    // Resolve provider: explicit field, config.provider, or skip
+    const rawProvider =
+      agent.provider ??
+      (agent.config?.provider as string | undefined);
+    if (!rawProvider) continue;
+
+    const providerName = normalizeProviderKey(rawProvider);
+    if (!providerName) continue;
+
+    counts[providerName] = (counts[providerName] ?? 0) + 1;
+  }
+  return counts;
+}
+
+export function categorizeAgent(
+  nameOrAgent:
+    | string
+    | (AgentRoleInput & { name?: string | null; title?: string | null })
+    | null
+    | undefined,
+  registry?: CanonicalFleetRegistry | null
+): AgentRole {
+  if (!nameOrAgent) return CODING_AGENT_CATEGORY;
+  if (typeof nameOrAgent === "string") {
+    return CODING_AGENT_CATEGORY;
+  }
+  const record = nameOrAgent as AgentRoleInput & { id?: unknown };
+  return resolveAgentRole(
+    { ...(record as object), id: typeof record.id === "string" ? record.id : "" } as AgentRoleInput & {
+      id: string;
+    },
+    registry ?? null
+  );
 }
 
 export function extractAttributedWork(raw: RawAgentRecord): UppidiAgentWork | null {
@@ -352,7 +541,8 @@ export function deriveDeterministicState(
       return { state: "idle:quota-exhausted", detail: "Quota cooldown" };
     }
 
-    const category = categorizeAgent(raw.name || raw.title || "");
+    // Authoritative classification only: registry/label metadata, never the display name (#1143).
+    const category = categorizeAgent(raw);
     const lastActivity = raw.lastActivityAt || raw.updatedAt;
     if ((category === "orchestrator" || category === "front-desk") && lastActivity) {
       const idleMs = Date.now() - new Date(lastActivity).getTime();
@@ -376,7 +566,8 @@ export function normalizeRawAgent(
   const id = raw.id || "";
   const shortId = raw.shortId || id.slice(0, 7);
   const name = raw.name || raw.title || `Agent ${shortId}`;
-  const category = categorizeAgent(name);
+  // Authoritative classification only: registry/label metadata, never the display name (#1143).
+  const category = categorizeAgent(raw);
   const status = raw.status || "idle";
 
   const parentId =
@@ -433,7 +624,7 @@ export function normalizeRawAgent(
     usage: raw.lastUsage || null,
     metrics,
     lastError: raw.lastError || null,
-    url: raw.url || (id ? `paseo://agent/${id}` : undefined),
+    url: raw.url || (id ? buildAgentLink({ agentId: id, workspaceId: raw.workspaceId }, resolveAgentLinkConfig()) : undefined),
     worktree: extractAgentWorktree(raw),
     project,
     labels: raw.labels,
@@ -559,56 +750,21 @@ function deriveRepoFromWorkspace(
   return undefined;
 }
 
+let testWorkspaceProjectMap: WorkspaceProjectMap | null = null;
+
 /**
- * Builds a cached map of Paseo workspaceId -> canonical repository by joining
- * ~/.paseo/projects/workspaces.json with ~/.paseo/projects/projects.json.
+ * Builds a cached map of Paseo workspaceId -> canonical repository using
+ * the canonical backend-fleet storage resolver.
  */
 export function getWorkspaceProjectMap(options: { forceRefresh?: boolean } = {}): WorkspaceProjectMap {
-  const now = Date.now();
-  if (
-    !options.forceRefresh &&
-    workspaceProjectCache &&
-    now - workspaceProjectCache.cachedAt < WORKSPACE_PROJECT_CACHE_TTL_MS
-  ) {
-    return workspaceProjectCache.map;
+  if (testWorkspaceProjectMap !== null) {
+    return testWorkspaceProjectMap;
   }
-
-  const map: WorkspaceProjectMap = {};
-  try {
-    const projectsDir = path.join(os.homedir(), ".paseo", "projects");
-
-    const projectsById = new Map<string, ProjectRecord>();
-    const projectsPath = path.join(projectsDir, "projects.json");
-    if (fs.existsSync(projectsPath)) {
-      const projects = JSON.parse(fs.readFileSync(projectsPath, "utf-8"));
-      if (Array.isArray(projects)) {
-        for (const project of projects) {
-          if (project?.projectId) projectsById.set(project.projectId, project);
-        }
-      }
-    }
-
-    const workspacesPath = path.join(projectsDir, "workspaces.json");
-    if (fs.existsSync(workspacesPath)) {
-      const workspaces = JSON.parse(fs.readFileSync(workspacesPath, "utf-8"));
-      if (Array.isArray(workspaces)) {
-        for (const workspace of workspaces) {
-          if (!workspace?.workspaceId) continue;
-          const repo = deriveRepoFromWorkspace(workspace, projectsById.get(workspace.projectId));
-          if (repo) map[workspace.workspaceId] = normalizeProjectName(repo);
-        }
-      }
-    }
-  } catch {
-    // Best-effort: authoritative metadata unavailable, callers fall back.
-  }
-
-  workspaceProjectCache = { map, cachedAt: now };
-  return map;
+  return readBackendWorkspaceProjectMap({ home: resolveHostHome(), forceRefresh: options.forceRefresh });
 }
 
 export function setWorkspaceProjectMapForTest(map: WorkspaceProjectMap | null): void {
-  workspaceProjectCache = map ? { map, cachedAt: Date.now() } : null;
+  testWorkspaceProjectMap = map;
 }
 
 /**
@@ -637,7 +793,7 @@ export function applyParentProjectInheritance(agents: UppidiAgent[]): void {
 export function getQuotaAlertAgentIds(): Set<string> {
   const ids = new Set<string>();
   try {
-    const paseoDir = process.env.PASEO_DIR || path.join(process.env.HOME || os.homedir(), ".paseo");
+    const paseoDir = process.env.PASEO_DIR || path.join(resolveHostHome(), ".paseo");
     const alertPath = path.join(paseoDir, "limit-alerts.json");
     if (fs.existsSync(alertPath)) {
       const content = fs.readFileSync(alertPath, "utf-8");
@@ -656,57 +812,6 @@ export function getQuotaAlertAgentIds(): Set<string> {
   return ids;
 }
 
-// Index on disk: ~/.paseo/agents/*/*.json
-export function getAgentDiskMetadataMap(): Map<string, Partial<RawAgentRecord>> {
-  const metaMap = new Map<string, Partial<RawAgentRecord>>();
-  try {
-    const paseoDir = process.env.PASEO_DIR || path.join(process.env.HOME || os.homedir(), ".paseo");
-    const agentsDir = path.join(paseoDir, "agents");
-    if (!fs.existsSync(agentsDir)) return metaMap;
-
-    const subdirs = fs.readdirSync(agentsDir, { withFileTypes: true }).filter((d) => d.isDirectory());
-    for (const dir of subdirs) {
-      const fullDir = path.join(agentsDir, dir.name);
-      const files = fs.readdirSync(fullDir);
-      for (const file of files) {
-        if (!file.endsWith(".json")) continue;
-        const agentId = file.replace(/\.json$/, "");
-        const filePath = path.join(fullDir, file);
-        try {
-          const content = fs.readFileSync(filePath, "utf-8");
-          const data = JSON.parse(content);
-          metaMap.set(agentId, {
-            id: data.id || agentId,
-            name: data.name || data.title,
-            title: data.title,
-            provider: data.provider,
-            model: data.runtimeInfo?.model || data.config?.model || null,
-            status: data.lastStatus || data.status,
-            cwd: data.cwd,
-            createdAt: data.createdAt,
-            updatedAt: data.updatedAt,
-            lastActivityAt: data.lastActivityAt || data.updatedAt,
-            workspaceId: data.workspaceId,
-            labels: data.labels,
-            parentId: data.labels?.["paseo.parent-agent-id"] || null,
-            lastError: data.lastError,
-            requiresAttention: data.requiresAttention,
-            attentionReason: data.attentionReason,
-            attentionTimestamp: data.attentionTimestamp,
-            pendingPermissions: data.pendingPermissions,
-            activeTurn: data.activeTurn,
-            lastUsage: data.lastUsage,
-          });
-        } catch {
-          // Ignore parse errors on individual files
-        }
-      }
-    }
-  } catch {
-    // Best-effort
-  }
-  return metaMap;
-}
 
 
 export interface RepoRootInspection {
@@ -770,92 +875,103 @@ export async function checkRepoMainDirty(cwd?: string): Promise<RepoRootInspecti
 
 export async function fetchPaseoAgents(context?: PluginHandlerContext): Promise<UppidiAgent[]> {
   const quotaAlerts = getQuotaAlertAgentIds();
-  const diskMeta = getAgentDiskMetadataMap();
   const mergedAgents = new Map<string, RawAgentRecord>();
 
-  // 1. Try SDK context.paseo.agents.list()
+  // 1. Try SDK context.paseo.agents.list() (Daemon RPC — no disk scraping)
   if (context?.paseo?.agents?.list) {
     try {
       const list = await context.paseo.agents.list();
-      if (Array.isArray(list?.entries)) {
+      if (Array.isArray(list?.entries) && list.entries.length > 0) {
         for (const entry of list.entries) {
           const a: any = entry.agent || entry;
           if (!a?.id) continue;
-          const disk = diskMeta.get(a.id) || {};
           mergedAgents.set(a.id, {
             id: a.id,
-            name: a.name || a.title || disk.name,
-            title: a.title || disk.title,
-            status: a.status || disk.status,
-            provider: a.provider || a.config?.provider || disk.provider,
-            model: a.model || disk.model,
-            cwd: a.cwd || a.config?.cwd || disk.cwd,
-            workspaceId: a.workspaceId || disk.workspaceId,
-            created: a.created || a.createdAt || disk.createdAt,
-            updatedAt: a.updatedAt || disk.updatedAt,
-            lastActivityAt: a.lastActivityAt || disk.lastActivityAt,
-            labels: { ...(disk.labels || {}), ...(a.labels || {}) },
+            name: a.name || a.title || "",
+            title: a.title || a.name || "",
+            status: a.status || "idle",
+            provider: a.provider || a.config?.provider || "",
+            model: a.model || null,
+            cwd: a.cwd || a.config?.cwd || "",
+            workspaceId: a.workspaceId,
+            created: a.created || a.createdAt,
+            updatedAt: a.updatedAt,
+            lastActivityAt: a.lastActivityAt,
+            labels: a.labels || {},
             parentId:
               a.labels?.["paseo.parent-agent-id"] ||
-              disk.parentId ||
+              a.parentId ||
               null,
-            lastError: a.lastError || disk.lastError,
-            requiresAttention: a.requiresAttention ?? disk.requiresAttention,
-            attentionReason: a.attentionReason || disk.attentionReason,
-            attentionTimestamp: a.attentionTimestamp || disk.attentionTimestamp,
-            pendingPermissions: a.pendingPermissions ?? disk.pendingPermissions,
-            activeTurn: a.activeTurn || disk.activeTurn,
-            lastUsage: a.lastUsage || disk.lastUsage,
+            lastError: a.lastError,
+            requiresAttention: a.requiresAttention,
+            attentionReason: a.attentionReason,
+            attentionTimestamp: a.attentionTimestamp,
+            pendingPermissions: a.pendingPermissions,
+            activeTurn: a.activeTurn,
+            lastUsage: a.lastUsage,
           });
         }
       }
-    } catch {
-      // Fallback to CLI if SDK call throws
+    } catch (err: any) {
+      // Deterministic fail-fast: if the daemon SDK exists and throws, fail fast
+      console.warn(`[uppidi-fleet:agents] SDK agents.list() failed:`, err?.message || err);
+      return [];
     }
-  }
-
-  // 2. If no agents from SDK, fallback to CLI: paseo ls --json
-  if (mergedAgents.size === 0) {
+  } else {
+    // 2. CLI fallback only when SDK is absent in context (CLI-only environment)
     try {
       const { stdout } = await execFileAsync("paseo", ["ls", "--json", "--global"], {
         timeout: 5000,
         encoding: "utf-8",
       });
       const parsed = JSON.parse(stdout);
-      if (Array.isArray(parsed)) {
+      if (Array.isArray(parsed) && parsed.length > 0) {
         for (const item of parsed) {
           if (!item?.id) continue;
-          const disk = diskMeta.get(item.id) || {};
           mergedAgents.set(item.id, {
             id: item.id,
-            name: item.name || item.title || disk.name,
-            title: item.title || disk.title,
-            status: item.status || disk.status,
-            provider: item.provider || disk.provider,
-            model: disk.model || (item.provider?.includes("/") ? item.provider.split("/")[1] : undefined),
-            cwd: item.cwd || disk.cwd,
-            created: item.created || disk.createdAt,
-            updatedAt: disk.updatedAt,
-            lastActivityAt: disk.lastActivityAt,
-            workspaceId: disk.workspaceId,
-            labels: disk.labels,
-            parentId: disk.parentId || null,
-            lastError: disk.lastError,
-            requiresAttention: disk.requiresAttention,
-            attentionReason: disk.attentionReason,
-            attentionTimestamp: disk.attentionTimestamp,
-            pendingPermissions: disk.pendingPermissions,
-            activeTurn: disk.activeTurn,
-            lastUsage: disk.lastUsage,
+            name: item.name || item.title || "",
+            title: item.title || item.name || "",
+            status: item.status || "idle",
+            provider: item.provider || "",
+            model: item.provider?.includes("/") ? item.provider.split("/")[1] : undefined,
+            cwd: item.cwd || "",
+            created: item.created || item.createdAt,
+            updatedAt: item.updatedAt,
+            lastActivityAt: item.lastActivityAt,
+            workspaceId: item.workspaceId,
+            labels: item.labels || {},
+            parentId: item.labels?.["paseo.parent-agent-id"] || item.parentId || null,
+            lastError: item.lastError,
+            requiresAttention: item.requiresAttention,
+            attentionReason: item.attentionReason,
+            attentionTimestamp: item.attentionTimestamp,
+            pendingPermissions: item.pendingPermissions,
+            activeTurn: item.activeTurn,
+            lastUsage: item.lastUsage,
           });
         }
       }
-    } catch {
-      // If CLI unavailable, return empty array
+    } catch (err: any) {
+      console.warn(`[uppidi-fleet:agents] CLI paseo ls failed:`, err?.message || err);
+      return [];
     }
   }
 
-  const workspaceProjectMap = getWorkspaceProjectMap();
+  // Authoritative workspace -> project map from daemon RPC when available
+  let workspaceProjectMap: WorkspaceProjectMap;
+  if (context?.paseo?.workspaces?.list) {
+    try {
+      const listed = await context.paseo.workspaces.list({});
+      const entries = Array.isArray(listed?.entries) ? listed.entries : [];
+      const { workspaces, projects } = canonicalDescriptorsToRegistry(entries);
+      workspaceProjectMap = buildWorkspaceProjectMapFromRegistry(workspaces, projects);
+    } catch {
+      workspaceProjectMap = getWorkspaceProjectMap();
+    }
+  } else {
+    workspaceProjectMap = getWorkspaceProjectMap();
+  }
   const agents = Array.from(mergedAgents.values()).map((raw) =>
     normalizeRawAgent(raw, quotaAlerts, workspaceProjectMap)
   );
@@ -866,12 +982,105 @@ export async function fetchPaseoAgents(context?: PluginHandlerContext): Promise<
   return agents;
 }
 
+export interface CanonicalFleetRegistry {
+  /** True when the active hook router was reachable and its registry is authoritative. */
+  available: boolean;
+  frontDeskAgentId: string | null;
+  /** Live registered orchestrator agent id -> canonical repo key from `GET /orchestrators`. */
+  orchestratorAgentIdToRepo: Map<string, string>;
+}
+
+/**
+ * Reads the canonical fleet registry (#1078): the Front Desk identity from
+ * `GET /frontdesk` and the repo -> orchestrator mapping from `GET /orchestrators`.
+ * Returns `available: false` when no router is active so callers can mark the
+ * name-heuristic fallback display-only instead of pretending it is canonical.
+ */
+export function readCanonicalFleetRegistry(): CanonicalFleetRegistry {
+  const router = getActiveHookRouter();
+  if (!router) {
+    return { available: false, frontDeskAgentId: null, orchestratorAgentIdToRepo: new Map() };
+  }
+
+  const orchestratorAgentIdToRepo = new Map<string, string>();
+  for (const record of router.listOrchestratorRecords()) {
+    if (record?.agentId && !orchestratorAgentIdToRepo.has(record.agentId)) {
+      orchestratorAgentIdToRepo.set(record.agentId, record.key);
+    }
+  }
+
+  return {
+    available: true,
+    frontDeskAgentId: router.readFrontDesk()?.agentId ?? null,
+    orchestratorAgentIdToRepo,
+  };
+}
+
+/**
+ * Resolves an agent's canonical role from the registry (#1078). The registry is
+ * the only source of truth for Front Desk and orchestrator identity; anything
+ * not registered is a coding agent regardless of its display name.
+ */
+export function resolveCanonicalRole(
+  agentId: string,
+  registry: CanonicalFleetRegistry
+): { role: "front-desk" | "orchestrator" | "coding-agent"; registryRepoKey?: string } {
+  if (registry.frontDeskAgentId && agentId === registry.frontDeskAgentId) {
+    return { role: "front-desk" };
+  }
+  const registryRepoKey = registry.orchestratorAgentIdToRepo.get(agentId);
+  if (registryRepoKey) {
+    return { role: "orchestrator", registryRepoKey };
+  }
+  return { role: CODING_AGENT_CATEGORY };
+}
+
+/**
+ * Projects the canonical registry role onto every agent (#1078, #1150). Role
+ * resolution relies strictly and deterministically on authoritative router
+ * registry records (`GET /frontdesk`, `GET /orchestrators`), without guessing
+ * roles from display names or alerting on name mismatches.
+ */
+export function applyCanonicalRoles(
+  agents: UppidiAgent[],
+  registry: CanonicalFleetRegistry
+): AgentRoleDivergence[] {
+  for (const agent of agents) {
+    if (!registry.available) {
+      agent.roleSource = "name-heuristic";
+      agent.roleDivergent = false;
+      continue;
+    }
+
+    const canonical = resolveCanonicalRole(agent.id, registry);
+    agent.category = canonical.role;
+    agent.roleSource = "registry";
+    agent.roleDivergent = false;
+    if (canonical.registryRepoKey) {
+      agent.registryRepoKey = canonical.registryRepoKey;
+    }
+  }
+
+  return [];
+}
+
 export async function handleUppidiAgents(
-  _input: Record<string, never>,
+  _input: unknown,
   context: PluginHandlerContext
 ): Promise<UppidiAgentsOutput> {
   try {
     const agents = await fetchPaseoAgents(context);
+
+    // Eagerly reconcile missing orchestrators if router is active but list is empty (#1143).
+    const router = getActiveHookRouter();
+    if (router && router.getCanonicalEnrolledRepos().length > 0 && router.listOrchestratorRecords().length === 0) {
+      const agentMap = new Map<string, any>(agents.map((a) => [a.id, a]));
+      await router.reconcileEnrolledOrchestrators(agentMap).catch(() => {});
+    }
+
+    // Identity comes from the router registry, never from agent names (#1078).
+    const registry = readCanonicalFleetRegistry();
+    const roleDivergences = applyCanonicalRoles(agents, registry);
 
     const frontDesk: UppidiAgent[] = [];
     const orchestrators: UppidiAgent[] = [];
@@ -897,14 +1106,14 @@ export async function handleUppidiAgents(
 
     // Parent-project inheritance already applied in fetchPaseoAgents (#530).
 
-    const { enrolledRepos, mutedRepos, repoQueuedHooks } = getFleetRosterInfo();
+    const { enrolledRepos, pausedRepos, kanbanOnlyRepos, repoQueuedHooks } = getFleetRosterInfo();
 
     for (const a of agents) {
       const proj = a.project || DEFAULT_PROJECT;
       const isEnrolled = enrolledRepos.some((r) => isRepoMatching(r, proj));
       a.isEnrolled = isEnrolled;
       a.isDetached = !isEnrolled;
-      a.isMuted = mutedRepos.some((m) => isRepoMatching(m, proj));
+      a.isPaused = pausedRepos.some((m) => isRepoMatching(m, proj));
       let queued = 0;
       for (const [k, count] of Object.entries(repoQueuedHooks)) {
         if (isRepoMatching(k, proj)) {
@@ -926,12 +1135,15 @@ export async function handleUppidiAgents(
 
     return {
       ok: true,
+      registryAuthoritative: registry.available,
+      roleDivergences,
       frontDesk,
       orchestrators,
       workers,
       tree,
       enrolledRepos,
-      mutedRepos,
+      pausedRepos,
+      kanbanOnlyRepos,
       repoQueuedHooks,
       totalCount: agents.length,
       runningCount,
@@ -941,12 +1153,15 @@ export async function handleUppidiAgents(
   } catch (err: any) {
     return {
       ok: false,
+      registryAuthoritative: getActiveHookRouter() !== null,
+      roleDivergences: [],
       frontDesk: [],
       orchestrators: [],
       workers: [],
       tree: [],
       enrolledRepos: [],
-      mutedRepos: [],
+      pausedRepos: [],
+      kanbanOnlyRepos: [],
       repoQueuedHooks: {},
       totalCount: 0,
       runningCount: 0,
@@ -975,11 +1190,15 @@ export async function handleUppidiArchiveAgent(
         return { ok: true, agentId, message: `Archived agent ${agentId}` };
       }
     } catch (err: any) {
-      // Fall through to CLI fallback
+      return {
+        ok: false,
+        agentId,
+        error: err?.message || String(err),
+      };
     }
   }
 
-  // 2. Fallback to CLI: paseo archive <agentId>
+  // 2. Fallback to CLI only when SDK is not present: paseo archive <agentId>
   try {
     await execFileAsync("paseo", ["archive", agentId], {
       timeout: 5000,
@@ -1082,7 +1301,7 @@ export async function handleUppidiArchiveInactiveAgents(
  * Maps a teardown target category to the agent category string used by the
  * daemon's agent categorization.
  */
-function teardownTargetToCategory(target: string): "front-desk" | "orchestrator" | "worker" {
+function teardownTargetToCategory(target: string): UppidiAgentCategory {
   switch (target) {
     case "frontdesk":
       return "front-desk";
@@ -1090,8 +1309,110 @@ function teardownTargetToCategory(target: string): "front-desk" | "orchestrator"
       return "orchestrator";
     case "workers":
     default:
-      return "worker";
+      return CODING_AGENT_CATEGORY;
   }
+}
+
+/**
+ * Determines whether a coding-agent belongs to the fleet via the authoritative
+ * roster (#1151). Ad-hoc or detached user sessions that were not created by or
+ * attributed to the fleet are preserved and skipped during fleet teardown.
+ *
+ * This wraps {@link isFleetMember} with legacy context fields so existing
+ * callers continue to work without refactoring every call site.
+ */
+export function isFleetWorker(
+  agent: Partial<UppidiAgent> | UppidiAgent | null | undefined,
+  context: {
+    orchestratorIds?: Set<string>;
+    enrolledRepos?: string[];
+    /** Registered Front Desk agent id (legacy context extension). */
+    frontDeskId?: string | null;
+  } = {}
+): boolean {
+  if (!agent) return false;
+
+  // Build a FleetRoster from the legacy context shape.
+  const orchestratorIds = new Set<string>();
+  if (context.orchestratorIds) {
+    for (const id of context.orchestratorIds) orchestratorIds.add(id);
+  }
+  const roster: FleetRoster = { frontDeskId: context.frontDeskId ?? null, orchestratorIds };
+
+  // Direct roster match (parent orchestrator or front desk id).
+  if (isFleetMember({ id: agent.id ?? "", parentId: agent.parentId, labels: agent.labels }, roster)) return true;
+
+  // Legacy fallback: explicit parent-category hint (e.g. parentCategory === "orchestrator")
+  // when the roster does not carry the parent id but the caller knows it.
+  if (agent.parentId && agent.parentCategory === "orchestrator") return true;
+  if (agent.parentId && agent.parentCategory === "front-desk") return true;
+
+  // Legacy fallback: explicit role/category labels (used by pre-#1151 spawns).
+  const labels = agent.labels ?? {};
+  const roleLabel = String(labels.role ?? labels.category ?? "").trim().toLowerCase();
+  if (isCodingAgentCategory(roleLabel) || roleLabel === "orchestrator" || roleLabel === "front-desk") return true;
+  if (labels["paseo.parent-agent-id"]?.trim()) return true;
+
+  // Legacy fallback: fleet issue or repo attribution.
+  if (labels["forgejo.issue"]?.trim() || labels.issue?.trim() || labels.repo?.trim()) return true;
+  if (agent.attributedWork?.issue !== undefined || agent.attributedWork?.repo) return true;
+
+  // Legacy fallback: enrolled repository membership.
+  if (context.enrolledRepos && context.enrolledRepos.length > 0) {
+    const proj = agent.project || DEFAULT_PROJECT;
+    if (context.enrolledRepos.some((r) => isRepoMatching(r, proj))) return true;
+  }
+
+  return false;
+}
+
+/**
+ * Filters the list of candidates to archive during fleet teardown (#1121).
+ * For worker targets, only fleet-owned workers are included; ad-hoc or detached
+ * user agents are safely skipped.
+ */
+export function resolveTeardownAgents(
+  agents: UppidiAgent[],
+  targetCategories: Set<UppidiAgentCategory>,
+  registry: CanonicalFleetRegistry = { available: false, frontDeskAgentId: null, orchestratorAgentIdToRepo: new Map() }
+): UppidiAgent[] {
+  const orchestratorIds = new Set<string>();
+  if (registry.frontDeskAgentId) {
+    orchestratorIds.add(registry.frontDeskAgentId);
+  }
+  for (const id of registry.orchestratorAgentIdToRepo.keys()) {
+    orchestratorIds.add(id);
+  }
+  // Also collect any live orchestrators/frontdesk from the snapshot
+  for (const a of agents) {
+    if (a.category === "orchestrator" || a.category === "front-desk") {
+      orchestratorIds.add(a.id);
+    }
+  }
+
+  const { enrolledRepos } = getFleetRosterInfo();
+
+  return agents.filter((agent) => {
+    // Normalize a legacy `worker` category onto the canonical `coding-agent`
+    // target so pre-rename snapshots still tear down (#1126).
+    const category = isCodingAgentCategory(agent.category) ? CODING_AGENT_CATEGORY : agent.category;
+    if (!targetCategories.has(category)) {
+      return false;
+    }
+    // Front Desk and Orchestrators are matched directly by target category.
+    // If the agent is registered as front-desk or orchestrator in the roster,
+    // it belongs to that group regardless of its current category value
+    // (which may be stale from normalization without registry). Skip it here
+    // so it is not double-counted as a worker.
+    if (registry.frontDeskAgentId && agent.id === registry.frontDeskAgentId) {
+      return targetCategories.has("front-desk");
+    }
+    if (registry.orchestratorAgentIdToRepo.has(agent.id)) {
+      return targetCategories.has("orchestrator");
+    }
+    // For coding agents, ensure the fleet actually owns them
+    return isFleetWorker(agent, { orchestratorIds, enrolledRepos, frontDeskId: registry.frontDeskAgentId });
+  });
 }
 
 /**
@@ -1126,19 +1447,45 @@ async function archiveAgentById(
 }
 
 /**
- * Fleet teardown handler (#742). Archives all agents matching the requested
- * target categories. Returns structured counts of torn-down agents per
- * category and any errors encountered.
+ * Refuse to delete teardown state outside the OS temp dir while running under
+ * test (#1160). Caller isolation must keep every candidate inside `tmpdir()`;
+ * reaching the operator's live host state from a test is always a bug.
+ */
+export function assertSafeTeardownPath(target: string): void {
+  if (process.env.NODE_ENV !== "test") return;
+  const resolved = path.resolve(target);
+  const tmpRoot = path.resolve(tmpdir());
+  const rel = path.relative(tmpRoot, resolved);
+  if (rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel))) return;
+  throw new Error(
+    `Refusing teardown state deletion outside os.tmpdir() under NODE_ENV=test: ${resolved}`
+  );
+}
+
+function assertSafeTeardownPaths(targets: Iterable<string>): void {
+  for (const target of targets) assertSafeTeardownPath(target);
+}
+
+/**
+ * Fleet teardown handler (#742, #1121). Archives all agents matching the requested
+ * target categories that are fleet-owned. Returns structured counts of torn-down
+ * agents per category and any errors encountered.
  */
 export async function handleFleetTeardown(
   input: FleetTeardownInput,
   context: PluginHandlerContext
 ): Promise<FleetTeardownOutput> {
+  // #1013: hold the teardown window for the whole handler so a dashboard RESUME
+  // cannot clear the canonical halt while agents/state are still being archived.
+  const router = getActiveHookRouter();
+  router?.markTeardownStart();
   try {
     const targetSet = new Set(input.targets);
     const targetCategories = new Set(
       input.targets.map((t) => teardownTargetToCategory(t))
     );
+
+    const registry = readCanonicalFleetRegistry();
 
     let agents: UppidiAgent[] = [];
     try {
@@ -1147,18 +1494,50 @@ export async function handleFleetTeardown(
       // If fetching fails, proceed with state cleanup
     }
 
-    const agentsToTeardown = agents.filter((a) => targetCategories.has(a.category));
+    let agentsToTeardown = resolveTeardownAgents(agents, targetCategories, registry);
 
     const tornDown = { workers: 0, orchestrators: 0, frontdesk: 0 };
     const errors: string[] = [];
 
-    const router = getActiveHookRouter();
+    if (router) {
+      try {
+        router.halt();
+      } catch (err: any) {
+        errors.push(`Failed to engage router halt: ${err?.message || String(err)}`);
+      }
+    }
+
+    if (input.drain) {
+      const timeoutMs = input.drainTimeoutMs ?? 30000;
+      const pollIntervalMs = 250;
+      const startDrain = Date.now();
+      while (Date.now() - startDrain < timeoutMs) {
+        let currentAgents: UppidiAgent[] = [];
+        try {
+          currentAgents = await fetchPaseoAgents(context);
+        } catch {
+          break;
+        }
+        const activeRemaining = resolveTeardownAgents(currentAgents, targetCategories, registry).filter(
+          (a) => a.status === "running"
+        );
+        if (activeRemaining.length === 0) {
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+      }
+      // Refresh agents to teardown after draining
+      try {
+        const refreshed = await fetchPaseoAgents(context);
+        agentsToTeardown = resolveTeardownAgents(refreshed, targetCategories, registry);
+      } catch {}
+    }
 
     // Notify remaining registered groups BEFORE archiving/culling (#872).
     // Delivered via the hook-router queue so the payload survives teardown.
     // Preview counts are derived from the agents about to be culled.
     const previewCounts = {
-      workers: agentsToTeardown.filter((a) => a.category === "worker").length,
+      workers: agentsToTeardown.filter((a) => isCodingAgentCategory(a.category)).length,
       orchestrators: agentsToTeardown.filter((a) => a.category === "orchestrator").length,
       frontdesk: agentsToTeardown.filter((a) => a.category === "front-desk").length,
     };
@@ -1180,50 +1559,71 @@ export async function handleFleetTeardown(
     for (const agent of agentsToTeardown) {
       const success = await archiveAgentById(agent.id, context);
       if (success) {
-        if (agent.category === "worker") tornDown.workers++;
+        if (isCodingAgentCategory(agent.category)) tornDown.workers++;
         else if (agent.category === "orchestrator") tornDown.orchestrators++;
         else if (agent.category === "front-desk") tornDown.frontdesk++;
       } else {
         errors.push(`Failed to archive agent ${agent.id} (${agent.name})`);
       }
     }
-    const home = process.env.HOME ?? os.homedir();
     const persistedDir = getPersistedStateDir();
-    const pluginDataDir = join(home, ".paseo", "plugin-data", "xpufx", "uppidi-fleet");
+    const frontDeskDirs = new Set<string>([persistedDir]);
+    if (router?.stateDir) {
+      frontDeskDirs.add(router.stateDir);
+    }
+    const orchestratorDirs = new Set<string>([join(persistedDir, "orchestrators")]);
+    if (router?.stateDir) {
+      orchestratorDirs.add(router.stateDir);
+    }
+    const queueDirs = new Set<string>([join(persistedDir, "queues")]);
+    const hookQueueDir = process.env.HOOK_QUEUE_DIR?.trim();
+    if (hookQueueDir) {
+      queueDirs.add(hookQueueDir);
+    }
+    if (router?.queueDir) {
+      queueDirs.add(router.queueDir);
+    }
 
     // Clean up Front Desk state if targeted (#774)
     if (targetSet.has("frontdesk")) {
-      const fdCandidates = new Set<string>([
-        join(persistedDir, "frontdesk.json"),
-        join(path.dirname(persistedDir), "frontdesk.json"),
-        join(persistedDir, "orchestrators", "frontdesk.json"),
-        join(pluginDataDir, "frontdesk.json"),
-        join(pluginDataDir, "orchestrators", "frontdesk.json"),
-        join(home, ".paseo", "forgejo-hook", "frontdesk.json"),
-        join(home, ".paseo", "forgejo-hook", "orchestrators", "frontdesk.json"),
-      ]);
-      if (router?.stateDir) {
-        fdCandidates.add(join(router.stateDir, "frontdesk.json"));
-        fdCandidates.add(join(path.dirname(router.stateDir), "frontdesk.json"));
+      const fdCandidates = new Set<string>();
+      for (const dir of frontDeskDirs) {
+        fdCandidates.add(join(dir, "frontdesk.json"));
+        fdCandidates.add(join(dir, "orchestrators", "frontdesk.json"));
       }
-      if (router?.queueDir) {
-        fdCandidates.add(join(router.queueDir, "frontdesk.json"));
+      for (const dir of queueDirs) {
+        fdCandidates.add(join(dir, "frontdesk.json"));
       }
+      assertSafeTeardownPaths(fdCandidates);
 
+      const removedFrontDeskFiles: string[] = [];
       for (const file of fdCandidates) {
         try {
           if (fs.existsSync(file)) {
             fs.unlinkSync(file);
+            removedFrontDeskFiles.push(file);
           }
         } catch (err: any) {
           errors.push(`Failed to delete frontdesk state file ${file}: ${err?.message || String(err)}`);
         }
       }
+      if (removedFrontDeskFiles.length > 0 && router && typeof (router as any).recordStateMutation === "function") {
+        try {
+          (router as any).recordStateMutation({
+            action: "clearFrontDesk",
+            source: "fleet-teardown:frontdesk",
+            actor: null,
+            reason: `fleet teardown targets=${input.targets.join(",")}`,
+            key: "frontdesk",
+            priorValue: { paths: removedFrontDeskFiles },
+          });
+        } catch {}
+      }
 
       if (router) {
         try {
           if (typeof (router as any).clearFrontDesk === "function") {
-            (router as any).clearFrontDesk();
+            (router as any).clearFrontDesk({ source: "fleet-teardown:frontdesk", reason: `targets=${input.targets.join(",")}` });
           } else if (typeof (router as any).clearQueue === "function") {
             (router as any).clearQueue("frontdesk");
           }
@@ -1235,15 +1635,10 @@ export async function handleFleetTeardown(
 
     // Clean up Orchestrators state if targeted (#774)
     if (targetSet.has("orchestrators")) {
-      const orchDirs = new Set<string>([
-        join(persistedDir, "orchestrators"),
-        join(pluginDataDir, "orchestrators"),
-        join(home, ".paseo", "forgejo-hook", "orchestrators"),
-      ]);
-      if (router?.stateDir) {
-        orchDirs.add(router.stateDir);
-      }
+      const orchDirs = orchestratorDirs;
+      assertSafeTeardownPaths(orchDirs);
 
+      const removedOrchestratorFiles: string[] = [];
       for (const dir of orchDirs) {
         try {
           if (fs.existsSync(dir)) {
@@ -1255,6 +1650,7 @@ export async function handleFleetTeardown(
                 }
                 try {
                   fs.unlinkSync(join(dir, file));
+                  removedOrchestratorFiles.push(join(dir, file));
                 } catch (err: any) {
                   errors.push(`Failed to delete orchestrator file ${file}: ${err?.message || String(err)}`);
                 }
@@ -1265,11 +1661,30 @@ export async function handleFleetTeardown(
           errors.push(`Failed to read orchestrators dir ${dir}: ${err?.message || String(err)}`);
         }
       }
+      if (
+        removedOrchestratorFiles.length > 0 &&
+        router &&
+        typeof (router as any).recordStateMutation === "function"
+      ) {
+        try {
+          (router as any).recordStateMutation({
+            action: "clearAllOrchestrators",
+            source: "fleet-teardown:orchestrators",
+            actor: null,
+            reason: `fleet teardown targets=${input.targets.join(",")}`,
+            key: null,
+            priorValue: { paths: removedOrchestratorFiles },
+          });
+        } catch {}
+      }
 
       if (router) {
         try {
           if (typeof (router as any).clearAllOrchestrators === "function") {
-            (router as any).clearAllOrchestrators();
+            (router as any).clearAllOrchestrators({
+              source: "fleet-teardown:orchestrators",
+              reason: `targets=${input.targets.join(",")}`,
+            });
           }
         } catch (err: any) {
           errors.push(`Failed to clear router orchestrator mappings: ${err?.message || String(err)}`);
@@ -1280,6 +1695,12 @@ export async function handleFleetTeardown(
     // Clean up worker / repo queues if workers is targeted or general teardown (#774)
     const isGeneralTeardown =
       targetSet.has("workers") && targetSet.has("orchestrators") && targetSet.has("frontdesk");
+    const registeredOrchKeys = new Set(
+      router && typeof (router as any).listOrchestratorRecords === "function"
+        ? ((router as any).listOrchestratorRecords() as Array<{ key: string }>).map((r) => r.key)
+        : []
+    );
+
     if (targetSet.has("workers") || isGeneralTeardown) {
       if (router) {
         try {
@@ -1291,6 +1712,7 @@ export async function handleFleetTeardown(
               : [];
             for (const key of queueKeys) {
               if (key === "frontdesk" && !targetSet.has("frontdesk")) continue;
+              if (registeredOrchKeys.has(key) && !targetSet.has("orchestrators")) continue;
               (router as any).clearQueue(key);
             }
           }
@@ -1299,16 +1721,7 @@ export async function handleFleetTeardown(
         }
       }
 
-      const queueDirs = new Set<string>([
-        join(pluginDataDir, "queues"),
-        join(home, ".paseo", "forgejo-hook", "queues"),
-      ]);
-      if (process.env.HOOK_QUEUE_DIR) {
-        queueDirs.add(process.env.HOOK_QUEUE_DIR);
-      }
-      if (router?.queueDir) {
-        queueDirs.add(router.queueDir);
-      }
+      assertSafeTeardownPaths(queueDirs);
 
       for (const qDir of queueDirs) {
         try {
@@ -1318,6 +1731,12 @@ export async function handleFleetTeardown(
               if (file.endsWith(".json") || file.endsWith(".jsonl")) {
                 if (file.startsWith("frontdesk") && !targetSet.has("frontdesk")) {
                   continue;
+                }
+                if (!targetSet.has("orchestrators")) {
+                  const baseName = file.replace(/\.(json|jsonl)$/, "");
+                  if (Array.from(registeredOrchKeys).some((k) => baseName.includes(k) || k.includes(baseName))) {
+                    continue;
+                  }
                 }
                 try {
                   fs.unlinkSync(join(qDir, file));
@@ -1341,32 +1760,6 @@ export async function handleFleetTeardown(
         const culledIds = agentsToTeardown.map((a) => a.id);
         if (typeof (router as any).markFleetTeardown === "function") {
           (router as any).markFleetTeardown(input.targets, culledIds);
-        }
-        // Ensure the pre-cull broadcast survives the queue purge above for
-        // remaining groups. `frontdesk` is exempt from QUEUE_UNORCHESTRATED, so
-        // it doubles as the audit trail when everything was culled.
-        const survivingFrontDesk = !targetSet.has("frontdesk") && teardownQueuedKeys.includes("frontdesk");
-        const survivingOrchestrators = !targetSet.has("orchestrators")
-          ? teardownQueuedKeys.filter((k) => k !== "frontdesk")
-          : [];
-        if (survivingFrontDesk || survivingOrchestrators.length > 0) {
-          for (const key of survivingOrchestrators) {
-            try {
-              if ((router as any).getQueue(key).length === 0) {
-                (router as any).enqueue(key, teardownNotice, true);
-              }
-            } catch {}
-          }
-          try {
-            if (survivingFrontDesk && (router as any).getQueue("frontdesk").length === 0) {
-              (router as any).enqueue("frontdesk", teardownNotice, true);
-            }
-          } catch {}
-        } else if (isGeneralTeardown) {
-          try {
-            (router as any).enqueue("frontdesk", teardownNotice, true);
-            teardownQueuedKeys = ["frontdesk"];
-          } catch {}
         }
       } catch (err: any) {
         errors.push(`Failed to reconcile teardown router state: ${err?.message || String(err)}`);
@@ -1408,14 +1801,112 @@ export async function handleFleetTeardown(
       errors: [err?.message || String(err)],
       error: err?.message || String(err),
     };
+  } finally {
+    router?.markTeardownEnd();
   }
+}
+
+/**
+ * Engage the canonical ALL HALT (#1013). Reuses the #994 `HookRouter.halt()`
+ * path rather than introducing a second halt mechanism. A double-engage is a
+ * no-op that reports `alreadyHalted` so the dashboard can disable the control.
+ */
+export async function handleFleetHalt(
+  _input: FleetHaltInput,
+  _context?: PluginHandlerContext
+): Promise<FleetHaltOutput> {
+  const router = getActiveHookRouter();
+  if (!router) {
+    return {
+      ok: false,
+      halted: false,
+      alreadyHalted: false,
+      teardownInProgress: false,
+      error: "Hook router is not running; cannot engage halt",
+    };
+  }
+
+  if (router.isHalted()) {
+    return {
+      ok: true,
+      halted: true,
+      alreadyHalted: true,
+      teardownInProgress: router.isTeardownInProgress(),
+      message: "Canonical ALL HALT is already engaged",
+    };
+  }
+
+  try {
+    router.halt();
+    return {
+      ok: true,
+      halted: true,
+      alreadyHalted: false,
+      teardownInProgress: router.isTeardownInProgress(),
+      message: "Canonical ALL HALT engaged — ingress paused, background loops stopped, auto-provisioning disabled",
+    };
+  } catch (err: any) {
+    return {
+      ok: false,
+      halted: router.isHalted(),
+      alreadyHalted: false,
+      teardownInProgress: router.isTeardownInProgress(),
+      error: err?.message || String(err),
+    };
+  }
+}
+
+/**
+ * Clear the canonical ALL HALT (#1013) via `router.resume("all")`. Refuses
+ * while a fleet teardown is mid-flight so resume cannot race archiving.
+ */
+export async function handleFleetResume(
+  _input: FleetResumeInput,
+  _context?: PluginHandlerContext
+): Promise<FleetResumeOutput> {
+  const router = getActiveHookRouter();
+  if (!router) {
+    return {
+      ok: false,
+      halted: false,
+      teardownInProgress: false,
+      error: "Hook router is not running; cannot resume halt",
+    };
+  }
+
+  if (router.isTeardownInProgress()) {
+    return {
+      ok: false,
+      halted: router.isHalted(),
+      teardownInProgress: true,
+      error: "Fleet teardown in progress; halt cannot be resumed until it completes",
+    };
+  }
+
+  if (!router.isHalted()) {
+    return {
+      ok: true,
+      halted: false,
+      teardownInProgress: false,
+      message: "Fleet is not halted",
+    };
+  }
+
+  const result = router.resumeAll();
+  return {
+    ok: result.ok,
+    halted: router.isHalted(),
+    teardownInProgress: router.isTeardownInProgress(),
+    message: result.resumed ? "Canonical ALL HALT cleared — ingress and auto-provisioning resumed" : undefined,
+    error: result.error,
+  };
 }
 
 /**
  * Reset fleet state (Issue #764):
  * Purge persisted/stale cache and status in ~/.cache and plugin storage directory
  * (board-state, queues), clear in-memory queues if active, and notify registered
- * orchestrators via paseo send --steer so they do not rely on stale context.
+ * orchestrators via paseo send --no-wait so they do not rely on stale context.
  */
 export async function handleFleetResetState(
   input: FleetResetStateInput,
@@ -1488,26 +1979,6 @@ export async function handleFleetResetState(
       }
     }
 
-    // Also check legacy ~/.paseo/forgejo-hook/ if any
-    const legacyBoardStateDir = join(home, ".paseo", "forgejo-hook", "board-state");
-    if (fs.existsSync(legacyBoardStateDir)) {
-      try {
-        const files = fs.readdirSync(legacyBoardStateDir);
-        for (const file of files) {
-          if (file.endsWith(".json")) {
-            try {
-              fs.unlinkSync(join(legacyBoardStateDir, file));
-              boardStateFiles++;
-            } catch (err) {
-              console.warn(`[uppidi-fleet:agents] file delete failed:`, err);
-            }
-          }
-        }
-      } catch (err) {
-        console.warn(`[uppidi-fleet:agents] file delete failed:`, err);
-      }
-    }
-
     // 3. Clear queues on router and on disk
     const router = getActiveHookRouter();
     if (router && typeof (router as any).clearAllQueues === "function") {
@@ -1537,7 +2008,7 @@ export async function handleFleetResetState(
       }
     }
 
-    // 4. Notify registered orchestrators via paseo send --steer
+    // 4. Notify registered orchestrators via paseo send --no-wait
     if (input.notifyOrchestrators !== false) {
       const orchestratorIds = new Set<string>();
 
@@ -1603,7 +2074,7 @@ export async function handleFleetResetState(
               await agentRef.send(resetNotice, { steer: true } as any);
               sent = true;
             } else {
-              await execFileAsync("paseo", ["send", "--no-wait", "--steer", orchId, resetNotice], { timeout: 5000 });
+              await execFileAsync("paseo", ["send", "--no-wait", orchId, resetNotice], { timeout: 5000 });
               sent = true;
             }
           } catch (err: any) {
@@ -1881,9 +2352,10 @@ export async function allowPermission(
       }
     } catch (err: any) {
       console.warn(
-        `[uppidi-fleet:agents] SDK respondToPermission failed for ${agentId} ${requestId}, falling back to CLI:`,
+        `[uppidi-fleet:agents] SDK respondToPermission failed for ${agentId} ${requestId}:`,
         err?.message || err,
       );
+      return false;
     }
   }
   try {
@@ -1906,11 +2378,11 @@ export async function allowPermission(
  * Quoted verbatim so operators and agents see the exact dispatch paths.
  */
 const SPAWN_AUTHORITY_REMEDIATION =
-  "steer the registered orchestrator: paseo send --steer --no-wait <orchId>, or self-register via POST <hook-host>:<port>/orchestrator";
+  "steer the registered orchestrator: paseo send --no-wait <orchId>, or self-register via POST <hook-host>:<port>/orchestrator";
 
-/** The front desk may never spawn subagents (workers). */
+/** The front desk may never spawn subagents (coding agents). */
 export const SPAWN_AUTHORITY_WORKER_ERROR =
-  `two-tier spawn authority: the front-desk agent must not spawn workers; ${SPAWN_AUTHORITY_REMEDIATION}`;
+  `two-tier spawn authority: the front-desk agent must not spawn coding agents; ${SPAWN_AUTHORITY_REMEDIATION}`;
 
 /** Desk-spawned orchestrators must bind to an explicit repo workspace, not inherit the desk cwd. */
 export const SPAWN_AUTHORITY_WORKSPACE_ERROR =
@@ -1979,20 +2451,14 @@ function normalizeSpawnDir(dir: string | undefined): string | undefined {
 
 /**
  * Deterministic set of directories an orchestrator must never inherit as its
- * root: the desk's conventional `~/code/meta` checkout plus the desk agent's
- * recorded cwd (#573, same bug class as #530).
+ * root: the desk's conventional `~/code/meta` checkout (#573, same bug class as #530).
  */
-export function resolveDeskWorkingDirs(deskAgentId: string | null): Set<string> {
+export function resolveDeskWorkingDirs(_deskAgentId: string | null): Set<string> {
   const dirs = new Set<string>();
   const home = process.env.HOME ?? os.homedir();
   if (home) {
     const meta = normalizeSpawnDir(join(home, "code", "meta"));
     if (meta) dirs.add(meta);
-  }
-  if (deskAgentId) {
-    const disk = getAgentDiskMetadataMap().get(deskAgentId);
-    const recorded = normalizeSpawnDir(disk?.cwd);
-    if (recorded) dirs.add(recorded);
   }
   return dirs;
 }
@@ -2000,17 +2466,17 @@ export function resolveDeskWorkingDirs(deskAgentId: string | null): Set<string> 
 /**
  * Pure, deterministic two-tier spawn authority check (#573, platform#172).
  *
- * - A front-desk caller may not spawn `category: "worker"`.
+ * - A front-desk caller may not spawn a coding agent.
  * - A front-desk caller spawning `category: "orchestrator"` must supply an
  *   explicit `workspaceId` or a repo-local `cwd` that is not one of the desk's
  *   own working directories.
  *
  * Enforcement is by positive attribution: when no caller id resolves, or the
  * registered desk is unknown, the spawn is allowed so legitimate orchestrator
- * self-registration and worker spawning never regress.
+ * self-registration and coding-agent spawning never regress.
  */
 export function evaluateSpawnAuthority(
-  options: { category?: "front-desk" | "orchestrator" | "worker"; cwd?: string; workspaceId?: string; callerAgentId?: string },
+  options: { category?: UppidiAgentCategory; cwd?: string; workspaceId?: string; callerAgentId?: string },
   context?: PluginHandlerContext,
   deps: { frontDeskAgentId?: () => string | null; deskWorkingDirs?: (id: string | null) => Set<string> } = {},
 ): SpawnAuthorityDecision {
@@ -2027,11 +2493,11 @@ export function evaluateSpawnAuthority(
     };
   }
 
-  if (options.category === "worker") {
+  if (isCodingAgentCategory(options.category)) {
     return {
       allowed: false,
       error: SPAWN_AUTHORITY_WORKER_ERROR,
-      reason: `front desk ${callerAgentId} attempted to spawn a worker`,
+      reason: `front desk ${callerAgentId} attempted to spawn a coding agent`,
     };
   }
 
@@ -2063,10 +2529,12 @@ export async function spawnPaseoAgent(
   options: {
     title: string;
     prompt: string;
-    category?: "front-desk" | "orchestrator" | "worker";
+    category?: UppidiAgentCategory;
     model?: string;
     cwd?: string;
     workspaceId?: string;
+    /** Repository slug, used to make workspace fail-fast errors actionable. */
+    repo?: string;
     labels?: Record<string, string>;
     /** Declarative capability grant applied at/after spawn (#537). */
     capabilities?: SpawnCapabilities;
@@ -2085,11 +2553,15 @@ export async function spawnPaseoAgent(
 
   // Worktree-only dispatch (#918): a worker must never be handed the primary
   // checkout. Refuse before any SDK/CLI call so the invalid spawn cannot start.
-  const workspaceGuard = await evaluateWorkerSpawnWorkspace({
-    category: options.category,
-    cwd: options.cwd,
-    workspaceId: options.workspaceId,
-  });
+  const workspaceGuard = await evaluateWorkerSpawnWorkspace(
+    {
+      category: options.category,
+      cwd: options.cwd,
+      workspaceId: options.workspaceId,
+    },
+    undefined,
+    context?.paseo,
+  );
   if (!workspaceGuard.allowed) {
     appendHookLog(`[warn] worktree-only-dispatch: rejected: ${workspaceGuard.reason}`);
     console.warn(`[uppidi-fleet:agents] worktree-only-dispatch rejected: ${workspaceGuard.reason}`);
@@ -2097,7 +2569,25 @@ export async function spawnPaseoAgent(
   }
   appendHookLog(`[info] worktree-only-dispatch: allowed: ${workspaceGuard.reason}`);
 
-  const categoryKey = options.category === "front-desk" ? "front-desk" : "orchestrator";
+  // Determine whether this is a worker spawn so we can sanitize its
+  // environment (FORGEJO_TOKEN stripped) without mutating the daemon
+  // process.env. Workers must interact exclusively via MCP tools.
+  const isWorker = options.category ? isCodingAgentCategory(options.category) : false;
+  const hasForgeToken = typeof process.env.FORGEJO_TOKEN === "string" && process.env.FORGEJO_TOKEN.length > 0;
+
+  // Canonical workspace requirement (#1159): an orchestrator must be placed in
+  // a concrete workspace. If neither a cwd nor a workspaceId resolved, fail
+  // fast instead of letting the daemon fall back to an arbitrary default.
+  if (options.category === "orchestrator" && !options.cwd && !options.workspaceId) {
+    const error = workspaceNotFoundError(options.repo ?? "unknown").message;
+    appendHookLog(`[warn] workspace-resolution: rejected: ${error}`);
+    return { ok: false, error };
+  }
+
+  // Resolve the role model by canonical role (#1126): front-desk, orchestrator,
+  // or coding-agent (legacy `worker` aliases the coding-agent role instead of
+  // silently falling back to the orchestrator model).
+  const categoryKey = resolveRoleModelKey(options.category);
   let resolvedModel = options.model?.trim();
   if (!resolvedModel) {
     try {
@@ -2153,7 +2643,23 @@ export async function spawnPaseoAgent(
       if (options.cwd) sdkConfig.cwd = options.cwd;
       if (spawnMode) sdkConfig.modeId = spawnMode;
       if (autoAccept) sdkConfig.featureValues = { auto_accept: true };
+      // Sanitize child env for workers: strip FORGEJO_TOKEN so they
+      // interact exclusively via MCP tools (#1296).
+      if (isWorker && hasForgeToken) {
+        sdkConfig.env = Object.fromEntries(
+          Object.entries(process.env).filter(([k]) => k !== "FORGEJO_TOKEN")
+        );
+      }
+      // #1020: stamp fleet role so the agent.create hook can select per-class
+      // MCP servers. The marker is consumed and stripped by the hook.
+      if (options.category) {
+        sdkConfig.env = sdkConfig.env ?? {};
+        sdkConfig.env.PASEO_FLEET_ROLE = options.category;
+      }
       createPayload.config = sdkConfig;
+      if (sdkConfig.env) {
+        createPayload.env = { ...sdkConfig.env };
+      }
       if (options.workspaceId) {
         createPayload.workspaceId = options.workspaceId;
         createPayload.workspace = options.workspaceId;
@@ -2194,10 +2700,13 @@ export async function spawnPaseoAgent(
     if (spawnMode) {
       args.push("--mode", spawnMode);
     }
-    if (options.workspaceId) {
-      args.push("--workspace", options.workspaceId);
-    } else if (options.cwd) {
+    // Canonical ambient resolution: `--cwd` lets the daemon attach or create
+    // the workspace deterministically. A raw `--workspace` id can be stale
+    // (tombstoned worktree), so only fall back to it when no cwd is known.
+    if (options.cwd) {
       args.push("--cwd", options.cwd);
+    } else if (options.workspaceId) {
+      args.push("--workspace", options.workspaceId);
     }
     if (options.labels) {
       for (const [k, v] of Object.entries(options.labels)) {
@@ -2206,9 +2715,25 @@ export async function spawnPaseoAgent(
     }
     args.push("--json", options.prompt);
 
+    // Sanitize child env for workers: strip FORGEJO_TOKEN so they
+    // interact exclusively via MCP tools (#1296).
+    let spawnEnv =
+      isWorker && hasForgeToken
+        ? Object.fromEntries(
+            Object.entries(process.env).filter(([k]) => k !== "FORGEJO_TOKEN")
+          )
+        : undefined;
+    // #1020: stamp fleet role for CLI path too.
+    if (options.category) {
+      spawnEnv = spawnEnv ?? {};
+      spawnEnv.PASEO_FLEET_ROLE = options.category;
+      args.push("--env", `PASEO_FLEET_ROLE=${options.category}`);
+    }
+
     const { stdout } = await execFileAsync("paseo", args, {
       timeout: 15000,
       encoding: "utf-8",
+      env: spawnEnv,
     });
 
     let agentId: string | undefined;
@@ -2244,7 +2769,9 @@ export function getPersistedStateDir(): string {
     return join(tmpdir(), `paseo-uppidi-fleet-state-${process.pid}`);
   }
   const home = process.env.HOME ?? os.homedir();
-  return join(home, ".paseo", "forgejo-hook");
+  // Keep Front Desk state beside the router's orchestrator registry so writes
+  // from the handler and router resolve to the same durable location.
+  return join(home, ".paseo", "plugin-data", "xpufx", "uppidi-fleet");
 }
 
 function writePersistedFrontDesk(agentId: string): void {
@@ -2279,16 +2806,6 @@ function writePersistedOrchestrator(repo: string, agentId: string): void {
   renameSync(tmp, file);
 }
 
-function enrollPersistedRepo(repo: string): void {
-  if (process.env.NODE_ENV === "test") {
-    return;
-  }
-  const config = loadRouterConfig();
-  const enrolled = new Set(config.enrolledRepos ?? []);
-  enrolled.add(repo);
-  saveRouterConfig({ enrolledRepos: Array.from(enrolled) });
-}
-
 /**
  * Builds the Front Desk introduction prompt, appending the resolved hook router
  * endpoint and auth posture (#903). The endpoint comes from the same chain as
@@ -2298,7 +2815,7 @@ function enrollPersistedRepo(repo: string): void {
 export function buildFrontDeskIntroPrompt(basePrompt?: string): string {
   const base =
     basePrompt?.trim() ||
-    `You are the Fleet Front Desk liaison. Follow the front desk skill at ${getEffectiveSkillPath("front-desk")}. Monitor incoming events, coordinate with project orchestrators, and triage requests across the workspace.`;
+    `You are the Fleet Front Desk liaison. Monitor incoming events, coordinate with project orchestrators, and triage requests across the workspace.`;
   const endpoint = resolveHookEndpoint();
   const auth = resolveHookAuthPosture();
   const authLine = auth.available
@@ -2313,6 +2830,8 @@ export function buildFrontDeskIntroPrompt(basePrompt?: string): string {
     `- baseUrl: ${endpoint.baseUrl}`,
     `- resolution source: ${endpoint.source}`,
     `- ${authLine}`,
+    "",
+    renderSkillDirective("front-desk"),
   ].join("\n");
 }
 
@@ -2321,8 +2840,25 @@ export async function handleUppidiCreateFrontDesk(
   context: PluginHandlerContext
 ): Promise<UppidiCreateFrontDeskOutput> {
   try {
+    const router = getActiveHookRouter();
+    if (router?.isHalted()) {
+      return {
+        ok: false,
+        error: "Fleet teardown / halt in progress: Front Desk provisioning is disabled",
+      };
+    }
+
     const title = input.title?.trim() || "Front Desk";
     const prompt = buildFrontDeskIntroPrompt(input.prompt);
+
+    // Stamp fleet identity labels on Front Desk spawn (#1151).
+    // The fleet-id will be the agent's own id; we set it via the SDK label-update
+    // after spawn since we don't know the id until then.
+    const fdLabels: Record<string, string> = {
+      role: "front-desk",
+      category: "front-desk",
+      "fleet.uppidi.com/role": "front-desk",
+    };
 
     const spawnRes = await spawnPaseoAgent(
       {
@@ -2330,13 +2866,23 @@ export async function handleUppidiCreateFrontDesk(
         prompt,
         category: "front-desk",
         model: input.model,
-        labels: {
-          role: "front-desk",
-          category: "front-desk",
-        },
+        labels: fdLabels,
       },
       context
     );
+
+    // Stamp fleet-id post-spawn via SDK label update (#1151).
+    if (spawnRes.ok && spawnRes.agentId && context?.paseo?.agents?.ref) {
+      try {
+        const handle = context.paseo.agents.ref(spawnRes.agentId);
+        const agentWithUpdate = handle as any;
+        if (typeof agentWithUpdate.update === "function") {
+          await agentWithUpdate.update({ labels: { ...fdLabels, "fleet.uppidi.com/fleet-id": spawnRes.agentId } });
+        }
+      } catch {
+        // Best-effort: stale labels still allow roster-based membership.
+      }
+    }
 
     if (!spawnRes.ok || !spawnRes.agentId) {
       return {
@@ -2345,7 +2891,6 @@ export async function handleUppidiCreateFrontDesk(
       };
     }
 
-    const router = getActiveHookRouter();
     if (router) {
       router.writeFrontDesk(spawnRes.agentId, "frontdesk");
     } else {
@@ -2419,65 +2964,42 @@ export async function resolveRepoWorkspace(
   repo: string,
   context?: PluginHandlerContext
 ): Promise<{ cwd?: string; workspaceId?: string }> {
-  // 0. Deterministically match repository against daemon workspaces.json (#793)
-  // When execFileAsync is mocked in tests, prefer the mock to preserve test isolation.
-  if (execFileAsync === defaultExecFileAsync) {
-    const deterministicMatch = resolveWorkspaceForRepo(repo);
-    if (deterministicMatch?.cwd || deterministicMatch?.workspaceId) {
-      return {
-        cwd: deterministicMatch.cwd,
-        workspaceId: deterministicMatch.workspaceId,
-      };
-    }
-  }
+  const raw = repo?.trim();
+  if (!raw) return {};
 
-  const parts = repo.split("/");
-  const repoBasename = parts[parts.length - 1] || repo;
-
-  // 1. Try querying Paseo workspaces via CLI
-  try {
-    const { stdout } = await execFileAsync("paseo", ["workspace", "ls", "--json"], { timeout: 5000 });
-    const list = JSON.parse(stdout);
-    if (Array.isArray(list)) {
-      const matches = list.filter((w: any) => {
-        const proj = String(w.project || "").toLowerCase();
-        const name = String(w.name || "").toLowerCase();
-        const base = repoBasename.toLowerCase();
-        return isRepoMatching(proj, repo) || proj === base || name === base;
-      });
-      // Prefer local workspace over ephemeral worktree
-      const match = matches.find((w: any) => w.isolation === "local") || matches[0];
-      const resolvedWorkspaceId = match?.workspaceId || match?.id;
-      if (resolvedWorkspaceId) {
-        return { cwd: match.cwd || match.path, workspaceId: resolvedWorkspaceId };
-      }
-    }
-  } catch (err) {
-    console.warn(`[uppidi-fleet:agents] workspace resolution failed:`, err);
-  }
-
-  // 2. Try matching against existing agents
-  if (context) {
+  // 0. Canonical daemon resolution (#1159): read the daemon workspace list over
+  // RPC, then let the daemon attach/create the ambient workspace from a host
+  // checkout via `workspaces.open`. No `workspaces.json` scraping.
+  const paseo = context?.paseo;
+  if (typeof paseo?.workspaces?.list === "function") {
     try {
-      const agents = await fetchPaseoAgents(context).catch(() => []);
-      const matching = agents.find(
-        (a) => a.cwd && isRepoMatching(a.project || extractAgentProject(a, undefined, getWorkspaceProjectMap()), repo)
-      );
-      if (matching?.cwd && fs.existsSync(matching.cwd)) {
-        return { cwd: matching.cwd, workspaceId: (matching as any).workspaceId };
+      const canonical = await resolveWorkspaceForRepoViaDaemon(raw, paseo);
+      if (canonical?.cwd || canonical?.workspaceId) {
+        return { cwd: canonical.cwd, workspaceId: canonical.workspaceId };
       }
     } catch (err) {
-      console.warn(`[uppidi-fleet:agents] live agent fetch failed:`, err);
+      console.warn(`[uppidi-fleet:agents] canonical workspace resolution failed:`, err);
+      throw err;
     }
   }
 
-  // 3. Fall back to standard ~/code/<repoBasename> path if it exists
-  const home = process.env.HOME || "";
-  if (home) {
-    const candidate = join(home, "code", repoBasename);
-    if (fs.existsSync(candidate)) {
-      return { cwd: candidate };
+  // 1. Deterministic in-memory match, for injected/test records only.
+  const injected = (context as any)?.workspacesData as any[] | undefined;
+  if (Array.isArray(injected)) {
+    const deterministicMatch: ResolvedWorkspace | null = resolveWorkspaceForRepo(raw, {
+      workspacesData: injected,
+      projectsData: (context as any)?.projectsData,
+    });
+    if (deterministicMatch?.cwd || deterministicMatch?.workspaceId) {
+      return { cwd: deterministicMatch.cwd, workspaceId: deterministicMatch.workspaceId };
     }
+  }
+
+  // 2. Deterministic host checkout path. The daemon attaches/creates the
+  //    workspace when the spawn passes `--cwd` (CLI) or `config.cwd` (SDK).
+  const candidate = candidateHostCheckoutDir(raw);
+  if (candidate && fs.existsSync(candidate)) {
+    return { cwd: candidate };
   }
 
   return {};
@@ -2504,18 +3026,28 @@ export async function handleUppidiAddOrchestrator(
     const title = input.title?.trim() || `Orchestrator · ${repo}`;
     const defaultPrompt =
       `You are the project orchestrator for ${repo}.\n` +
-      `Follow the orchestrator skill at ${getEffectiveSkillPath("orchestrator")}.\n` +
-      `Dispatch workers with the coding-agent skill at ${getEffectiveSkillPath("coding-agent")}.\n` +
-      `Coordinate tasks, supervise worker agents, and manage pull requests and issues for this repository using the forge CLI (teax) and Paseo conventions.`;
+      `Coordinate tasks, supervise coding agents, and manage pull requests and issues for this repository using the forge CLI (teax) and Paseo conventions.\n\n` +
+      renderSkillDirective("orchestrator") +
+      "\n\n" +
+      renderSkillDirective("coding-agent");
     const prompt = input.prompt?.trim() || defaultPrompt;
 
     let cwd = input.workspacePath?.trim();
     let workspaceId: string | undefined;
-    const resolved = await resolveRepoWorkspace(repo, context);
     if (!cwd) {
+      const resolved = await resolveRepoWorkspace(repo, context);
       cwd = resolved.cwd;
+      workspaceId = resolved.workspaceId;
     }
-    workspaceId = resolved.workspaceId;
+
+    // Stamp fleet identity labels on Orchestrator spawn (#1151).
+    const orchLabels: Record<string, string> = {
+      role: "orchestrator",
+      category: "orchestrator",
+      repo,
+      "fleet.uppidi.com/role": "orchestrator",
+      "fleet.uppidi.com/fleet-id": "", // set post-spawn
+    };
 
     const spawnRes = await spawnPaseoAgent(
       {
@@ -2525,15 +3057,25 @@ export async function handleUppidiAddOrchestrator(
         model: input.model,
         cwd,
         workspaceId,
+        repo,
         callerAgentId: input.callerAgentId,
-        labels: {
-          role: "orchestrator",
-          category: "orchestrator",
-          repo,
-        },
+        labels: orchLabels,
       },
       context
     );
+
+    // Stamp fleet-id post-spawn via SDK label update (#1151).
+    if (spawnRes.ok && spawnRes.agentId && context?.paseo?.agents?.ref) {
+      try {
+        const handle = context.paseo.agents.ref(spawnRes.agentId);
+        const agentWithUpdate = handle as any;
+        if (typeof agentWithUpdate.update === "function") {
+          await agentWithUpdate.update({ labels: { ...orchLabels, "fleet.uppidi.com/fleet-id": spawnRes.agentId } });
+        }
+      } catch {
+        // Best-effort.
+      }
+    }
 
     if (!spawnRes.ok || !spawnRes.agentId) {
       return {
@@ -2546,10 +3088,8 @@ export async function handleUppidiAddOrchestrator(
     const router = getActiveHookRouter();
     if (router) {
       router.writeOrchestrator(repo, spawnRes.agentId, "orchestrator");
-      router.enrollRepo(repo);
     } else {
       writePersistedOrchestrator(repo, spawnRes.agentId);
-      enrollPersistedRepo(repo);
     }
 
     return {
@@ -2632,55 +3172,127 @@ export async function handleUppidiReplaceOrchestrator(
   }
 }
 
-export async function handleUppidiToggleRepoMute(
-  input: UppidiToggleRepoMuteInput,
+export async function handleUppidiToggleRepoPause(
+  input: UppidiToggleRepoPauseInput,
   context: PluginHandlerContext
-): Promise<UppidiToggleRepoMuteOutput> {
+): Promise<UppidiToggleRepoPauseOutput> {
   const repo = input.repo?.trim();
   if (!repo) {
-    return { ok: false, repo: "", isMuted: false, mutedRepos: [], error: "repo is required" };
+    return { ok: false, repo: "", isPaused: false, pausedRepos: [], error: "repo is required" };
   }
 
   try {
     const router = getActiveHookRouter();
     if (router) {
-      const res = router.toggleRepoMute(repo, input.muted);
+      const res = router.toggleRepoPause(repo, input.paused);
       return {
         ok: true,
         repo,
-        isMuted: res.isMuted,
-        mutedRepos: res.mutedRepos,
-        message: res.isMuted ? `Muted repository ${repo}` : `Unmuted repository ${repo}`,
+        isPaused: res.isPaused,
+        pausedRepos: res.pausedRepos,
+        message: res.isPaused ? `Paused repository ${repo}` : `Unpaused repository ${repo}`,
       };
     }
 
     const config = loadRouterConfig();
-    const currentMuted = config.mutedRepos ?? [];
-    const isCurrentlyMuted = currentMuted.some((m) => isRepoMatching(m, repo));
-    const shouldMute = input.muted !== undefined ? input.muted : !isCurrentlyMuted;
+    const currentPaused = config.pausedRepos ?? [];
+    const isCurrentlyPaused = currentPaused.some((m) => isRepoMatching(m, repo));
+    const shouldPause = input.paused !== undefined ? input.paused : !isCurrentlyPaused;
 
-    let updatedMuted: string[];
-    if (shouldMute) {
-      updatedMuted = Array.from(new Set([...currentMuted, repo]));
+    let updatedPaused: string[];
+    if (shouldPause) {
+      updatedPaused = Array.from(new Set([...currentPaused, repo]));
     } else {
-      updatedMuted = currentMuted.filter((m) => !isRepoMatching(m, repo));
+      updatedPaused = currentPaused.filter((m) => !isRepoMatching(m, repo));
     }
 
-    saveRouterConfig({ mutedRepos: updatedMuted });
+    saveRouterConfig({ pausedRepos: updatedPaused });
 
     return {
       ok: true,
       repo,
-      isMuted: shouldMute,
-      mutedRepos: updatedMuted,
-      message: shouldMute ? `Muted repository ${repo}` : `Unmuted repository ${repo}`,
+      isPaused: shouldPause,
+      pausedRepos: updatedPaused,
+      message: shouldPause ? `Paused repository ${repo}` : `Unpaused repository ${repo}`,
     };
   } catch (err: any) {
     return {
       ok: false,
       repo,
-      isMuted: false,
-      mutedRepos: [],
+      isPaused: false,
+      pausedRepos: [],
+      error: err?.message || String(err),
+    };
+  }
+}
+
+/**
+ * Applies one of the three automation tiers to a repository (#1282). The router
+ * owns live state; when it is not running the same 3-tier posture is computed
+ * against persisted settings and written straight back.
+ */
+export async function handleUppidiToggleRepoAutomationTier(
+  input: UppidiToggleRepoAutomationTierInput,
+  _context?: PluginHandlerContext,
+): Promise<UppidiToggleRepoAutomationTierOutput> {
+  const repo = input.repo?.trim();
+  const tier = input.tier as AutomationTierValue;
+  if (!repo) {
+    return {
+      ok: false,
+      repo: "",
+      tier,
+      isPaused: false,
+      isKanbanOnly: false,
+      pausedRepos: [],
+      kanbanOnlyRepos: [],
+      error: "repo is required",
+    };
+  }
+
+  try {
+    const router = getActiveHookRouter();
+    if (router) {
+      const res = router.toggleRepoAutomationTier(repo, tier);
+      return {
+        ok: true,
+        repo,
+        tier: res.tier,
+        isPaused: res.isPaused,
+        isKanbanOnly: res.isKanbanOnly,
+        pausedRepos: res.pausedRepos,
+        kanbanOnlyRepos: res.kanbanOnlyRepos,
+        message: `Set ${repo} automation tier to ${res.tier}`,
+      };
+    }
+
+    const config = loadRouterConfig();
+    const removeMatches = (list: string[]) => list.filter((m) => !isRepoMatching(m, repo));
+    const pausedRepos = removeMatches(config.pausedRepos ?? []);
+    const kanbanOnlyRepos = removeMatches(config.kanbanOnlyRepos ?? []);
+    if (tier === "paused") pausedRepos.push(repo);
+    else if (tier === "kanban-only") kanbanOnlyRepos.push(repo);
+    saveRouterConfig({ pausedRepos, kanbanOnlyRepos });
+
+    return {
+      ok: true,
+      repo,
+      tier,
+      isPaused: tier === "paused",
+      isKanbanOnly: tier === "kanban-only",
+      pausedRepos,
+      kanbanOnlyRepos,
+      message: `Set ${repo} automation tier to ${tier}`,
+    };
+  } catch (err: any) {
+    return {
+      ok: false,
+      repo,
+      tier,
+      isPaused: false,
+      isKanbanOnly: false,
+      pausedRepos: [],
+      kanbanOnlyRepos: [],
       error: err?.message || String(err),
     };
   }
@@ -2927,7 +3539,7 @@ export async function handleUppidiFrontDeskPrompt(
         await agentRef.send(prompt, { steer: true } as any);
         sent = true;
       } else {
-        await execFileAsync("paseo", ["send", "--no-wait", "--steer", targetAgentId, prompt], { timeout: 8000 });
+        await execFileAsync("paseo", ["send", "--no-wait", targetAgentId, prompt], { timeout: 8000 });
         sent = true;
       }
     }
@@ -2946,4 +3558,3 @@ export async function handleUppidiFrontDeskPrompt(
     };
   }
 }
-

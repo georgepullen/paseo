@@ -1,0 +1,233 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import React from "react";
+import TestRenderer, { act, type ReactTestInstance } from "react-test-renderer";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { initClientHelpers } from "paseo-plugin-helper/core";
+import { scrollContainers, sheetScrollersInsideModal } from "paseo-plugin-ui-testing";
+import { contributeClient } from "./pill";
+
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+
+// The host SDK's react-native entry is `export {}` at runtime; the host bundler
+// injects the real primitives. The test supplies the same stubs at that seam,
+// with distinct element types so the plugin's local `HostScroll` (which wraps
+// the host `ScrollView`) is distinguishable from a plain React Native scroller.
+vi.mock("@getpaseo/plugin/client", () => ({
+  useWorkspace: (_id: string, sel: (w: unknown) => unknown) => sel({ directory: "/repo" }),
+  useAgent: (_id: string, sel: (a: unknown) => unknown) => sel({ title: "Worker", status: "running" }),
+  useRpc: () => async () => ({ results: [] }),
+}));
+
+vi.mock("@getpaseo/plugin/client/react-native", () => ({
+  Icon: (props: { name?: string }) => React.createElement("mock-icon", { name: props.name }),
+  Modal: Object.assign(
+    (props: { children?: React.ReactNode }) => React.createElement(React.Fragment, null, props.children),
+    { Content: (props: { children?: React.ReactNode }) => props.children },
+  ),
+  ScrollView: (props: Record<string, unknown>) =>
+    React.createElement("host-scroll-view", props, props.children as React.ReactNode),
+  TextInput: () => null,
+  useToast: () => ({ show: () => {}, error: () => {} }),
+  copyText: async () => {},
+}));
+
+const RPC_RESULT = { results: [], servers: [], paseoTools: [], provider: "stub", cwd: null, error: null };
+
+const theme = {
+  colors: {
+    surface0: "#18181b",
+    surface1: "#27272a",
+    surface2: "#3f3f46",
+    border: "#3f3f46",
+    foreground: "#fafafa",
+    foregroundMuted: "#a1a1aa",
+    accent: "#3b82f6",
+    accentForeground: "#ffffff",
+    statusSuccess: "#22c55e",
+    statusWarning: "#eab308",
+    statusDanger: "#ef4444",
+  },
+} as never;
+const layout = { compact: false, platform: "web" } as never;
+
+function installHost() {
+  initClientHelpers({
+    Icon: (props: Record<string, unknown>) =>
+      React.createElement("mock-icon", { name: props.name }),
+    Modal: Object.assign(
+      (props: { open?: boolean; children?: React.ReactNode }) =>
+        props.open ? React.createElement(React.Fragment, null, props.children) : null,
+      {
+        Content: (props: { children?: React.ReactNode; scrollable?: boolean }) =>
+          React.createElement(
+            "host-modal-content",
+            { scrollable: props.scrollable },
+            props.children,
+          ),
+      },
+    ),
+    ScrollView: (props: Record<string, unknown>) =>
+      React.createElement("host-scroll-view", props, props.children as React.ReactNode),
+    TextInput: () => null,
+    useRpc: () => async () => RPC_RESULT,
+    useToast: () => ({ show: () => {}, error: () => {} }),
+    copyText: async () => {},
+    FlatList: () => null,
+  } as unknown as Parameters<typeof initClientHelpers>[0]);
+}
+
+/** Flattens an RN style prop (arrays, nested arrays) into one object. */
+function flattenStyle(style: unknown): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  const visit = (value: unknown): void => {
+    if (!value) return;
+    if (Array.isArray(value)) {
+      for (const entry of value) visit(entry);
+      return;
+    }
+    if (typeof value === "object") Object.assign(out, value);
+  };
+  visit(style);
+  return out;
+}
+
+function typeOf(node: ReactTestInstance): string {
+  return String(node.type);
+}
+
+function ancestorsOf(node: ReactTestInstance): ReactTestInstance[] {
+  const out: ReactTestInstance[] = [];
+  let current = node.parent;
+  while (current) {
+    out.push(current);
+    current = current.parent;
+  }
+  return out;
+}
+
+/**
+ * Registers the real mcp-tools pill through `contributeClient` and returns the
+ * live trigger icon plus its opener, so the test drives the same centered-modal
+ * path the host mounts (not a reconstructed copy of it).
+ */
+function registerMcpPill() {
+  let PillIcon: React.ComponentType<Record<string, unknown>> | undefined;
+  let openPill: (() => void) | undefined;
+  const client = {
+    addComposerPill: (contribution: {
+      button: {
+        icon: React.ComponentType<Record<string, unknown>>;
+        behavior: { onPress?: () => void };
+      };
+    }) => {
+      PillIcon = contribution.button.icon;
+      openPill = contribution.button.behavior.onPress;
+      return { update: () => {}, remove: () => {} };
+    },
+    paseo: {
+      agents: {
+        subscribe: () => () => {},
+        list: async () => ({ entries: [{ agent: { id: "a1", workspaceId: "w1" } }] }),
+      },
+    },
+  };
+  let cleanup: (() => void) | undefined;
+  act(() => {
+    cleanup = contributeClient(client as never);
+  });
+  return {
+    PillIcon: () => PillIcon,
+    open: () => openPill?.(),
+    cleanup: () => cleanup?.(),
+  };
+}
+
+function renderModal(Icon: React.ComponentType<Record<string, unknown>>) {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, gcTime: Infinity } },
+  });
+  let renderer!: TestRenderer.ReactTestRenderer;
+  act(() => {
+    renderer = TestRenderer.create(
+      <QueryClientProvider client={client}>
+        <Icon agentId="a1" workspaceId="w1" theme={theme} layout={layout} host={{ id: "h", label: "H" }} />
+      </QueryClientProvider>,
+    );
+  });
+  return renderer;
+}
+
+let mounted: TestRenderer.ReactTestRenderer | undefined;
+let cleanupPill: (() => void) | undefined;
+
+beforeEach(() => {
+  installHost();
+});
+
+afterEach(() => {
+  mounted?.unmount();
+  mounted = undefined;
+  cleanupPill?.();
+  cleanupPill = undefined;
+});
+
+/**
+ * Regression for xpufx-org/paseo#975 / #1054 / #1254: the mcp-tools pill modal must
+ * have one scroll owner, and on the centered path that owner is the host.
+ *
+ * The supported single-owner model is the helper's `hostScroll: true`: the host
+ * `<Modal.Content scrollable={true}>` is the ONLY scroller and the plugin
+ * renders fluid, unconstrained content beneath it.
+ */
+describe("mcp-tools pill modal scroll ownership (#975/#1054/#1254)", () => {
+  it("delegates the single scroll to the host and renders no nested scroller", async () => {
+    const pill = registerMcpPill();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const Icon = pill.PillIcon();
+    expect(Icon).toBeDefined();
+
+    act(() => pill.open());
+    mounted = renderModal(Icon!);
+    cleanupPill = pill.cleanup;
+
+    // Let the settings + MCP queries settle so the servers tab mounts.
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    const modalContent = mounted.root.find((node) => typeOf(node) === "host-modal-content");
+    expect(modalContent.props.scrollable).toBe(true);
+
+    const tree = mounted.toJSON();
+    const containers = scrollContainers(tree);
+    const pluginOwned = containers.filter((container) => !container.hostOwned);
+    // The host body is the one and only scroll boundary; no nested scroller may
+    // compete with it (plain RN or the host's sheet-gesture scroller).
+    expect(pluginOwned, "no plugin-owned scroller may sit inside the host modal body").toEqual([]);
+    expect(containers.filter((container) => container.hostOwned)).toHaveLength(1);
+    expect(sheetScrollersInsideModal(tree)).toEqual([]);
+    expect(mounted.root.findAll((node) => typeOf(node) === "ScrollView")).toHaveLength(0);
+    expect(mounted.root.findAll((node) => typeOf(node) === "host-scroll-view")).toHaveLength(0);
+  });
+
+  it("carries no host sheet scroller inside the modal body (harness invariant)", async () => {
+    const pill = registerMcpPill();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    const Icon = pill.PillIcon();
+    act(() => pill.open());
+    mounted = renderModal(Icon!);
+    cleanupPill = pill.cleanup;
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    const tree = mounted.toJSON();
+    expect(sheetScrollersInsideModal(tree)).toEqual([]);
+    const owners = scrollContainers(tree).filter((container) => !container.hostOwned);
+    expect(owners).toEqual([]);
+  });
+});

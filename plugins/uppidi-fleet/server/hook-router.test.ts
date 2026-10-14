@@ -2,7 +2,9 @@ import { describe, it, beforeEach, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { execFile, execFileSync } from "node:child_process";
+import { promisify } from "node:util";
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import {
   normalizeRepoKey,
@@ -14,14 +16,32 @@ import {
   formatWebhookMessage,
   forgejoEnvelope,
   summarize,
+  fleetEnvelope,
+  formatFleetEnvelope,
+  withFleetEnvelope,
+  fleetEnvelopeAttachment,
+  extractFleetEnvelopeAttachments,
+  FLEET_ENVELOPE_CONTEXT_KIND,
+  FLEET_ENVELOPE_TITLE,
+  routerEnvelope,
+  watchdogEnvelope,
+  agentRepoKey,
+  FLEET_ENVELOPE_VERSION,
+  ROUTER_SENDER,
+  WATCHDOG_SENDER,
+  FRONT_DESK_REPO,
+  FLEET_REPO,
   stableId,
   HookRouter,
   startHookRouter,
   appendHookLog,
   getHookLogs,
   clearHookLogs,
+  getActiveDiskLogger,
+  setActiveDiskLogger,
   getActiveHookRouter,
   setActiveHookRouter,
+  setActivePaseo,
   getAvailableNetworkInterfaces,
   loadRouterConfig,
   saveRouterConfig,
@@ -42,10 +62,18 @@ import {
   detectStaleErrorGhosting,
   detectProviderQuotaExhaustion,
   findProviderRetryQuotaError,
+  detectRepetitiveToolLoop,
+  toolCallSignature,
+  DEFAULT_REPETITIVE_TOOL_LOOP_THRESHOLD,
   scanTimelineRetryErrors,
   recordModelQuotaFailure,
   getCachedModelHealth,
   resolveOrchestratorModel,
+  readModelAlerts,
+  recordModelAlert,
+  clearModelAlert,
+  defaultModelAlertsPath,
+  handleUppidiFleetAlerts,
   QUOTA_MARKERS,
   assessAgentHealth,
   planWatchdogRecovery,
@@ -58,6 +86,10 @@ import {
   assessChildWakeup,
   formatChildWakeupMessage,
   isOrchestratorAgent,
+  isFrontDeskAgent,
+  isOrchestratorMatchingRepo,
+  findLiveOrchestratorAgents,
+  findLiveFrontDeskAgents,
   isProbeAgent,
   isChildWakeupCandidate,
   CHILD_WAKEUP_EVENTS,
@@ -75,6 +107,9 @@ import {
   CLOSE_GUARD_ACCEPTED_LABELS,
   DEFAULT_CLOSE_GUARD_TARGET_ACTORS,
   CLOSE_GUARD_POLICY_COMMENT,
+  isBackwardStateTransition,
+  BACKWARD_TRANSITION_STEERING_COMMENT,
+  BACKWARD_TRANSITION_STEERING_MARKER,
   CI_FAILURE_LABELS,
   ciFailureIssueTitle,
   ciFailureDetailsFromPayload,
@@ -84,26 +119,87 @@ import {
   REPO_ONBOARDING_ISSUE_LABELS,
   REPO_ONBOARDING_ISSUE_BODY,
   resolveProviderSpawnMode,
+  resolveMergeEventHook,
+  formatMergeEventNotice,
+  readMergeEventRecords,
   setExecFileAsyncForTest,
+  WAKEUP_RULES,
+  isActionableWakeupEvent,
+  SLASH_SWEEP_RE,
+  verifyModelWhitelist,
+  resolveSpawnModel,
+  handleSpawnAgent,
+  type SpawnRequest,
+  type SpawnResult,
   type CoalesceEvent,
   type WatchdogAgent,
   type WatchdogAgentDisk,
   type HookRouterOptions,
   type ProviderModeInfo,
+  type SweepDigestsPayload,
+  getSweepDigestStorage,
+  resetSweepDigestStorage,
 } from "./hook-router.js";
+import { readAdjudicationDecisions } from "./permission-adjudication.js";
 import { setFetchForTest, setTokenResolverForTest } from "./forgejo-api.js";
 import { setMetricsFilePathForTest } from "./metrics.js";
 import { STALE_WIP_REMINDER_MARKER, type IssuesCheckIo } from "./issues-check.js";
 import { getUppidiFleetSettingsStorage, resetUppidiFleetSettingsStorageInstance } from "./settings.js";
+import type { UppidiFleetSettings } from "../shared/contracts.js";
+import { renderSkillDirective } from "./skills.js";
+import { loadSavedRoleModels, DEFAULT_ROLE_MODELS } from "./role-models.js";
+
+/** Extract the hidden `<!-- {"fleet": ...} -->` JSON comment from a delivered prompt. */
+function parseFleetComment(text: string | undefined): Record<string, any> | null {
+  if (typeof text !== "string") return null;
+  const start = text.indexOf("<!-- {");
+  if (start < 0) return null;
+  const end = text.indexOf(" -->", start);
+  if (end < 0) return null;
+  try {
+    return JSON.parse(text.slice(start + 5, end)).fleet ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Extract the `fleet_envelope` JSON from a delivered prompt's send options (#1003). */
+function parseFleetAttachment(options: any): Record<string, any> | null {
+  const attachment = (options?.attachments ?? []).find(
+    (a: any) => a?.type === "text" && a?.contextKind === "fleet_envelope",
+  );
+  if (!attachment) return null;
+  try {
+    return JSON.parse(attachment.text).fleet ?? null;
+  } catch {
+    return null;
+  }
+}
 
 /** Drop the persisted plugin settings so each test starts from schema defaults. */
 function clearSettingsStorage(): void {
   try {
-    rmSync(getUppidiFleetSettingsStorage().filePath, { force: true });
-  } catch {
+    const targetPath = getUppidiFleetSettingsStorage().filePath;
+    const resolvedTarget = resolve(targetPath);
+    const resolvedTmp = resolve(tmpdir());
+    if (resolvedTarget.startsWith(resolvedTmp) || resolvedTarget.includes("test")) {
+      rmSync(resolvedTarget, { force: true });
+    } else {
+      throw new Error(`[SAFETY] Refusing to unlink non-test settings file: ${resolvedTarget}`);
+    }
+  } catch (err: any) {
+    if (err?.message?.includes("[SAFETY]")) throw err;
     // ignore missing file
   }
   resetUppidiFleetSettingsStorageInstance();
+}
+
+async function waitForFile(filePath: string, timeoutMs = 1_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (!existsSync(filePath) && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  return existsSync(filePath);
 }
 
 beforeEach(() => {
@@ -242,6 +338,173 @@ describe("hook-router payload and key utilities", () => {
     assert.equal(id1, id2);
     assert.notEqual(id1, id3);
     assert.equal(id1.length, 16);
+  });
+});
+
+describe("fleet JSON envelope (#283/#985)", () => {
+  it("nests the envelope under `fleet` with v1 and defaults ref to null", () => {
+    const direct = fleetEnvelope({
+      origin: "orchestrator",
+      sender: "525721aa",
+      repo: "forge/o/r",
+      kind: "escalation",
+      ref: 38,
+    });
+    assert.deepEqual(Object.keys(direct), ["fleet"]);
+    assert.equal(direct.fleet.v, FLEET_ENVELOPE_VERSION);
+    assert.equal(direct.fleet.origin, "orchestrator");
+    assert.equal(direct.fleet.sender, "525721aa");
+    assert.equal(direct.fleet.repo, "forge/o/r");
+    assert.equal(direct.fleet.kind, "escalation");
+    assert.equal(direct.fleet.ref, 38);
+    assert.equal(
+      fleetEnvelope({ origin: "worker", sender: "w", repo: "forge/o/r", kind: "escalation" }).fleet.ref,
+      null,
+    );
+  });
+
+  it("formats a hidden HTML comment that round-trips", () => {
+    const formatted = formatFleetEnvelope({
+      origin: "frontdesk",
+      sender: "fd-1",
+      repo: "forge/o/r",
+      kind: "steer",
+    });
+    assert.ok(formatted.startsWith("<!-- {"));
+    assert.ok(formatted.endsWith("} -->"));
+    assert.equal(parseFleetComment(formatted)?.sender, "fd-1");
+  });
+
+  it("prepends the signature line and leaves an already-signed body untouched", () => {
+    const wrapped = withFleetEnvelope(routerEnvelope({ repo: "forge/o/r", kind: "steer" }), "body");
+    assert.ok(wrapped.startsWith("<!-- {"));
+    assert.ok(wrapped.split("\n")[0].endsWith("} -->"));
+    assert.ok(wrapped.endsWith("\nbody"));
+
+    const formatted = formatFleetEnvelope(routerEnvelope({ repo: "forge/o/r", kind: "steer" }));
+    assert.equal(withFleetEnvelope(routerEnvelope({ repo: "forge/o/r", kind: "steer" }), formatted), formatted);
+  });
+
+  it("builds a `fleet_envelope` text attachment with the JSON envelope as its body (#1003)", () => {
+    const attachment = fleetEnvelopeAttachment({
+      origin: "router",
+      sender: ROUTER_SENDER,
+      repo: "forge/o/r",
+      kind: "webhook",
+      ref: 7,
+    });
+    assert.equal(attachment.type, "text");
+    assert.equal(attachment.mimeType, "text/plain");
+    assert.equal(attachment.contextKind, FLEET_ENVELOPE_CONTEXT_KIND);
+    assert.equal(attachment.contextKind, "fleet_envelope");
+    assert.equal(attachment.title, FLEET_ENVELOPE_TITLE);
+    assert.equal(attachment.title, "Fleet context");
+    assert.deepEqual(JSON.parse(attachment.text), fleetEnvelope({
+      origin: "router",
+      sender: ROUTER_SENDER,
+      repo: "forge/o/r",
+      kind: "webhook",
+      ref: 7,
+    }));
+  });
+
+  it("extracts legacy in-band comments into attachments and strips them from the body (#1003)", () => {
+    const wrapped = withFleetEnvelope(
+      routerEnvelope({ repo: "forge/o/r", kind: "steer" }),
+      "human body",
+    );
+    const { text, attachments } = extractFleetEnvelopeAttachments(wrapped);
+    assert.equal(text, "human body");
+    assert.equal(attachments.length, 1);
+    assert.equal(attachments[0].contextKind, "fleet_envelope");
+    assert.match(attachments[0].text, /^\{"fleet":/);
+  });
+
+  it("keeps the `[forgejo-hook]` machine line and moves the fleet comment to an attachment (#1003)", () => {
+    const payload = {
+      repository: { full_name: "xpufx-org/paseo", html_url: "https://forge.mrs.uppidi.com/xpufx-org/paseo" },
+      sender: { login: "testuser" },
+      issue: { number: 380, title: "Test issue", html_url: "https://forge.mrs.uppidi.com/xpufx-org/paseo/issues/380" },
+      action: "opened",
+    };
+    const { text, attachments } = extractFleetEnvelopeAttachments(formatWebhookMessage("issues", payload));
+    assert.ok(text.startsWith("[forgejo-hook] {"));
+    assert.equal(text.includes("<!-- {"), false);
+    assert.equal(attachments.length, 1);
+    assert.match(text, /🔔 Forgejo webhook incoming/);
+  });
+
+  it("leaves a malformed fleet comment in the body rather than dropping text (#1003)", () => {
+    const message = "<!-- {\"fleet\": not-json} -->\nbody";
+    const { text, attachments } = extractFleetEnvelopeAttachments(message);
+    assert.equal(attachments.length, 0);
+    assert.equal(text, message);
+  });
+
+  it("stamps router and watchdog senders with the canonical origins", () => {
+    const routerFields = routerEnvelope({ repo: "forge/o/r", kind: "webhook", ref: 7 });
+    assert.equal(routerFields.origin, "router");
+    assert.equal(routerFields.sender, ROUTER_SENDER);
+    assert.equal(routerFields.ref, 7);
+
+    const watchdogFields = watchdogEnvelope({ repo: "forge/o/r" });
+    assert.equal(watchdogFields.origin, "watchdog");
+    assert.equal(watchdogFields.sender, WATCHDOG_SENDER);
+    assert.equal(watchdogFields.kind, "alert");
+    assert.equal(watchdogFields.ref, null);
+    assert.equal(watchdogEnvelope().repo, FLEET_REPO);
+    assert.equal(FRONT_DESK_REPO, "frontdesk");
+  });
+
+  it("resolves alert repo context from the registry, labels, then the fleet fallback", () => {
+    const records = [{ key: "forge/o/registered", agentId: "agent-1" }];
+    assert.equal(agentRepoKey({ id: "agent-1", labels: { repo: "forge/o/labelled" } }, records), "forge/o/registered");
+    assert.equal(agentRepoKey({ id: "agent-2", labels: { repo: "forge/o/labelled" } }, records), "forge/o/labelled");
+    assert.equal(agentRepoKey({ id: "agent-3", labels: {} }, records), FLEET_REPO);
+  });
+
+  it("keeps the webhook machine line first and puts the envelope before the human summary", () => {
+    const payload = {
+      repository: { full_name: "xpufx-org/paseo", html_url: "https://forge.mrs.uppidi.com/xpufx-org/paseo" },
+      sender: { login: "testuser" },
+      issue: { number: 380, title: "Test issue", html_url: "https://forge.mrs.uppidi.com/xpufx-org/paseo/issues/380" },
+      action: "opened",
+    };
+    const message = formatWebhookMessage("issues", payload);
+    const lines = message.split("\n");
+    assert.ok(lines[0].startsWith("[forgejo-hook] {"));
+    assert.equal(
+      JSON.stringify(JSON.parse(lines[0].slice("[forgejo-hook] ".length))),
+      JSON.stringify(forgejoEnvelope("issues", payload)),
+    );
+    assert.equal(lines[1], "");
+    const fleet = parseFleetComment(lines[2]);
+    assert.equal(fleet?.v, FLEET_ENVELOPE_VERSION);
+    assert.equal(fleet?.origin, "router");
+    assert.equal(fleet?.sender, ROUTER_SENDER);
+    assert.equal(fleet?.repo, "forge.mrs.uppidi.com/xpufx-org/paseo");
+    assert.equal(fleet?.kind, "webhook");
+    assert.equal(fleet?.ref, 380);
+    assert.equal(lines.slice(3).join("\n"), summarize("issues", payload));
+  });
+
+  it("allows a null webhook ref for payloads without an issue number", () => {
+    const push = formatWebhookMessage("push", {
+      repository: { full_name: "xpufx-org/paseo", html_url: "https://forge.mrs.uppidi.com/xpufx-org/paseo" },
+      sender: { login: "testuser" },
+      ref: "refs/heads/main",
+      commits: [],
+    });
+    const fleet = parseFleetComment(push.split("\n")[2]);
+    assert.equal(fleet?.kind, "webhook");
+    assert.equal(fleet?.ref, null);
+    assert.ok(push.includes("🔔 Forgejo webhook incoming [push]"));
+  });
+
+  it("leaves legacy senders unchanged (router/watchdog explicit origins)", () => {
+    assert.equal(routerEnvelope({ repo: "x", kind: "webhook" }).sender, "forgejo-hook");
+    assert.equal(watchdogEnvelope({ repo: "x" }).sender, "fleet-watchdog");
+    assert.notEqual(routerEnvelope({ repo: "x", kind: "webhook" }).sender, watchdogEnvelope({ repo: "x" }).sender);
   });
 });
 
@@ -483,6 +746,50 @@ describe("hook-router queue pause-all and turn_ended drain guard (#877)", () => 
     assert.equal(router.getQueue(key).length, 0);
   });
 
+  it("agent.turn_ended suppresses drain log while halted or pause-all for registered, front desk, and unregistered agents (#1116, #1119)", async () => {
+    const { router, sentMessages } = createIdleRouter();
+    const repoKey = "xpufx-org/halted-repo";
+    const orchAgentId = "orch-halted-agent";
+    const frontDeskAgentId = "front-desk-halted-agent";
+    const unregisteredAgentId = "unregistered-worker-agent";
+
+    router.writeOrchestrator(repoKey, orchAgentId);
+    router.writeFrontDesk(frontDeskAgentId);
+
+    // Engage canonical halt before queueing messages
+    router.halt();
+
+    router.enqueue(repoKey, "task for orch");
+    router.enqueue("frontdesk", "task for frontdesk");
+
+    // 1. Front Desk turn ended while halted
+    clearHookLogs();
+    router.handleLifecycleEvent("agent.turn_ended", { agent: { id: frontDeskAgentId } });
+    let logs = getHookLogs(20).join("\n");
+    assert.match(logs, /queue drain suppressed \(paused\)/);
+    assert.doesNotMatch(logs, /triggering queue drain/);
+
+    // 2. Orchestrator turn ended while halted
+    clearHookLogs();
+    router.handleLifecycleEvent("agent.turn_ended", { agent: { id: orchAgentId } });
+    logs = getHookLogs(20).join("\n");
+    assert.match(logs, /queue drain suppressed \(paused\)/);
+    assert.doesNotMatch(logs, /triggering queue drain/);
+
+    // 3. Unregistered / worker / lost-registration agent turn ended while halted (#1119)
+    clearHookLogs();
+    router.handleLifecycleEvent("agent.turn_ended", { agent: { id: unregisteredAgentId } });
+    logs = getHookLogs(20).join("\n");
+    assert.match(logs, /queue drain suppressed \(paused\)/);
+    assert.doesNotMatch(logs, /triggering queue drain/);
+
+    // Ensure no messages were dispatched during halt
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(sentMessages.length, 0);
+    assert.equal(router.getQueue(repoKey).length, 1);
+    assert.equal(router.getQueue("frontdesk").length, 1);
+  });
+
   it("agent.turn_ended still triggers the drain log and drain when unpaused", async () => {
     let busy = true;
     const heldSent: Array<{ id: string; text: string }> = [];
@@ -540,13 +847,16 @@ describe("hook-router HTTP server endpoints", () => {
   let router: HookRouter;
   let stopRouter: () => Promise<void>;
   let prevNodeEnv: string | undefined;
+  let prevHookStateDir: string | undefined;
 
   beforeEach(async () => {
     prevNodeEnv = process.env.NODE_ENV;
+    prevHookStateDir = process.env.HOOK_STATE_DIR;
     process.env.NODE_ENV = "test";
     tempDir = mkdtempSync(join(tmpdir(), "paseo-http-test-"));
     queueDir = join(tempDir, "queues");
     stateDir = join(tempDir, "state");
+    process.env.HOOK_STATE_DIR = stateDir;
 
     const server = {
       on: () => () => {},
@@ -564,6 +874,11 @@ describe("hook-router HTTP server endpoints", () => {
   afterEach(async () => {
     if (stopRouter) {
       await stopRouter();
+    }
+    if (prevHookStateDir !== undefined) {
+      process.env.HOOK_STATE_DIR = prevHookStateDir;
+    } else {
+      delete process.env.HOOK_STATE_DIR;
     }
     if (prevNodeEnv !== undefined) {
       process.env.NODE_ENV = prevNodeEnv;
@@ -600,6 +915,137 @@ describe("hook-router HTTP server endpoints", () => {
     const body = await res.json();
     assert.equal(body.ok, true);
     assert.ok(Array.isArray(body.queues));
+  });
+
+  it("records, checks and summarizes audits over the HTTP gateway (#1172)", async () => {
+    const payload = {
+      repo: "forge.mrs.uppidi.com/xpufx-org/paseo",
+      pr: 1172,
+      headCommit: "gate1111",
+      iteration: 1,
+      taxonomy: [],
+      actors: {
+        auditor: { agentId: "aud-gate", role: "orchestrator", model: "gemini-3.8-pro" },
+        author: { agentId: "wrk-gate", role: "worker", model: "gemini-3.8-flash" },
+      },
+      verdict: "approved",
+      verification: {
+        workerClaimed: "passed",
+        auditorVerified: "passed",
+        checksRun: ["typecheck"],
+        isolatedEnv: true,
+      },
+      summary: "gateway clean",
+    };
+
+    const rec = await fetch(`http://127.0.0.1:${router.port}/audits`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    assert.equal(rec.status, 201);
+    const recBody = await rec.json();
+    assert.equal(recBody.ok, true);
+    assert.match(recBody.auditId, /^aud_/);
+
+    const check = await fetch(
+      `http://127.0.0.1:${router.port}/audits/check?repo=xpufx-org/paseo&pr=1172&commit=gate1111`,
+    );
+    assert.equal(check.status, 200);
+    const checkBody = await check.json();
+    assert.equal(checkBody.audited, true);
+    assert.equal(checkBody.audit.auditId, recBody.auditId);
+
+    const miss = await fetch(
+      `http://127.0.0.1:${router.port}/audits/check?repo=xpufx-org/paseo&pr=9999&commit=nope`,
+    );
+    const missBody = await miss.json();
+    assert.equal(missBody.audited, false);
+
+    const sum = await fetch(`http://127.0.0.1:${router.port}/audits/summary?repo=xpufx-org/paseo`);
+    assert.equal(sum.status, 200);
+    const sumBody = await sum.json();
+    assert.equal(sumBody.totalAudits, 1);
+    assert.equal(sumBody.firstPassSuccessRate, 100);
+    assert.deepEqual(sumBody.defectTaxonomyCounts, {});
+    assert.equal(sumBody.modelScorecard[0].model, "gemini-3.8-flash");
+  });
+
+  it("rejects malformed audit gateway posts with 400 and a zod issue summary", async () => {
+    const res = await fetch(`http://127.0.0.1:${router.port}/audits`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ repo: "xpufx-org/paseo", pr: 1 }),
+    });
+    assert.equal(res.status, 400);
+    const body = await res.json();
+    assert.equal(body.ok, false);
+    assert.match(body.error, /verdict|actors|summary/);
+  });
+
+  it("validates audit check query parameters", async () => {
+    const res = await fetch(`http://127.0.0.1:${router.port}/audits/check?repo=&pr=1&commit=x`);
+    assert.equal(res.status, 400);
+    const body = await res.json();
+    assert.equal(body.ok, false);
+  });
+
+  it("reconciles a merged PR against the audit store and logs a durable record (#1172)", async () => {
+    const rec = await fetch(`http://127.0.0.1:${router.port}/audits`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        repo: "forge.mrs.uppidi.com/xpufx-org/paseo",
+        pr: 77,
+        headCommit: "rec7777",
+        iteration: 1,
+        taxonomy: [],
+        actors: {
+          auditor: { agentId: "a", role: "orchestrator", model: "m1" },
+          author: { agentId: "w", role: "worker", model: "m2" },
+        },
+        verdict: "approved",
+        verification: {
+          workerClaimed: "passed",
+          auditorVerified: "passed",
+          checksRun: [],
+          isolatedEnv: false,
+        },
+        summary: "reconciled",
+      }),
+    });
+    assert.equal(rec.status, 201);
+    const recBody = await rec.json();
+
+    const audited = router.reconcileMergeAudit({
+      repository: { full_name: "xpufx-org/paseo" },
+      pull_request: {
+        number: 77,
+        merged: true,
+        merge_commit_sha: "rec7777",
+      },
+    });
+    assert.equal(audited.status, "audited");
+    assert.equal(audited.auditId, recBody.auditId);
+    assert.equal(audited.verdict, "approved");
+
+    const unrecorded = router.reconcileMergeAudit({
+      repository: { full_name: "xpufx-org/paseo" },
+      pull_request: {
+        number: 88,
+        merged: true,
+        merge_commit_sha: "not-audited",
+      },
+    });
+    assert.equal(unrecorded.status, "direct_or_adhoc");
+    assert.equal(unrecorded.auditId, undefined);
+
+    // One audited, one direct_or_adhoc merge → 50% compliance.
+    const sum = await fetch(`http://127.0.0.1:${router.port}/audits/summary?repo=xpufx-org/paseo`);
+    const sumBody = await sum.json();
+    assert.equal(sumBody.auditedMerges, 1);
+    assert.equal(sumBody.unauditedMerges, 1);
+    assert.equal(sumBody.complianceRate, 50);
   });
 
   it("responds to GET /enrolled with canonical enrolled repository keys (#911)", async () => {
@@ -675,6 +1121,7 @@ describe("hook-router HTTP server endpoints", () => {
   });
 
   it("receives webhook on POST /forgejo and enqueues payload", async () => {
+    router.enrollRepo("forge.mrs.uppidi.com/xpufx-org/paseo");
     const payload = {
       repository: { html_url: "https://forge.mrs.uppidi.com/xpufx-org/paseo" },
       sender: { login: "testuser" },
@@ -699,6 +1146,34 @@ describe("hook-router HTTP server endpoints", () => {
 
     const queue = router.getQueue("forge.mrs.uppidi.com/xpufx-org/paseo");
     assert.equal(queue.length, 1);
+  });
+
+  it("ignores webhook on POST /forgejo for unenrolled repo and does not build queue depth (#1312)", async () => {
+    const unenrolledKey = "forge.mrs.uppidi.com/xpufx-org/unenrolled";
+    const payload = {
+      repository: { html_url: "https://forge.mrs.uppidi.com/xpufx-org/unenrolled" },
+      sender: { login: "testuser" },
+      issue: { number: 381, title: "Ambient webhook" },
+      action: "commented",
+    };
+
+    const res = await fetch(`http://127.0.0.1:${router.port}/forgejo`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Forgejo-Event": "issue_comment",
+      },
+      body: JSON.stringify(payload),
+    });
+
+    assert.equal(res.status, 200);
+    const body = await res.json();
+    assert.equal(body.ok, true);
+    assert.equal(body.coalesce, "ignored");
+    assert.equal(body.key, unenrolledKey);
+
+    const queue = router.getQueue(unenrolledKey);
+    assert.equal(queue.length, 0);
   });
 
   it("pauses, resumes, and drains queues via POST endpoints", async () => {
@@ -849,10 +1324,10 @@ describe("hook-router in-process dispatch and event-driven draining", () => {
     // Allow async drain to complete
     await new Promise((r) => setTimeout(r, 20));
 
-    // Routine webhook message should now have been dispatched via in-process send with steer: false (#536)
+    // Routine webhook message should now have been dispatched via in-process send with activeTurnBehavior: interrupt (#1027)
     assert.equal(sentMessages.length, 1);
     assert.equal(sentMessages[0].text, "Prompt to orchestrator");
-    assert.equal(sentMessages[0].options?.steer, false);
+    assert.equal(sentMessages[0].options?.activeTurnBehavior, "interrupt");
     assert.equal(router.getQueue(key).length, 0);
   });
 
@@ -895,10 +1370,10 @@ describe("hook-router in-process dispatch and event-driven draining", () => {
 
     await new Promise((r) => setTimeout(r, 20));
 
-    // SOS must preempt immediately and pass steer: true
+    // SOS must preempt immediately and pass activeTurnBehavior: steer
     assert.equal(sentMessages.length, 1);
     assert.equal(sentMessages[0].text, "EMERGENCY STOP");
-    assert.equal(sentMessages[0].options?.steer, true);
+    assert.equal(sentMessages[0].options?.activeTurnBehavior, "steer");
     assert.equal(router.getQueue(key).length, 0);
   });
 
@@ -961,14 +1436,223 @@ describe("hook-router in-process dispatch and event-driven draining", () => {
 
     await new Promise((r) => setTimeout(r, 20));
 
-    // All 3 messages must be coalesced into a SINGLE batch turn with steer: false
+    // All 3 messages must be coalesced into a SINGLE batch turn with activeTurnBehavior: interrupt
     assert.equal(sentMessages.length, 1);
     assert.ok(sentMessages[0].text.includes("Batch notification (3 events)"));
     assert.ok(sentMessages[0].text.includes("Event 1: PR closed"));
     assert.ok(sentMessages[0].text.includes("Event 2: Action failure"));
     assert.ok(sentMessages[0].text.includes("Event 3: Issue labeled"));
-    assert.equal(sentMessages[0].options?.steer, false);
+    assert.equal(sentMessages[0].options?.activeTurnBehavior, "interrupt");
     assert.equal(router.getQueue(key).length, 0);
+  });
+
+  it("deliverMessage sends activeTurnBehavior and never the dead SDK steer key (#1027)", async () => {
+    const router = new HookRouter(null, { queueDir, stateDir, port: 0 });
+    const payloads: Array<{ text: string; options: Record<string, unknown> }> = [];
+    (router as any).activePaseo = {
+      agents: {
+        ref: () => ({
+          send: async (text: string, options: Record<string, unknown>) => {
+            payloads.push({ text, options });
+          },
+        }),
+      },
+    };
+
+    assert.equal(await router.deliverMessage("agent-steer", "steer this", { steer: true }), true);
+    assert.equal(await router.deliverMessage("agent-interrupt", "interrupt this", { steer: false }), true);
+    assert.equal(await router.deliverMessage("agent-default", "default to interrupt"), true);
+
+    assert.deepEqual(payloads[0], { text: "steer this", options: { activeTurnBehavior: "steer" } });
+    assert.deepEqual(payloads[1], { text: "interrupt this", options: { activeTurnBehavior: "interrupt" } });
+    assert.deepEqual(payloads[2], { text: "default to interrupt", options: { activeTurnBehavior: "interrupt" } });
+    for (const { options } of payloads) {
+      assert.equal("steer" in options, false, "the SDK payload must not carry the dead steer key");
+    }
+  });
+
+  it("deliverMessage CLI fallback omits --steer when the SDK ref is unavailable (#1290)", async () => {
+    const router = new HookRouter(null, { queueDir, stateDir, port: 0 });
+    (router as any).activePaseo = null;
+    const calls: string[][] = [];
+    setExecFileAsyncForTest(async (_cmd: string, args: readonly string[]) => {
+      calls.push([...args]);
+      return { stdout: "" };
+    });
+    try {
+      assert.equal(await router.deliverMessage("agent-cli-steer", "go", { steer: true, noWait: true }), true);
+      assert.equal(await router.deliverMessage("agent-cli-plain", "go", { noWait: true }), true);
+    } finally {
+      setExecFileAsyncForTest(null);
+    }
+    // The paseo CLI send command has no --steer option; passing it fails with
+    // "error: unknown option '--steer'". The CLI fallback must drop it even
+    // when steer is requested for the SDK path.
+    assert.deepEqual(calls[0], ["send", "--no-wait", "agent-cli-steer", "go"]);
+    assert.deepEqual(calls[1], ["send", "--no-wait", "agent-cli-plain", "go"]);
+  });
+
+  it("deliverMessage sends fleet provenance as a `fleet_envelope` attachment, not in the body (#1003)", async () => {
+    const router = new HookRouter(null, { queueDir, stateDir, port: 0 });
+    const payloads: Array<{ text: string; options: any }> = [];
+    (router as any).activePaseo = {
+      agents: {
+        ref: () => ({
+          send: async (text: string, options: any) => {
+            payloads.push({ text, options });
+          },
+        }),
+      },
+    };
+
+    const wrapped = withFleetEnvelope(
+      routerEnvelope({ repo: "forge.mrs.uppidi.com/xpufx-org/paseo", kind: "webhook", ref: 1003 }),
+      "🔔 Forgejo webhook incoming [issues:opened] xpufx-org/paseo#1003 Fleet pill",
+    );
+    assert.equal(await router.deliverMessage("agent-envelope", wrapped, { steer: true }), true);
+
+    assert.equal(payloads.length, 1);
+    assert.equal(payloads[0].text.includes("<!-- {"), false);
+    assert.ok(payloads[0].text.startsWith("🔔 Forgejo webhook incoming"));
+    const attachments = payloads[0].options.attachments;
+    assert.equal(Array.isArray(attachments), true);
+    assert.equal(attachments.length, 1);
+    assert.equal(attachments[0].type, "text");
+    assert.equal(attachments[0].contextKind, "fleet_envelope");
+    assert.equal(attachments[0].title, "Fleet context");
+    assert.deepEqual(JSON.parse(attachments[0].text), fleetEnvelope({
+      origin: "router",
+      sender: ROUTER_SENDER,
+      repo: "forge.mrs.uppidi.com/xpufx-org/paseo",
+      kind: "webhook",
+      ref: 1003,
+    }));
+    assert.equal(payloads[0].options.activeTurnBehavior, "steer");
+  });
+
+  it("deliverMessage forwards explicit attachments alongside an extracted envelope (#1003)", async () => {
+    const router = new HookRouter(null, { queueDir, stateDir, port: 0 });
+    const payloads: Array<{ text: string; options: any }> = [];
+    (router as any).activePaseo = {
+      agents: {
+        ref: () => ({
+          send: async (text: string, options: any) => {
+            payloads.push({ text, options });
+          },
+        }),
+      },
+    };
+
+    await router.deliverMessage(
+      "agent-attach",
+      withFleetEnvelope(watchdogEnvelope({ repo: "forge/o/r" }), "alert body"),
+      { noWait: true, attachments: [fleetEnvelopeAttachment(routerEnvelope({ repo: "other", kind: "handoff" }))] },
+    );
+    assert.equal(payloads[0].text, "alert body");
+    // Multiple envelopes are consolidated into a single outer envelope (#1326)
+    assert.deepEqual(
+      payloads[0].options.attachments.map((a: any) => a.contextKind),
+      ["fleet_envelope"],
+    );
+    const consolidated = JSON.parse(payloads[0].options.attachments[0].text);
+    assert.equal(consolidated.fleet.kind, "batch");
+    assert.equal(consolidated.fleet.origin, "router");
+    assert.equal(consolidated.fleet.sender, "forgejo-hook");
+  });
+
+  it("deliverMessage CLI fallback re-inlines the envelope for the model (#1003)", async () => {
+    const router = new HookRouter(null, { queueDir, stateDir, port: 0 });
+    (router as any).activePaseo = null;
+    const calls: string[][] = [];
+    setExecFileAsyncForTest(async (_cmd: string, args: readonly string[]) => {
+      calls.push([...args]);
+      return { stdout: "" };
+    });
+    try {
+      await router.deliverMessage(
+        "agent-cli-envelope",
+        withFleetEnvelope(routerEnvelope({ repo: "forge/o/r", kind: "steer" }), "body"),
+        { noWait: true },
+      );
+    } finally {
+      setExecFileAsyncForTest(null);
+    }
+    const sent = calls[0][calls[0].length - 1];
+    assert.ok(sent.startsWith('<!-- {"fleet"'));
+    assert.ok(sent.endsWith("\nbody"));
+  });
+
+  it("deliverMessage consolidates multiple envelopes into a single outer envelope for batch deliveries (#1326)", async () => {
+    const router = new HookRouter(null, { queueDir, stateDir, port: 0 });
+    const payloads: Array<{ text: string; options: any }> = [];
+    (router as any).activePaseo = {
+      agents: {
+        ref: () => ({
+          send: async (text: string, options: any) => {
+            payloads.push({ text, options });
+          },
+        }),
+      },
+    };
+
+    // Simulate a batch message with N constituent fleet envelopes.
+    const batchMsg =
+      "[forgejo-hook] Batch notification (3 events):\n\n" +
+      `### Event 1\n${withFleetEnvelope(routerEnvelope({ repo: "xpufx-org/paseo", kind: "webhook", ref: 42 }), "PR closed")}\n\n---\n\n` +
+      `### Event 2\n${withFleetEnvelope(routerEnvelope({ repo: "xpufx-org/aur-automation", kind: "webhook", ref: 99 }), "Action failure")}\n\n---\n\n` +
+      `### Event 3\n${withFleetEnvelope(routerEnvelope({ repo: "xpufx-org/platform", kind: "webhook", ref: 7 }), "Issue labeled")}`;
+
+    await router.deliverMessage("agent-batch", batchMsg, { noWait: true, steer: false });
+
+    // Exactly one envelope attachment — consolidated from the three constituents.
+    assert.equal(payloads.length, 1);
+    assert.equal(payloads[0].options.attachments?.length, 1);
+    assert.equal(payloads[0].options.attachments![0].contextKind, "fleet_envelope");
+    const env = JSON.parse(payloads[0].options.attachments![0].text);
+    assert.equal(env.fleet.kind, "batch");
+    assert.equal(env.fleet.origin, "router");
+    assert.equal(env.fleet.sender, "forgejo-hook");
+    // Repo is taken from the first valid envelope.
+    assert.equal(env.fleet.repo, "xpufx-org/paseo");
+    assert.equal(env.fleet.ref, null);
+    // The body text must NOT contain any stacked <!-- {"fleet" --> comments.
+    assert.equal(batchMsg.includes("<!-- {"), true); // original has them
+    assert.equal(payloads[0].text.includes("<!-- {"), false); // stripped by extract
+    // Verify the SDK path strips all envelope comments from the body.
+    assert.ok(payloads[0].text.includes("Batch notification (3 events)"));
+    assert.ok(payloads[0].text.includes("Event 1"));
+    assert.ok(payloads[0].text.includes("Event 2"));
+    assert.ok(payloads[0].text.includes("Event 3"));
+  });
+
+  it("CLI fallback inlines a single consolidated envelope instead of stacking (#1326)", async () => {
+    const router = new HookRouter(null, { queueDir, stateDir, port: 0 });
+    (router as any).activePaseo = null;
+    const calls: string[][] = [];
+    setExecFileAsyncForTest(async (_cmd: string, args: readonly string[]) => {
+      calls.push([...args]);
+      return { stdout: "" };
+    });
+    try {
+      const batchMsg =
+        "[forgejo-hook] Batch notification (2 events):\n\n" +
+        `### Event 1\n${withFleetEnvelope(routerEnvelope({ repo: "r/a", kind: "webhook", ref: 1 }), "msg 1")}\n\n---\n\n` +
+        `### Event 2\n${withFleetEnvelope(routerEnvelope({ repo: "r/b", kind: "webhook", ref: 2 }), "msg 2")}`;
+      await router.deliverMessage("agent-cli-batch", batchMsg, { noWait: true });
+    } finally {
+      setExecFileAsyncForTest(null);
+    }
+    const sent = calls[0][calls[0].length - 1];
+    // Count how many envelope comments appear at the top of the prompt.
+    const envelopeMatches = sent.match(/<!-- \{"fleet":.*?\} -->/g);
+    assert.ok(envelopeMatches, "must have at least one envelope comment");
+    assert.equal(envelopeMatches!.length, 1, "must have exactly ONE envelope comment, not stacked");
+    const env = JSON.parse(envelopeMatches![0].slice(5, -4));
+    assert.equal(env.fleet.kind, "batch");
+    // Body still contains the event sections but no envelope comments.
+    assert.ok(sent.includes("Batch notification (2 events)"));
+    assert.ok(sent.includes("Event 1"));
+    assert.ok(sent.includes("Event 2"));
   });
 
   it("routes frontdesk events to frontdesk agent", async () => {
@@ -1024,6 +1708,150 @@ describe("hook-router in-process dispatch and event-driven draining", () => {
     assert.ok(getActiveHookRouter() !== null);
     await stop();
     assert.equal(getActiveHookRouter(), null);
+  });
+});
+
+describe("drain() uses noWait: true so it never blocks on target turn (#1329)", () => {
+  let tempDir: string;
+  let queueDir: string;
+  let stateDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "paseo-drain-nowait-test-"));
+    queueDir = join(tempDir, "queues");
+    stateDir = join(tempDir, "state");
+  });
+
+  afterEach(() => {
+    try {
+      rmSync(tempDir, { recursive: true, force: true });
+    } catch {}
+  });
+
+  it("drain delivers batch messages with noWait: true", async () => {
+    const key = "forge.mrs.uppidi.com/xpufx-org/drain-batch-nowait";
+    const targetAgentId = "agent-drain-batch";
+    let agentStatus: "running" | "idle" = "running";
+    const deliveries: Array<{ agentId: string; msg: string; options: any }> = [];
+    let turnEndedHandler: any = null;
+
+    const mockPaseo = {
+      agents: {
+        ref: (id: string) => {
+          assert.equal(id, targetAgentId);
+          return {
+            current: () => ({ id, status: agentStatus, activeTurn: agentStatus === "running" ? { id: "turn-1" } : null }),
+            refresh: async () => ({ agent: { id, status: agentStatus, activeTurn: agentStatus === "running" ? { id: "turn-1" } : null } }),
+            send: async (text: string, options: any) => {
+              deliveries.push({ agentId: targetAgentId, msg: text, options });
+            },
+          };
+        },
+      },
+    } as any;
+
+    const mockServer = {
+      paseo: mockPaseo,
+      events: { on: () => () => {} },
+      on: (name: string, handler: any) => {
+        if (name === "agent.turn_ended") {
+          turnEndedHandler = handler;
+        }
+        return () => {};
+      },
+      before: () => () => {},
+      handle: () => {},
+      registerSettings: () => ({} as any),
+      registerProvider: () => {},
+    } as unknown as PluginServerContext;
+
+    const router = new HookRouter(mockServer, { queueDir, stateDir, port: 0 });
+    router.writeOrchestrator(key, targetAgentId);
+
+    // Intercept deliverMessage to capture the options passed through drain()
+    const originalDeliver = router.deliverMessage.bind(router);
+    (router as any).deliverMessage = async (agentId: string, msg: string, options?: any) => {
+      deliveries.push({ agentId, msg, options });
+      return true;
+    };
+
+    // Enqueue multiple messages while agent is busy so they accumulate
+    router.enqueue(key, "msg-1");
+    router.enqueue(key, "msg-2");
+    router.enqueue(key, "msg-3");
+
+    // Wait for enqueues to settle (drain attempts while busy are deferred)
+    await new Promise((r) => setTimeout(r, 10));
+    assert.equal(router.getQueue(key).length, 3, "all 3 messages should be queued while busy");
+
+    // Agent finishes turn — trigger drain via turn_ended handler
+    agentStatus = "idle";
+    assert.ok(turnEndedHandler, "turnEndedHandler should have been registered");
+    await turnEndedHandler({ agent: { id: targetAgentId } }, { paseo: mockPaseo });
+
+    assert.equal(deliveries.length, 1, `should deliver exactly one batch (got ${deliveries.length})`);
+    const opts = deliveries[0].options;
+    assert.equal(opts?.noWait, true, "batch drain must pass noWait: true");
+    assert.ok(
+      deliveries[0].msg.includes("Batch notification") || deliveries[0].msg.includes("forgejo-hook"),
+      `should be a combined batch message, got: ${JSON.stringify(deliveries[0].msg.slice(0, 300))}`,
+    );
+    assert.equal(router.getQueue(key).length, 0, "queue should be empty after successful drain");
+    // Restore original
+    (router as any).deliverMessage = originalDeliver;
+  });
+
+  it("drain delivers single messages with noWait: true", async () => {
+    const key = "forge.mrs.uppidi.com/xpufx-org/drain-single-nowait";
+    const targetAgentId = "agent-drain-single";
+    const deliveries: Array<{ agentId: string; msg: string; options: any }> = [];
+
+    const mockPaseo = {
+      agents: {
+        ref: (id: string) => {
+          assert.equal(id, targetAgentId);
+          return {
+            current: () => ({ id, status: "idle", activeTurn: null }),
+            refresh: async () => ({ agent: { id, status: "idle", activeTurn: null } }),
+            send: async (text: string, options: any) => {
+              deliveries.push({ agentId: targetAgentId, msg: text, options });
+            },
+          };
+        },
+      },
+    } as any;
+
+    const mockServer = {
+      paseo: mockPaseo,
+      events: { on: () => () => {} },
+      on: () => () => {},
+      before: () => () => {},
+      handle: () => {},
+      registerSettings: () => ({} as any),
+      registerProvider: () => {},
+    } as unknown as PluginServerContext;
+
+    const router = new HookRouter(mockServer, { queueDir, stateDir, port: 0 });
+    router.writeOrchestrator(key, targetAgentId);
+
+    // Intercept deliverMessage to capture the options passed through drain()
+    const originalDeliver = router.deliverMessage.bind(router);
+    (router as any).deliverMessage = async (agentId: string, msg: string, options?: any) => {
+      deliveries.push({ agentId, msg, options });
+      return true;
+    };
+
+    router.enqueue(key, "single-msg");
+
+    await router.drain(key);
+
+    assert.equal(deliveries.length, 1, "should deliver exactly one message");
+    const opts = deliveries[0].options;
+    assert.equal(opts?.noWait, true, "single drain must pass noWait: true");
+    assert.equal(deliveries[0].msg, "single-msg");
+    assert.equal(router.getQueue(key).length, 0);
+    // Restore original
+    (router as any).deliverMessage = originalDeliver;
   });
 });
 
@@ -1103,6 +1931,93 @@ describe("hook-router bundled service lifecycle and log buffer", () => {
     clearHookLogs();
     assert.deepEqual(getHookLogs(), []);
   });
+
+  it("recovers the newest live Front Desk after a restart with missing disk state", async () => {
+    const liveAgents = {
+      agents: {
+        list: async () => ({
+          entries: [
+            {
+              id: "fd-older",
+              title: "Front Desk",
+              labels: { role: "front-desk" },
+              status: "idle",
+              updatedAt: "2026-01-01T00:00:00.000Z",
+            },
+            {
+              id: "fd-newer",
+              labels: { role: "front-desk" },
+              status: "running",
+              updatedAt: "2026-01-02T00:00:00.000Z",
+            },
+          ],
+        }),
+      },
+    } as any;
+    const first = new HookRouter(null, { queueDir, stateDir, port: 0 });
+    first.writeFrontDesk("fd-retired");
+    rmSync(join(tempDir, "frontdesk.json"), { force: true });
+
+    const recovered = new HookRouter(null, { queueDir, stateDir, port: 0, paseo: liveAgents });
+    (recovered as any).updateAgentMetadata = async () => {};
+    await recovered.start();
+
+    assert.equal(recovered.readFrontDesk()?.agentId, "fd-newer");
+    const ordered = findLiveFrontDeskAgents(
+      new Map([
+        ["fd-older", { id: "fd-older", title: "Front Desk", labels: { role: "front-desk" }, status: "idle", updatedAt: "2026-01-01T00:00:00.000Z" }],
+        ["fd-newer", { id: "fd-newer", labels: { role: "front-desk" }, status: "running", updatedAt: "2026-01-02T00:00:00.000Z" }],
+        // Bare titles never match without explicit role metadata (#1143).
+        ["fd-title-only", { id: "fd-title-only", title: "Front Desk", status: "running", updatedAt: "2026-01-03T00:00:00.000Z" }],
+        // Retired sessions never match, even when newest (#1143).
+        ["fd-retired", { id: "fd-retired", title: "Front Desk (retired)", labels: { role: "retired-front-desk" }, status: "running", updatedAt: "2026-01-04T00:00:00.000Z" }],
+      ] as any),
+    );
+    assert.deepEqual(ordered.map((agent) => agent.id), ["fd-newer", "fd-older"]);
+    await recovered.stop();
+  });
+
+  it("persists hook logs to scoped disk storage and rotates when bounded (#1115)", () => {
+    clearHookLogs();
+    const logDir = join(tempDir, "logs");
+    const router = new HookRouter(null, {
+      queueDir,
+      stateDir,
+      logDir,
+      logMaxBytes: 150,
+      logMaxFiles: 2,
+      port: 0,
+    });
+    setActiveHookRouter(router);
+
+    // Initial log file path verification
+    assert.equal(router.logDir, logDir);
+    assert.equal(router.logFilePath, join(logDir, "hook.log"));
+    assert.ok(existsSync(logDir), "scoped logs/ directory must exist");
+    assert.ok(!router.logDir.includes(".paseo/logs"), "must never write to ~/.paseo/logs");
+
+    // Write log lines via appendHookLog
+    appendHookLog("[info] first message to disk");
+    appendHookLog("[warn] second message to disk");
+
+    const hookLogFile = join(logDir, "hook.log");
+    assert.ok(existsSync(hookLogFile), "hook.log should be created on write");
+    const content = readFileSync(hookLogFile, "utf8");
+    assert.match(content, /first message to disk/);
+    assert.match(content, /second message to disk/);
+
+    // Verify bounded rotation: trigger rotation by appending lines past 150 bytes
+    for (let i = 1; i <= 10; i++) {
+      appendHookLog(`[info] rotation test line ${i} with long descriptive text to exceed threshold`);
+    }
+
+    assert.ok(existsSync(join(logDir, "hook.log")));
+    assert.ok(existsSync(join(logDir, "hook.log.1")));
+    assert.ok(existsSync(join(logDir, "hook.log.2")));
+    assert.ok(!existsSync(join(logDir, "hook.log.3")), "hook.log.3 must not exist when maxFiles is 2");
+
+    setActiveHookRouter(null);
+  });
 });
 
 describe("hook-router network interfaces and listen address configuration (#427)", () => {
@@ -1130,6 +2045,38 @@ describe("hook-router network interfaces and listen address configuration (#427)
     const loaded = loadRouterConfig();
     assert.equal(loaded.host, "0.0.0.0");
     assert.equal(loaded.port, 9199);
+  });
+
+  it("never consults the legacy ~/.config/uppidi-fleet/router-config.json mirror (#1164)", () => {
+    const legacyHome = mkdtempSync(join(tmpdir(), "uppidi-legacy-config-"));
+    const legacyDir = join(legacyHome, ".config", "uppidi-fleet");
+    mkdirSync(legacyDir, { recursive: true });
+    const legacyFile = join(legacyDir, "router-config.json");
+    writeFileSync(legacyFile, JSON.stringify({ host: "10.99.99.99", port: 19999 }));
+
+    const realHome = process.env.HOME;
+    const realConfig = process.env.FORGE_HOOK_CONFIG;
+    process.env.HOME = legacyHome;
+    process.env.FORGE_HOOK_CONFIG = legacyFile;
+    try {
+      // Canonical plugin settings drive resolution; the legacy mirror is ignored.
+      saveRouterConfig({ host: "192.0.2.10", port: 8321 });
+      const loaded = loadRouterConfig();
+      assert.equal(loaded.host, "192.0.2.10");
+      assert.equal(loaded.port, 8321);
+
+      // With canonical settings cleared, schema defaults apply -- not the mirror.
+      clearSettingsStorage();
+      const fallback = loadRouterConfig();
+      assert.equal(fallback.host, "127.0.0.1");
+      assert.equal(fallback.port, 8099);
+    } finally {
+      if (realHome === undefined) delete process.env.HOME;
+      else process.env.HOME = realHome;
+      if (realConfig === undefined) delete process.env.FORGE_HOOK_CONFIG;
+      else process.env.FORGE_HOOK_CONFIG = realConfig;
+      rmSync(legacyHome, { recursive: true, force: true });
+    }
   });
 
   it("initializes HookRouter with persisted configuration", () => {
@@ -1216,7 +2163,7 @@ describe("hook-router per-repository muting circuit breaker and fleet roster (#4
   let stateDir: string;
 
   beforeEach(() => {
-    tmpDir = mkdtempSync(join(tmpdir(), "uppidi-fleet-mute-test-"));
+    tmpDir = mkdtempSync(join(tmpdir(), "uppidi-fleet-pause-test-"));
     queueDir = join(tmpDir, "queues");
     stateDir = join(tmpDir, "state");
   });
@@ -1227,30 +2174,30 @@ describe("hook-router per-repository muting circuit breaker and fleet roster (#4
     } catch {}
   });
 
-  it("manages and persists mutedRepos and enrolledRepos in plugin settings", () => {
+  it("manages and persists pausedRepos and enrolledRepos in plugin settings", () => {
     const router = new HookRouter(null, {
       queueDir,
       stateDir,
       port: 0,
     });
 
-    assert.equal(router.isRepoMuted("xpufx-org/paseo"), false);
-    assert.deepEqual(router.getMutedRepos(), []);
+    assert.equal(router.isRepoPaused("xpufx-org/paseo"), false);
+    assert.deepEqual(router.getPausedRepos(), []);
 
-    // Mute repo
-    router.muteRepo("xpufx-org/paseo");
-    assert.equal(router.isRepoMuted("xpufx-org/paseo"), true);
-    assert.deepEqual(router.getMutedRepos(), ["xpufx-org/paseo"]);
+    // Pause repo
+    router.pauseRepo("xpufx-org/paseo");
+    assert.equal(router.isRepoPaused("xpufx-org/paseo"), true);
+    assert.deepEqual(router.getPausedRepos(), ["xpufx-org/paseo"]);
 
     // Verify config persisted
     const saved = loadRouterConfig();
-    assert.deepEqual(saved.mutedRepos, ["xpufx-org/paseo"]);
+    assert.deepEqual(saved.pausedRepos, ["xpufx-org/paseo"]);
 
-    // Toggle mute off
-    const toggleRes = router.toggleRepoMute("xpufx-org/paseo");
-    assert.equal(toggleRes.isMuted, false);
-    assert.equal(router.isRepoMuted("xpufx-org/paseo"), false);
-    assert.deepEqual(router.getMutedRepos(), []);
+    // Toggle pause off
+    const toggleRes = router.toggleRepoPause("xpufx-org/paseo");
+    assert.equal(toggleRes.isPaused, false);
+    assert.equal(router.isRepoPaused("xpufx-org/paseo"), false);
+    assert.deepEqual(router.getPausedRepos(), []);
 
     // Enroll repo
     router.enrollRepo("xpufx-org/new-repo");
@@ -1261,9 +2208,28 @@ describe("hook-router per-repository muting circuit breaker and fleet roster (#4
     assert.ok(!router.getEnrolledRepos().includes("xpufx-org/new-repo"));
   });
 
-  it("suppresses queue drain when repository is muted and resumes on unmute", async () => {
+  it("reads the pre-#984 mutedRepos key and migrates it into pausedRepos", () => {
+    const storage = getUppidiFleetSettingsStorage();
+    storage.update((prev) => ({ ...prev, pausedRepos: [], mutedRepos: ["xpufx-org/legacy"] }));
+
+    const loaded = loadRouterConfig();
+    assert.deepEqual(loaded.pausedRepos, ["xpufx-org/legacy"]);
+
+    const router = new HookRouter(null, { queueDir, stateDir, port: 0 });
+    assert.equal(router.isRepoPaused("xpufx-org/legacy"), true);
+
+    // A write through the new key drops the legacy entry so an unpaused repo
+    // cannot be resurrected by a stale alias on the next read.
+    router.unpauseRepo("xpufx-org/legacy");
+    assert.equal(router.isRepoPaused("xpufx-org/legacy"), false);
+    assert.deepEqual(loadRouterConfig().pausedRepos, []);
+    const raw = JSON.parse(readFileSync(storage.filePath, "utf8"));
+    assert.equal(raw.mutedRepos, undefined);
+  });
+
+  it("suppresses queue drain when repository is paused and resumes on unpause", async () => {
     const key = "xpufx-org/paseo";
-    const targetAgentId = "agent-orch-mute-1";
+    const targetAgentId = "agent-orch-pause-1";
     const sentMessages: string[] = [];
 
     const mockPaseo = {
@@ -1298,23 +2264,23 @@ describe("hook-router per-repository muting circuit breaker and fleet roster (#4
     // Write orchestrator mapping
     router.writeOrchestrator(key, targetAgentId);
 
-    // Mute the repository
-    router.muteRepo(key);
-    assert.equal(router.isRepoMuted(key), true);
+    // Pause the repository
+    router.pauseRepo(key);
+    assert.equal(router.isRepoPaused(key), true);
 
-    // Enqueue message while muted
-    router.enqueue(key, "Muted webhook task");
+    // Enqueue message while paused
+    router.enqueue(key, "Paused webhook task");
 
     // Allow drain check to run
     await new Promise((r) => setTimeout(r, 20));
 
-    // Message should NOT be sent because repo is muted!
+    // Message should NOT be sent because repo is paused!
     assert.equal(sentMessages.length, 0);
     assert.equal(router.getQueue(key).length, 1);
 
-    // Now unmute the repository
-    router.unmuteRepo(key);
-    assert.equal(router.isRepoMuted(key), false);
+    // Now unpause the repository
+    router.unpauseRepo(key);
+    assert.equal(router.isRepoPaused(key), false);
 
     // Trigger drain
     await router.drain(key);
@@ -1322,7 +2288,7 @@ describe("hook-router per-repository muting circuit breaker and fleet roster (#4
 
     // Message should now be dispatched!
     assert.equal(sentMessages.length, 1);
-    assert.equal(sentMessages[0], "Muted webhook task");
+    assert.equal(sentMessages[0], "Paused webhook task");
     assert.equal(router.getQueue(key).length, 0);
   });
 
@@ -1346,7 +2312,7 @@ describe("hook-router per-repository muting circuit breaker and fleet roster (#4
     assert.ok(status.repoCount >= 1, "Status repoCount must include enrolled repositories");
   });
 
-  it("getFleetRosterInfo reports enrolled repos, muted repos, and queue depths", () => {
+  it("getFleetRosterInfo reports enrolled repos, paused repos, and queue depths", () => {
     const router = new HookRouter(null, {
       queueDir,
       stateDir,
@@ -1356,15 +2322,65 @@ describe("hook-router per-repository muting circuit breaker and fleet roster (#4
 
     router.enrollRepo("xpufx-org/paseo");
     router.enrollRepo("xpufx-org/aur-automation");
-    router.muteRepo("xpufx-org/aur-automation");
+    router.pauseRepo("xpufx-org/aur-automation");
     router.enqueue("xpufx-org/paseo", "Queued 1");
     router.enqueue("xpufx-org/paseo", "Queued 2");
 
     const info = getFleetRosterInfo();
     assert.ok(info.enrolledRepos.includes("xpufx-org/paseo"));
     assert.ok(info.enrolledRepos.includes("xpufx-org/aur-automation"));
-    assert.deepEqual(info.mutedRepos, ["xpufx-org/aur-automation"]);
+    assert.deepEqual(info.pausedRepos, ["xpufx-org/aur-automation"]);
     assert.equal(info.repoQueuedHooks["xpufx-org/paseo"], 2);
+  });
+
+  it("reports only declared enrollment, not runtime queues or orchestrators (#1165)", () => {
+    const router = new HookRouter(null, {
+      queueDir,
+      stateDir,
+      port: 0,
+    });
+    setActiveHookRouter(router);
+
+    router.enqueue("xpufx-org/ghost-repo", "Queued work");
+    router.writeOrchestrator("xpufx-org/ghost-repo", "agent-ghost");
+
+    assert.equal(router.isEnrolledRepo("xpufx-org/ghost-repo"), false);
+    assert.ok(!router.getEnrolledRepos().includes("xpufx-org/ghost-repo"));
+
+    const ghostInfo = getFleetRosterInfo();
+    assert.ok(!ghostInfo.enrolledRepos.includes("xpufx-org/ghost-repo"));
+    assert.equal(ghostInfo.repoQueuedHooks["xpufx-org/ghost-repo"], 1);
+
+    router.enrollRepo("xpufx-org/declared-repo");
+    assert.ok(router.getEnrolledRepos().includes("xpufx-org/declared-repo"));
+    assert.ok(getFleetRosterInfo().enrolledRepos.includes("xpufx-org/declared-repo"));
+  });
+
+  it("purges queue and orchestrator on unenroll (#1154, #1165, #1312)", () => {
+    const router = new HookRouter(null, {
+      queueDir,
+      stateDir,
+      port: 0,
+    });
+    setActiveHookRouter(router);
+
+    router.enrollRepo("xpufx-org/durable-repo");
+    router.enqueue("xpufx-org/durable-repo", "Queued work");
+    router.writeOrchestrator("xpufx-org/durable-repo", "agent-durable");
+    assert.equal(router.getQueue("xpufx-org/durable-repo").length, 1);
+    assert.equal(existsSync(router.queueFilePath("xpufx-org/durable-repo")), true);
+
+    router.unenrollRepo("xpufx-org/durable-repo");
+
+    assert.ok(!router.getEnrolledRepos().includes("xpufx-org/durable-repo"));
+    assert.ok(!getFleetRosterInfo().enrolledRepos.includes("xpufx-org/durable-repo"));
+    assert.ok(!(loadRouterConfig().enrolledRepos ?? []).includes("xpufx-org/durable-repo"));
+    // Queue is purged from memory and disk on unenroll (#1312)
+    assert.equal(router.getQueue("xpufx-org/durable-repo").length, 0);
+    assert.equal(existsSync(router.queueFilePath("xpufx-org/durable-repo")), false);
+    assert.equal(getFleetRosterInfo().repoQueuedHooks["xpufx-org/durable-repo"] ?? 0, 0);
+    // Orchestrator record is purged on unenroll (#1214)
+    assert.equal(router.readOrchestrator("xpufx-org/durable-repo"), null);
   });
 });
 
@@ -1444,11 +2460,19 @@ describe("hook-router event coalescing and digest (#458)", () => {
       },
     ];
     const digest = formatDigest("forge.mrs.uppidi.com/xpufx-org/paseo", 42, buffered);
-    assert.ok(digest.startsWith(`${FORGEJO_DIGEST_PREFIX} `));
-    assert.match(digest, /#42 Digest test \[state\/2-review\]/);
-    assert.match(digest, /\(2 events: issue_comment:created, state-transition\)/);
-    assert.ok(digest.includes("Latest comment: latest comment body"));
-    assert.ok(digest.endsWith("https://forge.test/xpufx-org/paseo/issues/42"));
+    const digestFleet = parseFleetComment(digest.split("\n")[0]);
+    assert.equal(digestFleet?.v, FLEET_ENVELOPE_VERSION);
+    assert.equal(digestFleet?.origin, "router");
+    assert.equal(digestFleet?.sender, ROUTER_SENDER);
+    assert.equal(digestFleet?.repo, "forge.mrs.uppidi.com/xpufx-org/paseo");
+    assert.equal(digestFleet?.kind, "webhook");
+    assert.equal(digestFleet?.ref, 42);
+    const digestBody = digest.split("\n").slice(1).join("\n");
+    assert.ok(digestBody.startsWith(`${FORGEJO_DIGEST_PREFIX} `));
+    assert.match(digestBody, /#42 Digest test \[state\/2-review\]/);
+    assert.match(digestBody, /\(2 events: issue_comment:created, state-transition\)/);
+    assert.ok(digestBody.includes("Latest comment: latest comment body"));
+    assert.ok(digestBody.endsWith("https://forge.test/xpufx-org/paseo/issues/42"));
   });
 
   it("buffers burst events, dedupes identical deliveries, and flushes one digest", async () => {
@@ -1471,7 +2495,7 @@ describe("hook-router event coalescing and digest (#458)", () => {
 
     const queue = router.getQueue(key);
     assert.equal(queue.length, 1);
-    assert.ok(queue[0].msg.startsWith(FORGEJO_DIGEST_PREFIX));
+    assert.ok(queue[0].msg.startsWith('<!-- {"fleet"'));
     assert.match(queue[0].msg, /2 events/);
   });
 
@@ -1544,6 +2568,7 @@ describe("hook-router fleet watchdog audit (#458)", () => {
     queueDir = join(tempDir, "queues");
     stateDir = join(tempDir, "state");
     router = new HookRouter(null, { queueDir, stateDir, port: 0 });
+    router.enrollRepo("test-repo");
     router.writeFrontDesk(frontDeskId, "test");
     delivered = [];
     reloaded = [];
@@ -1564,10 +2589,11 @@ describe("hook-router fleet watchdog audit (#458)", () => {
     } catch {}
   });
 
-  it("reports a clean audit when no anomalies are present", async () => {
+  it("reports a clean audit when no anomalies are present (zero-heuristics, #1151)", async () => {
+    // Only roster-matched and parentage-matched agents are fleet members.
     const cleanMap = new Map<string, WatchdogAgent>([
-      ["agent-1", { id: "agent-1", status: "idle", lastError: null }],
-      ["agent-2", { id: "agent-2", status: "running", lastError: null }],
+      ["agent-1", { id: "agent-1", status: "idle", lastError: null, role: "orchestrator", labels: { role: "orchestrator" } }],
+      ["agent-2", { id: "agent-2", status: "running", lastError: null, role: "worker", parentId: "agent-1", labels: { role: "worker" } }],
     ]);
     const audit = await router.runWatchdogAudit({
       orchestratorRecords: [{ key: "test-repo", agentId: "agent-1" }],
@@ -1581,6 +2607,110 @@ describe("hook-router fleet watchdog audit (#458)", () => {
     assert.equal(audit.audited.orchestrators, 1);
   });
 
+  it("skips ad-hoc agents without fleet labels from watchdog audit", async () => {
+    const adhocMap = new Map<string, WatchdogAgent>([
+      ["adhoc-1", { id: "adhoc-1", status: "idle", lastError: null, labels: {} }],
+      ["adhoc-2", { id: "adhoc-2", status: "running", lastError: null, labels: {} }],
+    ]);
+    const audit = await router.runWatchdogAudit({
+      // An unenrolled repo record is skipped by the missing-orchestrator pass
+      // (#1214), keeping this fixture focused on ad-hoc exclusion.
+      orchestratorRecords: [{ key: "unenrolled-repo", agentId: "agent-1" }],
+      agentMap: adhocMap,
+      deliver: fakeDeliver,
+      reloadAgent: fakeReload,
+    });
+    assert.equal(audit.ok, true);
+    assert.equal(audit.anomalies.length, 0);
+    assert.equal(audit.audited.agents, 0, "ad-hoc agents must be excluded from the audit count");
+    assert.equal(audit.audited.orchestrators, 1);
+  });
+
+  it("skips ad-hoc agents with quota errors from triggering Front Desk alerts", async () => {
+    const adhocMap = new Map<string, WatchdogAgent>([
+      ["adhoc-quota", { id: "adhoc-quota", status: "error", lastError: "usage limit exceeded", labels: {} }],
+    ]);
+    const audit = await router.runWatchdogAudit({
+      orchestratorRecords: [{ key: "unenrolled-repo", agentId: "agent-1" }],
+      agentMap: adhocMap,
+      deliver: fakeDeliver,
+      reloadAgent: fakeReload,
+    });
+    assert.equal(audit.ok, true);
+    assert.equal(audit.anomalies.length, 0, "ad-hoc agents must not generate anomalies");
+    assert.equal(delivered.length, 0, "ad-hoc agents must not trigger Front Desk alerts");
+    assert.equal(audit.audited.orchestrators, 1);
+  });
+
+  it("includes fleet-labeled agents in watchdog audit (zero-heuristics, #1151)", async () => {
+    // Only agents whose ids match the roster or whose parent matches are fleet members.
+    // Label-only claims (role="worker") without roster/parentage are excluded.
+    const fleetMap = new Map<string, WatchdogAgent>([
+      ["orch-1", { id: "orch-1", status: "idle", lastError: null, role: "orchestrator", labels: { role: "orchestrator" } }],
+      ["worker-1", { id: "worker-1", status: "running", lastError: null, role: "worker", parentId: "orch-1", labels: { role: "worker" } }],
+    ]);
+    const audit = await router.runWatchdogAudit({
+      orchestratorRecords: [{ key: "test-repo", agentId: "orch-1" }],
+      agentMap: fleetMap,
+      deliver: fakeDeliver,
+      reloadAgent: fakeReload,
+    });
+    assert.equal(audit.ok, true);
+    assert.equal(audit.audited.agents, 2, "fleet agents must be included in audit count");
+    assert.equal(audit.audited.orchestrators, 1);
+  });
+
+  it("raises a REPETITIVE_TOOL_LOOP anomaly and alerts Front Desk for a runaway turn (#1265)", async () => {
+    const loop = Array.from({ length: 15 }, () => ({
+      type: "tool_call",
+      callId: "c",
+      name: "read",
+      status: "completed",
+      detail: { type: "read", filePath: "/etc/hosts" },
+    }));
+    const fleetMap = new Map<string, WatchdogAgent>([
+      [
+        "orch-loop",
+        {
+          id: "orch-loop",
+          status: "running",
+          lastError: null,
+          role: "orchestrator",
+          labels: { role: "orchestrator" },
+          recentTimeline: loop as any,
+        },
+      ],
+    ]);
+    const audit = await router.runWatchdogAudit({
+      orchestratorRecords: [{ key: "test-repo", agentId: "orch-loop" }],
+      agentMap: fleetMap,
+      deliver: fakeDeliver,
+      reloadAgent: fakeReload,
+      recover: false,
+    });
+    const anomaly = audit.anomalies.find((a) => a.type === "REPETITIVE_TOOL_LOOP");
+    assert.ok(anomaly, "runaway loop must be classified as an anomaly");
+    assert.equal(anomaly?.severity, "high");
+    assert.match(anomaly?.details?.REPETITIVE_TOOL_LOOP ?? "", /15 identical consecutive tool calls/);
+    assert.ok(delivered.some((d) => d.id === frontDeskId && d.msg.includes("REPETITIVE_TOOL_LOOP")));
+  });
+
+  it("skips ad-hoc agents with idle turns from triggering alerts", async () => {
+    const adhocMap = new Map<string, WatchdogAgent>([
+      ["adhoc-idle", { id: "adhoc-idle", status: "idle", lastError: null, labels: {} }],
+    ]);
+    const audit = await router.runWatchdogAudit({
+      orchestratorRecords: [{ key: "unenrolled-repo", agentId: "agent-1" }],
+      agentMap: adhocMap,
+      deliver: fakeDeliver,
+      reloadAgent: fakeReload,
+    });
+    assert.equal(audit.ok, true);
+    assert.equal(audit.anomalies.length, 0, "ad-hoc idle agents must not generate anomalies");
+    assert.equal(delivered.length, 0, "ad-hoc idle agents must not trigger Front Desk alerts");
+    assert.equal(audit.audited.orchestrators, 1);
+  });
+
   it("detects missing orchestrators and alerts Front Desk", async () => {
     const audit = await router.runWatchdogAudit({
       orchestratorRecords: [{ key: "test-repo", agentId: "agent-1" }],
@@ -1590,6 +2720,36 @@ describe("hook-router fleet watchdog audit (#458)", () => {
     });
     assert.ok(audit.anomalies.some((a) => a.type === "ORCHESTRATOR_MISSING"));
     assert.ok(delivered.some((d) => d.id === frontDeskId && d.msg.includes("was not found on daemon")));
+  });
+
+  it("skips missing orchestrator anomalies and alerts for unenrolled repositories (#1214)", async () => {
+    const audit = await router.runWatchdogAudit({
+      orchestratorRecords: [{ key: "unenrolled-repo", agentId: "agent-missing" }],
+      agentMap: new Map(),
+      deliver: fakeDeliver,
+      reloadAgent: fakeReload,
+    });
+    assert.equal(audit.anomalies.some((a) => a.type === "ORCHESTRATOR_MISSING"), false);
+    assert.equal(delivered.some((d) => d.msg.includes("unenrolled-repo")), false);
+  });
+
+  it("stamps watchdog alerts with the fleet envelope (#985)", async () => {
+    await router.runWatchdogAudit({
+      orchestratorRecords: [{ key: "test-repo", agentId: "agent-1" }],
+      agentMap: new Map(),
+      deliver: fakeDeliver,
+      reloadAgent: fakeReload,
+    });
+    const miss = delivered.find((d) => d.msg.includes("was not found on daemon"));
+    const fleet = parseFleetComment(miss?.msg);
+    assert.equal(fleet?.v, FLEET_ENVELOPE_VERSION);
+    assert.equal(fleet?.origin, "watchdog");
+    assert.equal(fleet?.sender, WATCHDOG_SENDER);
+    assert.equal(fleet?.kind, "alert");
+    assert.equal(fleet?.repo, "test-repo");
+    assert.equal(fleet?.ref, null);
+    assert.ok(miss?.msg.startsWith('<!-- {"fleet"'));
+    assert.ok(miss?.msg.endsWith("was not found on daemon."));
   });
 
   it("recovers a foreground turn lock via the 4-step pipeline and notifies Front Desk", async () => {
@@ -1718,6 +2878,119 @@ describe("hook-router fleet watchdog audit (#458)", () => {
     );
   });
 
+  it("auto-allows a safe fleet heredoc permission instead of wedging (#1084)", async () => {
+    const logPath = join(tempDir, "permission-decisions.jsonl");
+    const allowed: Array<[string, string]> = [];
+    const heredoc =
+      "teax issue comment 1084 --hostname forge.example.com -R owner/repo --envelope " +
+      "-b \"$(cat <<'EOF'\nbody\nEOF\n)\"";
+    const map = new Map<string, WatchdogAgent>([
+      [
+        "orch-1",
+        {
+          id: "orch-1",
+          title: "Orchestrator · test-repo",
+          status: "running",
+          labels: { role: "orchestrator" },
+          pendingPermissions: [{ id: "perm-hd", tool: "run_command", input: { command: heredoc } }],
+        },
+      ],
+    ]);
+    const audit = await router.runWatchdogAudit({
+      orchestratorRecords: [{ key: "test-repo", agentId: "orch-1" }],
+      agentMap: map,
+      deliver: fakeDeliver,
+      reloadAgent: fakeReload,
+      allowFleetPermission: async (agentId, permissionId) => {
+        allowed.push([agentId, permissionId]);
+        return true;
+      },
+      adjudicationLogPath: logPath,
+    });
+    assert.ok(
+      audit.anomalies.some((a) => a.type === "AGENT_PERMISSION_AUTO_ALLOWED" && a.agentId === "orch-1"),
+    );
+    assert.equal(
+      audit.anomalies.some((a) => a.type === "AGENT_PERMISSION_REQUIRED"),
+      false,
+      "an auto-allowed permission must not also escalate",
+    );
+    assert.deepEqual(allowed, [["orch-1", "perm-hd"]]);
+    assert.equal(delivered.length, 0, "auto-allowed permission does not page Front Desk");
+    const records = readAdjudicationDecisions({ logPath });
+    assert.equal(records.length, 1);
+    assert.equal(records[0]!.action, "auto-allow");
+    assert.equal(records[0]!.ruleId, "teax-board");
+  });
+
+  it("escalates a destructive fleet command to Front Desk with the full command (#1084)", async () => {
+    const logPath = join(tempDir, "permission-decisions.jsonl");
+    const destructive = "rm -rf " + "/";
+    const allowed: Array<[string, string]> = [];
+    const map = new Map<string, WatchdogAgent>([
+      [
+        "worker-1",
+        {
+          id: "worker-1",
+          title: "Worker One",
+          status: "running",
+          labels: { category: "worker" },
+          pendingPermissions: [{ id: "perm-destr", tool: "run_command", input: { command: destructive } }],
+        },
+      ],
+    ]);
+    const audit = await router.runWatchdogAudit({
+      orchestratorRecords: [{ key: "test-repo", agentId: "worker-1" }],
+      agentMap: map,
+      deliver: fakeDeliver,
+      reloadAgent: fakeReload,
+      allowFleetPermission: async (agentId, permissionId) => {
+        allowed.push([agentId, permissionId]);
+        return true;
+      },
+      adjudicationLogPath: logPath,
+    });
+    assert.ok(audit.anomalies.some((a) => a.type === "AGENT_PERMISSION_REQUIRED" && a.agentId === "worker-1"));
+    assert.equal(allowed.length, 0, "destructive command must not reach the allow seam");
+    assert.ok(
+      delivered.some(
+        (d) =>
+          d.msg.includes("paseo permit allow worker-1 perm-destr") &&
+          d.msg.includes(JSON.stringify(destructive)),
+      ),
+      "escalation carries the full command",
+    );
+    const records = readAdjudicationDecisions({ logPath });
+    assert.equal(records.length, 1);
+    assert.equal(records[0]!.action, "escalate");
+  });
+
+  it("never auto-allows a non-fleet agent's pending permission (#1084)", async () => {
+    const allowed: Array<[string, string]> = [];
+    const map = new Map<string, WatchdogAgent>([
+      [
+        "adhoc-1",
+        {
+          id: "adhoc-1",
+          name: "my scratch session",
+          status: "running",
+          pendingPermissions: [{ id: "perm-adhoc", input: { command: "git status" } }],
+        },
+      ],
+    ]);
+    const audit = await router.runWatchdogAudit({
+      agentMap: map,
+      deliver: fakeDeliver,
+      reloadAgent: fakeReload,
+      allowFleetPermission: async (agentId, permissionId) => {
+        allowed.push([agentId, permissionId]);
+        return true;
+      },
+    });
+    assert.equal(allowed.length, 0);
+    assert.ok(audit.anomalies.some((a) => a.type === "AGENT_PERMISSION_REQUIRED" && a.agentId === "adhoc-1"));
+  });
+
   it("detects non-error attention stalls and alerts Front Desk", async () => {
     const map = new Map<string, WatchdogAgent>([
       ["agent-att-1", { id: "agent-att-1", title: "Worker Input", status: "idle", requiresAttention: true, attentionReason: "input", pendingPermissions: [] }],
@@ -1771,6 +3044,40 @@ describe("hook-router fleet watchdog audit (#458)", () => {
     assert.ok(delivered.some((d) => d.msg.includes("Auto-recovered wedged queue for wedged-with-orch")));
   });
 
+  it("never reloads a wedged orchestrator when the queue is empty even past the busy threshold (#1072)", async () => {
+    (router as any).busyAttempts.set("drained-with-orch", 12);
+    (router as any).queues.set("drained-with-orch", []);
+
+    const audit = await router.runWatchdogAudit({
+      orchestratorRecords: [{ key: "drained-with-orch", agentId: "agent-drained" }],
+      agentMap: new Map([["agent-drained", { id: "agent-drained", status: "idle" }]]),
+      deliver: fakeDeliver,
+      reloadAgent: fakeReload,
+    });
+    assert.equal(
+      audit.anomalies.some((a) => a.type === "QUEUE_WEDGED" && a.key === "drained-with-orch"),
+      false,
+    );
+    assert.equal(reloaded.includes("agent-drained"), false);
+    assert.equal(delivered.some((d) => d.msg.includes("Auto-recovered wedged queue for drained-with-orch")), false);
+  });
+
+  it("clears stale busy attempts once a queue has drained (#1072)", async () => {
+    (router as any).busyAttempts.set("drained-with-orch", 5);
+    (router as any).busyQueues.add("drained-with-orch");
+    (router as any).queues.set("drained-with-orch", []);
+
+    const audit = await router.runWatchdogAudit({
+      orchestratorRecords: [{ key: "drained-with-orch", agentId: "agent-drained" }],
+      agentMap: new Map([["agent-drained", { id: "agent-drained", status: "idle" }]]),
+      deliver: fakeDeliver,
+      reloadAgent: fakeReload,
+    });
+    assert.equal((router as any).busyAttempts.has("drained-with-orch"), false);
+    assert.equal((router as any).busyQueues.has("drained-with-orch"), false);
+    assert.equal(audit.audited.queues, 0);
+  });
+
   it("flags un-orchestrated queues with pending messages and alerts Front Desk (#752)", async () => {
     (router as any).queues.set("forge.mrs.uppidi.com/xpufx-org/pending-repo", [
       { id: "m1", key: "forge.mrs.uppidi.com/xpufx-org/pending-repo", msg: "pending 1", ts: Date.now() },
@@ -1795,10 +3102,10 @@ describe("hook-router fleet watchdog audit (#458)", () => {
     );
   });
 
-  it("does not flag un-orchestrated queues when queue is empty or muted or paused (#752)", async () => {
+  it("does not flag un-orchestrated queues when queue is empty or paused (#752)", async () => {
     (router as any).queues.set("empty-repo", []);
-    (router as any).queues.set("muted-repo", [{ id: "m1", key: "muted-repo", msg: "p", ts: Date.now() }]);
-    (router as any).mutedRepos.add("muted-repo");
+    (router as any).queues.set("paused-repo", [{ id: "m1", key: "paused-repo", msg: "p", ts: Date.now() }]);
+    (router as any).pausedRepos.add("paused-repo");
     (router as any).queues.set("paused-repo", [{ id: "m2", key: "paused-repo", msg: "p", ts: Date.now() }]);
     (router as any).pausedQueues.add("paused-repo");
 
@@ -1813,6 +3120,78 @@ describe("hook-router fleet watchdog audit (#458)", () => {
       audit.anomalies.some((a) => a.type === "QUEUE_UNORCHESTRATED"),
       false,
     );
+  });
+});
+
+describe("watchdog audit does not recursively self-alert wedged frontdesk (#1329)", () => {
+  let tempDir: string;
+  let queueDir: string;
+  let stateDir: string;
+  let router: HookRouter;
+  let fdDeliveries: Array<{ id: string; msg: string }>;
+  const frontDeskId = "fd-wedge-agent";
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "paseo-wedge-recursion-test-"));
+    queueDir = join(tempDir, "queues");
+    stateDir = join(tempDir, "state");
+    router = new HookRouter(null, { queueDir, stateDir, port: 0 });
+    router.enrollRepo("test-repo");
+    router.writeFrontDesk(frontDeskId, "test");
+    fdDeliveries = [];
+  });
+
+  afterEach(() => {
+    try {
+      rmSync(tempDir, { recursive: true, force: true });
+    } catch {}
+  });
+
+  it("drops watchdog alerts when frontdesk queue is wedged instead of re-enqueuing", async () => {
+    // Simulate a wedged frontdesk by adding "frontdesk" to the busy set
+    (router as any).busyQueues.add("frontdesk");
+
+    const anomalyMap = new Map<string, WatchdogAgent>([
+      [
+        "orch-wedge",
+        {
+          id: "orch-wedge",
+          status: "running",
+          lastError: null,
+          role: "orchestrator",
+          labels: { role: "orchestrator" },
+          recentTimeline: Array.from({ length: 15 }, () => ({
+            type: "tool_call",
+            callId: "c",
+            name: "read",
+            status: "completed",
+            detail: { type: "read", filePath: "/etc/hosts" },
+          })) as any,
+        },
+      ],
+    ]);
+
+    // Only capture deliveries to the frontdesk agent
+    const audit = await router.runWatchdogAudit({
+      orchestratorRecords: [{ key: "test-repo", agentId: "orch-wedge" }],
+      agentMap: anomalyMap,
+      deliver: async (id, msg) => {
+        if (id === frontDeskId) {
+          fdDeliveries.push({ id, msg });
+        }
+        return true;
+      },
+    });
+
+    assert.ok(audit.ok);
+    // No watchdog alerts should reach frontdesk when its queue is wedged.
+    assert.equal(
+      fdDeliveries.length,
+      0,
+      "watchdog must not deliver alerts to frontdesk when its queue is wedged",
+    );
+    // The frontdesk queue must remain unchanged — no recursive self-alert entry.
+    assert.equal(router.getQueue("frontdesk").length, 0, "frontdesk queue must not receive recursive alert");
   });
 });
 
@@ -1857,9 +3236,8 @@ describe("watchdog metrics rollup tick (#560)", () => {
       metricsRollup: true,
     });
 
-    // appendRollupReceipt is fire-and-forget; flush the microtask/IO queue.
-    await new Promise((r) => setTimeout(r, 50));
-    assert.equal(existsSync(metricsFile), true);
+    // appendRollupReceipt is fire-and-forget; wait for its bounded completion.
+    assert.equal(await waitForFile(metricsFile), true);
     const persisted = JSON.parse(readFileSync(metricsFile, "utf8"));
     assert.equal(persisted.receipts.length, 1);
     assert.equal(persisted.receipts[0].model, "deepseek-v4.1-flash");
@@ -1892,9 +3270,9 @@ describe("watchdog metrics rollup tick (#560)", () => {
     const map = new Map([["agent-1", metricsAgent("agent-1")]]);
     const audit = { agentMap: map, orchestratorRecords: [], deliver: async () => true, reloadAgent: async () => ({ ok: true }), metricsRollup: true };
     await router.runWatchdogAudit({ ...audit, now: 1_000_000 });
-    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(await waitForFile(metricsFile), true);
     await router.runWatchdogAudit({ ...audit, now: 1_000_001 });
-    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(await waitForFile(metricsFile), true);
 
     assert.equal(router.canWatchdogAlert("metrics_rollup", 1_000_001), false);
     const persisted = JSON.parse(readFileSync(metricsFile, "utf8"));
@@ -2064,7 +3442,7 @@ describe("reactive child-lifecycle wakeups (#537)", () => {
     const frontDeskId = "front-desk-895";
     const fdChildLabels = { "paseo.parent-agent-id": frontDeskId };
     const map = new Map<string, WatchdogAgent>([
-      [frontDeskId, { id: frontDeskId, title: "Front Desk", status: "idle" }],
+      [frontDeskId, { id: frontDeskId, title: "Front Desk", status: "idle", labels: { role: "front-desk" } }],
       ["fd-child", { id: "fd-child", title: "Worker", status: "idle", labels: fdChildLabels }],
     ]);
     const audit = await router.runWatchdogAudit({
@@ -2224,6 +3602,66 @@ describe("hook-router orchestrator pruning (#458)", () => {
     assert.equal(record?.missCount, 3);
   });
 
+  it("never unlinks a registration from a partial (SDK-only) roster (#1068)", async () => {
+    const router = new HookRouter(null, { queueDir, stateDir, port: 0 });
+    router.writeOrchestrator("repo-other-workspace", "agent-other-ws");
+    // The SDK list is workspace-scoped: it returns this workspace's agents but
+    // omits a live orchestrator registered in another workspace. The global CLI
+    // roster is unavailable, so the merged map is only partial (#1068).
+    (router as any).activePaseo = {
+      agents: {
+        list: async () => ({ entries: [{ id: "agent-in-this-workspace", status: "idle" }] }),
+      },
+    };
+    const calls: string[][] = [];
+    setExecFileAsyncForTest(async (_cmd: string, args: readonly string[]) => {
+      calls.push([...args]);
+      if (args[0] === "ls") throw new Error("global roster unavailable");
+      if (args[0] === "agent" && args[1] === "inspect") {
+        // A scoped inspect cannot see the agent in the other workspace.
+        return { stdout: JSON.stringify({ error: { code: "AGENT_NOT_FOUND" } }) };
+      }
+      return { stdout: "" };
+    });
+    try {
+      for (let i = 0; i < 5; i++) {
+        await router.pruneOrchestrators({ orchestratorRecords: router.listOrchestratorRecords() });
+      }
+    } finally {
+      setExecFileAsyncForTest(null);
+    }
+
+    const record = router.readOrchestrator("repo-other-workspace");
+    assert.equal(record?.agentId, "agent-other-ws", "a partial roster must never unlink a live orchestrator");
+    assert.equal(record?.stale, true);
+    assert.equal(
+      calls.some((c) => c[0] === "agent" && c[1] === "inspect"),
+      false,
+      "a partial roster must not trigger destructive verification",
+    );
+  });
+
+  it("unions the SDK list with the global CLI roster (#1068)", async () => {
+    const router = new HookRouter(null, { queueDir, stateDir, port: 0 });
+    (router as any).activePaseo = {
+      agents: {
+        list: async () => ({ entries: [{ id: "sdk-only", status: "idle" }] }),
+      },
+    };
+    setExecFileAsyncForTest(async (_cmd: string, args: readonly string[]) => {
+      if (args[0] === "ls") return { stdout: JSON.stringify([{ id: "cli-global", status: "idle" }]) };
+      return { stdout: "" };
+    });
+    try {
+      const map = await router.fetchAgentMap();
+      assert.ok(map);
+      assert.equal(map!.has("sdk-only"), true, "SDK entries must survive the CLI merge");
+      assert.equal(map!.has("cli-global"), true, "the global CLI roster must always be consulted");
+    } finally {
+      setExecFileAsyncForTest(null);
+    }
+  });
+
   it("deleteOrchestrator reports not found on a repeat delete", () => {
     const router = new HookRouter(null, { queueDir, stateDir, port: 0 });
     router.writeOrchestrator("repo-del", "agent-del");
@@ -2231,6 +3669,264 @@ describe("hook-router orchestrator pruning (#458)", () => {
     const second = router.deleteOrchestrator("repo-del");
     assert.equal(second.ok, false);
     assert.equal(second.error, "not found");
+  });
+
+  it("archives a closed orchestrator session and unlinks it only after the grace window (#973/#1077)", async () => {
+    const router = new HookRouter(null, { queueDir, stateDir, port: 0 });
+    router.writeOrchestrator("repo-closed", "agent-closed");
+    const archivedIds: string[] = [];
+    const opts = {
+      agentMap: new Map([["agent-closed", { id: "agent-closed", status: "closed" }]]),
+      archiveAgent: async (id: string) => {
+        archivedIds.push(id);
+        return true;
+      },
+    };
+
+    const first = await router.pruneOrchestrators({ ...opts, orchestratorRecords: router.listOrchestratorRecords() });
+    const second = await router.pruneOrchestrators({ ...opts, orchestratorRecords: router.listOrchestratorRecords() });
+    assert.equal(first.prunedCount, 0, "a single closed observation must not unlink");
+    assert.equal(second.prunedCount, 0);
+    assert.deepEqual(archivedIds, []);
+    assert.equal(router.readOrchestrator("repo-closed")?.agentId, "agent-closed");
+
+    const third = await router.pruneOrchestrators({ ...opts, orchestratorRecords: router.listOrchestratorRecords() });
+    assert.equal(third.ok, true);
+    assert.deepEqual(archivedIds, ["agent-closed"]);
+    assert.equal(third.prunedCount, 1);
+    assert.equal(third.pruned[0].key, "repo-closed");
+    assert.deepEqual(third.archived, [
+      { key: "repo-closed", agentId: "agent-closed", reason: "closed session archived and unlinked" },
+    ]);
+    assert.equal(router.readOrchestrator("repo-closed"), null);
+  });
+
+  it("keeps a closed registration when archival fails so a later sweep retries (#973)", async () => {
+    const router = new HookRouter(null, { queueDir, stateDir, port: 0 });
+    router.writeOrchestrator("repo-closed", "agent-closed");
+
+    const result = await router.pruneOrchestrators({
+      orchestratorRecords: router.listOrchestratorRecords(),
+      agentMap: new Map([["agent-closed", { id: "agent-closed", status: "closed" }]]),
+      archiveAgent: async () => false,
+      graceSweeps: 1,
+    });
+
+    assert.equal(result.ok, true);
+    assert.equal(result.prunedCount, 0);
+    assert.equal(router.readOrchestrator("repo-closed")?.agentId, "agent-closed");
+  });
+
+  it("unlinks an already-archived session without re-archiving (#973)", async () => {
+    const router = new HookRouter(null, { queueDir, stateDir, port: 0 });
+    router.writeOrchestrator("repo-archived", "agent-archived");
+    const archivedIds: string[] = [];
+
+    const result = await router.pruneOrchestrators({
+      orchestratorRecords: router.listOrchestratorRecords(),
+      agentMap: new Map([
+        ["agent-archived", { id: "agent-archived", status: "closed", archivedAt: "2026-01-01T00:00:00Z" }],
+      ]),
+      archiveAgent: async (id) => {
+        archivedIds.push(id);
+        return true;
+      },
+    });
+
+    assert.deepEqual(archivedIds, []);
+    assert.equal(result.archived?.[0]?.reason, "archived session unlinked");
+    assert.equal(router.readOrchestrator("repo-archived"), null);
+  });
+
+  it("archiveAgent uses the daemon SDK ref when available (#973)", async () => {
+    const router = new HookRouter(null, { queueDir, stateDir, port: 0 });
+    const archived: string[] = [];
+    (router as any).activePaseo = {
+      agents: {
+        ref: (id: string) => ({
+          archive: async () => {
+            archived.push(id);
+          },
+        }),
+      },
+    };
+
+    assert.equal(await router.archiveAgent("agent-sdk"), true);
+    assert.deepEqual(archived, ["agent-sdk"]);
+  });
+
+  it("dry-run reports closed sessions without archiving or unlinking (#973)", async () => {
+    const router = new HookRouter(null, { queueDir, stateDir, port: 0 });
+    router.writeOrchestrator("repo-closed", "agent-closed");
+    const archivedIds: string[] = [];
+
+    const result = await router.pruneOrchestrators({
+      orchestratorRecords: router.listOrchestratorRecords(),
+      agentMap: new Map([["agent-closed", { id: "agent-closed", status: "closed" }]]),
+      archiveAgent: async (id) => {
+        archivedIds.push(id);
+        return true;
+      },
+      dryRun: true,
+    });
+
+    assert.deepEqual(archivedIds, []);
+    assert.equal(result.dryRun, true);
+    assert.equal(router.readOrchestrator("repo-closed")?.agentId, "agent-closed");
+  });
+
+  it("keeps a live registration when a partial roster reports it closed (#1077)", async () => {
+    const router = new HookRouter(null, { queueDir, stateDir, port: 0 });
+    router.writeOrchestrator("repo-other-workspace", "agent-other-ws");
+    // The workspace-scoped SDK list sees a stale closed session, while the
+    // global CLI roster (the completeness guarantee) is unavailable.
+    (router as any).activePaseo = {
+      agents: {
+        list: async () => ({ entries: [{ id: "agent-other-ws", status: "closed" }] }),
+        ref: () => ({ archive: async () => {} }),
+      },
+    };
+    setExecFileAsyncForTest(async (_cmd: string, args: readonly string[]) => {
+      if (args[0] === "ls") throw new Error("global roster unavailable");
+      return { stdout: "" };
+    });
+    try {
+      for (let i = 0; i < 5; i++) {
+        await router.pruneOrchestrators({ orchestratorRecords: router.listOrchestratorRecords() });
+      }
+    } finally {
+      setExecFileAsyncForTest(null);
+    }
+
+    const record = router.readOrchestrator("repo-other-workspace");
+    assert.equal(record?.agentId, "agent-other-ws", "a partial roster must never unlink a registration");
+    assert.equal(record?.stale, true);
+  });
+
+  it("requires consecutive closed sweeps before archiving a live orchestrator (#1077)", async () => {
+    const router = new HookRouter(null, { queueDir, stateDir, port: 0 });
+    router.writeOrchestrator("repo-flap", "agent-flap");
+    const archivedIds: string[] = [];
+    const opts = {
+      agentMap: new Map([["agent-flap", { id: "agent-flap", status: "closed" }]]),
+      archiveAgent: async (id: string) => {
+        archivedIds.push(id);
+        return true;
+      },
+    };
+
+    const first = await router.pruneOrchestrators({ ...opts, orchestratorRecords: router.listOrchestratorRecords() });
+    assert.equal(first.prunedCount, 0, "a momentary close must not unlink");
+    assert.equal(router.readOrchestrator("repo-flap")?.closedSweeps, 1);
+    const second = await router.pruneOrchestrators({ ...opts, orchestratorRecords: router.listOrchestratorRecords() });
+    assert.equal(second.prunedCount, 0);
+    assert.equal(router.readOrchestrator("repo-flap")?.agentId, "agent-flap");
+
+    const third = await router.pruneOrchestrators({ ...opts, orchestratorRecords: router.listOrchestratorRecords() });
+    assert.equal(third.prunedCount, 1);
+    assert.deepEqual(archivedIds, ["agent-flap"]);
+    assert.equal(router.readOrchestrator("repo-flap"), null);
+  });
+
+  it("prunes orchestrator records for unenrolled repositories (#1214)", async () => {
+    const router = new HookRouter(null, { queueDir, stateDir, port: 0 });
+    router.enrollRepo("repo-enrolled");
+    router.writeOrchestrator("repo-enrolled", "agent-enrolled");
+    router.writeOrchestrator("repo-unenrolled", "agent-unenrolled");
+
+    const result = await router.pruneOrchestrators({
+      agentMap: new Map([
+        ["agent-enrolled", { id: "agent-enrolled", status: "running" }],
+        ["agent-unenrolled", { id: "agent-unenrolled", status: "running" }],
+      ]),
+    });
+
+    assert.equal(result.prunedCount, 1);
+    assert.equal(result.pruned[0]?.key, "repo-unenrolled");
+    assert.equal(router.readOrchestrator("repo-unenrolled"), null);
+    assert.equal(router.readOrchestrator("repo-enrolled")?.agentId, "agent-enrolled");
+  });
+
+  it("appends durable actor records for every deleteOrchestrator and front-desk clear (#1077)", () => {
+    const router = new HookRouter(null, { queueDir, stateDir, port: 0 });
+    router.writeOrchestrator("repo-audit", "agent-audit");
+    const del = router.deleteOrchestrator("repo-audit", {
+      source: "unit:delete",
+      reason: "test delete",
+      actor: "agent-actor",
+    });
+    assert.equal(del.ok, true);
+
+    router.writeFrontDesk("fd-audit", "operator");
+    const cleared = router.clearFrontDesk({ source: "unit:clear-frontdesk", reason: "test clear" });
+    assert.ok(cleared >= 1);
+
+    assert.equal(existsSync(router.stateMutationLogPath()), true);
+    const log = router.readStateMutations(10);
+    const delEntry = log.find((e) => e.action === "deleteOrchestrator");
+    assert.equal(delEntry?.source, "unit:delete");
+    assert.equal(delEntry?.actor, "agent-actor");
+    assert.equal(delEntry?.reason, "test delete");
+    assert.equal(delEntry?.key, "repo-audit");
+    assert.match(String(delEntry?.stack), /deleteOrchestrator/);
+    const removed = (delEntry?.priorValue as Array<{ record: { agentId: string } | null }>)[0];
+    assert.equal(removed?.record?.agentId, "agent-audit");
+
+    const fdEntry = log.find((e) => e.action === "clearFrontDesk");
+    assert.equal(fdEntry?.source, "unit:clear-frontdesk");
+    assert.equal((fdEntry?.priorValue as any)?.record?.agentId, "fd-audit");
+  });
+
+  it("keeps the desk and registry across partial/closed prune sweeps and teardown reconciliation (#1077)", async () => {
+    const router = new HookRouter(null, { queueDir, stateDir, port: 0 });
+    for (let i = 0; i < 4; i++) {
+      router.writeOrchestrator(`repo-${i}`, `agent-${i}`);
+    }
+    router.writeFrontDesk("fd-survivor", "operator");
+    assert.equal(router.listOrchestratorRecords().length, 4);
+
+    (router as any).activePaseo = {
+      agents: {
+        list: async () => ({ entries: [{ id: "agent-0", status: "closed" }] }),
+        ref: () => ({ archive: async () => {} }),
+      },
+    };
+    setExecFileAsyncForTest(async (_cmd: string, args: readonly string[]) => {
+      if (args[0] === "ls") throw new Error("global roster unavailable");
+      return { stdout: "" };
+    });
+    try {
+      for (let i = 0; i < 4; i++) {
+        await router.pruneOrchestrators();
+      }
+      assert.equal(router.listOrchestratorRecords().length, 4, "partial/closed sweeps must not drop the registry");
+
+      // Tombstone/teardown reconciliation for workers must not touch either scope.
+      (router as any).markFleetTeardown(["workers"], []);
+      assert.equal(router.listOrchestratorRecords().length, 4);
+      assert.equal(router.readFrontDesk()?.agentId, "fd-survivor");
+    } finally {
+      setExecFileAsyncForTest(null);
+    }
+  });
+
+  it("reads frontdesk.json from the persisted orchestrators dir (#1077)", () => {
+    const router = new HookRouter(null, { queueDir, stateDir, port: 0 });
+    const persistedRoot = join(tempDir, "persisted");
+    const persistedOrch = join(persistedRoot, "orchestrators");
+    const prev = process.env.HOOK_STATE_DIR;
+    mkdirSync(persistedOrch, { recursive: true });
+    process.env.HOOK_STATE_DIR = persistedRoot;
+    try {
+      writeFileSync(
+        join(persistedOrch, "frontdesk.json"),
+        JSON.stringify({ version: 1, agentId: "fd-nested", updatedAt: null, by: "frontdesk" }),
+      );
+      assert.equal(router.readFrontDesk()?.agentId, "fd-nested", "a present frontdesk.json must never read as null");
+    } finally {
+      if (prev === undefined) delete process.env.HOOK_STATE_DIR;
+      else process.env.HOOK_STATE_DIR = prev;
+    }
   });
 });
 
@@ -2296,7 +3992,7 @@ describe("hook-router Front Desk handoff (#458)", () => {
   let queueDir: string;
   let stateDir: string;
   let router: HookRouter;
-  let sent: Array<{ id: string; text: string }>;
+  let sent: Array<{ id: string; text: string; options?: any }>;
   let updated: Array<{ id: string; name: string; labels: Record<string, string> }>;
 
   beforeEach(() => {
@@ -2312,8 +4008,8 @@ describe("hook-router Front Desk handoff (#458)", () => {
           id,
           current: () => ({ id, status: "idle", activeTurn: null }),
           refresh: async () => ({ agent: { id, status: "idle" } }),
-          send: async (text: string) => {
-            sent.push({ id, text });
+          send: async (text: string, options?: any) => {
+            sent.push({ id, text, options });
           },
           update: async (update: { name: string; labels: Record<string, string> }) => {
             updated.push({ id, name: update.name, labels: update.labels });
@@ -2362,6 +4058,38 @@ describe("hook-router Front Desk handoff (#458)", () => {
     assert.ok(sent.some((s) => s.id === "fd-new" && s.text.includes("handoff snapshot")));
     assert.ok(sent.some((s) => s.id === "orch-agent-1" && s.text.includes("Front Desk handover")));
     assert.equal(out.orchestratorsNotified, 1);
+  });
+
+  it("wraps onboarding, handover, and stand-down notices in `fleet_envelope` attachments (#985/#1003)", async () => {
+    router.writeOrchestrator("forge.test/xpufx-org/paseo", "orch-agent-1");
+    router.writeFrontDesk("fd-old", "test");
+
+    await router.doFrontDeskHandoff({ agentId: "fd-new", handoffText: "# New Front Desk" });
+
+    const onboarding = sent.find((s) => s.id === "fd-new");
+    const onboardingFleet = parseFleetAttachment(onboarding?.options);
+    assert.equal(onboardingFleet?.origin, "router");
+    assert.equal(onboardingFleet?.sender, ROUTER_SENDER);
+    assert.equal(onboardingFleet?.repo, FRONT_DESK_REPO);
+    assert.equal(onboardingFleet?.kind, "handoff");
+    assert.equal(onboarding?.text.includes("<!-- {"), false);
+    assert.ok(onboarding?.text.includes("You are now the Front Desk agent"));
+
+    const handover = sent.find((s) => s.id === "orch-agent-1");
+    const handoverFleet = parseFleetAttachment(handover?.options);
+    assert.equal(handoverFleet?.origin, "router");
+    assert.equal(handoverFleet?.repo, "forge.test/xpufx-org/paseo");
+    assert.equal(handoverFleet?.kind, "handoff");
+    assert.ok(handover?.text.includes("Front Desk handover"));
+
+    const standDown = sent.find((s) => s.id === "fd-old");
+    const standDownFleet = parseFleetAttachment(standDown?.options);
+    assert.equal(standDownFleet?.origin, "router");
+    assert.equal(standDownFleet?.sender, ROUTER_SENDER);
+    assert.equal(standDownFleet?.repo, FRONT_DESK_REPO);
+    assert.equal(standDownFleet?.kind, "handoff");
+    assert.ok(standDown?.text.includes("You are no longer Front Desk"));
+    assert.ok(standDown?.text.includes("registry authority is now fd-new"));
   });
 
   it("reads the handoff snapshot from a file", async () => {
@@ -2747,8 +4475,8 @@ describe("in-router stale-WIP sweep (#920)", () => {
     const labelCall = commandCalls[1];
     const labelCmd = labelCall.command.join(" ");
     assert.ok(labelCmd.includes("issue edit 42"));
-    assert.ok(labelCmd.includes("--add-label attention/0-orchestrator"));
-    assert.ok(labelCmd.includes("--remove-label state/1-wip"));
+    assert.ok(labelCmd.includes("--add-label attention/orchestrator"));
+    assert.ok(labelCmd.includes("--remove-label state/wip"));
   });
 
   it("is idempotent and avoids duplicate comment when reminder marker already exists", async () => {
@@ -2806,8 +4534,8 @@ describe("in-router stale-WIP sweep (#920)", () => {
     assert.equal(commandCalls.length, 1);
     const labelCmd = commandCalls[0].command.join(" ");
     assert.ok(labelCmd.includes("issue edit 42"));
-    assert.ok(labelCmd.includes("--add-label attention/0-orchestrator"));
-    assert.ok(labelCmd.includes("--remove-label state/1-wip"));
+    assert.ok(labelCmd.includes("--add-label attention/orchestrator"));
+    assert.ok(labelCmd.includes("--remove-label state/wip"));
   });
 });
 
@@ -2960,7 +4688,7 @@ describe("fleet agent health taxonomy classifier (#529)", () => {
       "agent-quota-1",
       {
         id: "agent-quota-1",
-        status: "running",
+        status: "error",
         lastError: "",
         recentTimeline: retryLine,
       },
@@ -2980,6 +4708,216 @@ describe("fleet agent health taxonomy classifier (#529)", () => {
     assert.equal(plan.blockedReason, "provider/quota exhaustion requires operator circuit-break");
   });
 
+  it("ignores stale historical quota errors after subsequent agent activity (#1144)", () => {
+    const retryLine = "[Error] provider-retry: Provider retry (attempt 1): Free usage exceeded, subscribe to Go";
+    const errorAt = now - 3 * 60 * 60 * 1000;
+    const activityAt = now - 60 * 1000;
+    const staleEntry = { text: retryLine, timestamp: errorAt };
+
+    // Recency alone does not drop an error that is still inside the window.
+    assert.equal(
+      findProviderRetryQuotaError([staleEntry], { now, recencySeconds: 86400 }),
+      retryLine,
+    );
+    // Subsequent activity after the error timestamp marks it historical.
+    assert.equal(
+      findProviderRetryQuotaError([staleEntry], {
+        now,
+        recencySeconds: 86400,
+        lastActivityAt: activityAt,
+      }),
+      null,
+    );
+
+    // Integration: an idle agent that resumed work after the quota error is healthy.
+    const assessment = assessAgentHealth(
+      "agent-quota-stale",
+      {
+        id: "agent-quota-stale",
+        status: "idle",
+        lastError: "",
+        lastActivityAt: new Date(activityAt).toISOString(),
+        recentTimeline: [staleEntry],
+      },
+      null,
+      now,
+      { cancellationRecencySeconds: 86400 },
+    );
+    assert.equal(assessment.taxonomy.includes("PROVIDER_QUOTA_EXHAUSTION"), false);
+    assert.equal(assessment.healthy, true);
+  });
+
+  it("filters quota errors older than the recency window (#1144)", () => {
+    const retryLine = "[Error] provider-retry: Provider retry (attempt 1): Free usage exceeded, subscribe to Go";
+    const expired = now - 25 * 60 * 60 * 1000;
+    assert.equal(
+      findProviderRetryQuotaError([{ text: retryLine, timestamp: expired }], {
+        now,
+        recencySeconds: 86400,
+      }),
+      null,
+    );
+  });
+
+  it("still flags an active quota error with no subsequent activity (#1144)", () => {
+    const retryLine = "[Error] provider-retry: Provider retry (attempt 1): Free usage exceeded, subscribe to Go";
+    const assessment = assessAgentHealth(
+      "agent-quota-active",
+      {
+        id: "agent-quota-active",
+        status: "idle",
+        lastError: "",
+        recentTimeline: [{ text: retryLine, timestamp: now - 60 * 1000 }],
+      },
+      null,
+      now,
+    );
+    assert.deepEqual(assessment.taxonomy, ["PROVIDER_QUOTA_EXHAUSTION"]);
+    assert.equal(assessment.healthy, false);
+    assert.equal(assessment.lastError, retryLine);
+  });
+
+  it("suppresses historical quota errors while the agent is running but honours a live lastError (#1144)", () => {
+    const retryLine = "[Error] provider-retry: Provider retry (attempt 1): Free usage exceeded, subscribe to Go";
+    const running = assessAgentHealth(
+      "agent-quota-running",
+      {
+        id: "agent-quota-running",
+        status: "running",
+        lastError: "",
+        recentTimeline: retryLine,
+      },
+      null,
+      now,
+    );
+    assert.equal(running.taxonomy.includes("PROVIDER_QUOTA_EXHAUSTION"), false);
+
+    const runningWithError = assessAgentHealth(
+      "agent-quota-running-error",
+      {
+        id: "agent-quota-running-error",
+        status: "running",
+        lastError: "You've hit your usage limit",
+        recentTimeline: retryLine,
+      },
+      null,
+      now,
+    );
+    assert.equal(runningWithError.taxonomy.includes("PROVIDER_QUOTA_EXHAUSTION"), true);
+  });
+
+  it("preserves daemon log timestamps and treats a stale quota log line as historical (#1144)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "paseo-quota-stale-log-"));
+    try {
+      const log = join(dir, "daemon.log");
+      const errorAt = now - 6 * 60 * 60 * 1000;
+      const retryLine = "[Error] provider-retry: Provider retry (attempt 1): Free usage exceeded, subscribe to Go";
+      writeFileSync(
+        log,
+        `${JSON.stringify({ level: 50, time: errorAt, agentId: "agent-quota-stale-log", message: retryLine })}\n`,
+      );
+      const errors = scanTimelineRetryErrors([log]);
+      const entries = errors.get("agent-quota-stale-log");
+      assert.ok(entries);
+      assert.equal(entries![0].timestamp, errorAt);
+      assert.equal(entries![0].text, retryLine);
+
+      const assessment = assessAgentHealth(
+        "agent-quota-stale-log",
+        {
+          id: "agent-quota-stale-log",
+          status: "idle",
+          lastError: "",
+          lastActivityAt: new Date(now - 60 * 1000).toISOString(),
+        },
+        null,
+        now,
+        { timelineErrors: errors },
+      );
+      assert.equal(assessment.taxonomy.includes("PROVIDER_QUOTA_EXHAUSTION"), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("classifies runaway repetitive tool loops and ignores output-only differences (#1265)", () => {
+    const readCall = (filePath: string, content = "same") => ({
+      type: "tool_call",
+      callId: "call-1",
+      name: "read",
+      status: "completed",
+      detail: { type: "read", filePath, content },
+    });
+    const loop = Array.from({ length: 15 }, (_, i) => readCall("/etc/hosts", `chunk-${i}`));
+    assert.equal(detectRepetitiveToolLoop(loop), 15);
+    assert.equal(detectRepetitiveToolLoop(loop, 16), 0, "under the threshold is healthy");
+    assert.equal(DEFAULT_REPETITIVE_TOOL_LOOP_THRESHOLD, 15);
+
+    // Reasoning between identical calls does not break the run.
+    const interleaved: unknown[] = [];
+    for (let i = 0; i < 15; i += 1) {
+      interleaved.push({ type: "reasoning", text: "still looking" });
+      interleaved.push(readCall("/etc/hosts", `chunk-${i}`));
+    }
+    assert.equal(detectRepetitiveToolLoop(interleaved), 15);
+
+    // Varying the input arguments breaks the run.
+    const varied = Array.from({ length: 30 }, (_, i) => readCall(`/etc/hosts/${i}`));
+    assert.equal(detectRepetitiveToolLoop(varied), 0);
+
+    // Only input arguments define a tool call's identity, never its result.
+    const signatureA = toolCallSignature({
+      type: "tool_call",
+      name: "shell",
+      detail: { type: "shell", command: "ls", output: "one" },
+    });
+    const signatureB = toolCallSignature({
+      type: "tool_call",
+      name: "shell",
+      detail: { type: "shell", command: "ls", output: "two" },
+    });
+    assert.equal(signatureA, signatureB);
+    assert.notEqual(
+      signatureA,
+      toolCallSignature({ type: "tool_call", name: "shell", detail: { type: "shell", command: "pwd" } }),
+    );
+    assert.equal(toolCallSignature({ type: "assistant_message", text: "hi" }), null);
+  });
+
+  it("fuses repetitive tool loops into assessAgentHealth and plans stop+steer (#1265)", () => {
+    const loop = Array.from({ length: 15 }, () => ({
+      type: "tool_call",
+      callId: "c",
+      name: "read",
+      status: "completed",
+      detail: { type: "read", filePath: "/etc/hosts" },
+    }));
+    const assessment = assessAgentHealth(
+      "agent-loop-1",
+      { id: "agent-loop-1", status: "running", lastError: null, recentTimeline: loop as any },
+      null,
+      now,
+    );
+    assert.deepEqual(assessment.taxonomy, ["REPETITIVE_TOOL_LOOP"]);
+    assert.equal(assessment.healthy, false);
+    assert.equal(assessment.severities.REPETITIVE_TOOL_LOOP, "high");
+    assert.match(assessment.details.REPETITIVE_TOOL_LOOP ?? "", /15 identical consecutive tool calls/);
+
+    const plan = planWatchdogRecovery(assessment.taxonomy);
+    assert.equal(plan.stop, true);
+    assert.equal(plan.steer, true);
+    assert.equal(plan.blockedReason, null);
+
+    // A finished turn is not flagged even when its history contains the loop.
+    const idle = assessAgentHealth(
+      "agent-loop-idle",
+      { id: "agent-loop-idle", status: "idle", lastError: null, recentTimeline: loop as any },
+      null,
+      now,
+    );
+    assert.equal(idle.taxonomy.includes("REPETITIVE_TOOL_LOOP"), false);
+  });
+
   it("scans daemon logs for provider-retry quota exhaustion lines (#890)", () => {
     const dir = mkdtempSync(join(tmpdir(), "paseo-quota-test-"));
     try {
@@ -2994,7 +4932,7 @@ describe("fleet agent health taxonomy classifier (#529)", () => {
       assert.ok(errors.has("agent-quota-a"));
       assert.ok(errors.has("agent-quota-b"));
       assert.equal(errors.has("agent-transient"), false);
-      assert.match(errors.get("agent-quota-a")![0], /Free usage exceeded/);
+      assert.match(errors.get("agent-quota-a")![0].text, /Free usage exceeded/);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -3085,6 +5023,174 @@ describe("fleet agent health taxonomy classifier (#529)", () => {
     }
   });
 
+  it("resolveOrchestratorModel skips providers that are disabled on the host (#973)", () => {
+    const resolved = resolveOrchestratorModel({
+      fallbackList: [
+        "antigravity-acp/gemini-3.8-flash-low",
+        "codex/gpt-5.6-luna",
+        "antigravity/gemini-3.8-flash-low",
+      ],
+      availableProviders: new Set(["antigravity"]),
+    });
+    assert.equal(resolved.key, "antigravity/gemini-3.8-flash-low");
+    assert.equal(resolved.provider, "antigravity");
+    assert.deepEqual(
+      (resolved.dropped ?? []).map((d) => [d.key, d.reason]),
+      [
+        ["antigravity-acp/gemini-3.8-flash-low", "provider_disabled"],
+        ["codex/gpt-5.6-luna", "provider_disabled"],
+      ],
+    );
+  });
+
+  it("resolveOrchestratorModel drops dead entries visibly and names the live provider set (#1011)", () => {
+    const resolved = resolveOrchestratorModel({
+      fallbackList: [
+        "antigravity-acp/gemini-3.8-flash-low",
+        "codex/gpt-5.6-luna",
+        "pi/commandcode/deepseek/deepseek-v4-flash",
+      ],
+      availableProviders: new Set(["pi"]),
+    });
+    assert.equal(resolved.key, "pi/commandcode/deepseek/deepseek-v4-flash");
+    assert.deepEqual(resolved.availableProviders, ["pi"]);
+    assert.deepEqual(
+      (resolved.dropped ?? []).map((d) => [d.key, d.reason]),
+      [
+        ["antigravity-acp/gemini-3.8-flash-low", "provider_disabled"],
+        ["codex/gpt-5.6-luna", "provider_disabled"],
+      ],
+    );
+  });
+
+  it("resolveOrchestratorModel fails loud instead of appending DEFAULT_ROLE_MODELS when every configured candidate is disabled (#1011)", () => {
+    const resolved = resolveOrchestratorModel({
+      fallbackList: ["antigravity-acp/gemini-3.8-flash-low", "codex/gpt-5.6-luna"],
+      availableProviders: new Set(["pi"]),
+    });
+    assert.equal(resolved.exhausted, true);
+    assert.equal(resolved.provider, "");
+    assert.equal(resolved.key, "");
+    assert.match(resolved.error ?? "", /No orchestrator model is satisfiable/);
+    assert.match(resolved.error ?? "", /Live enabled providers: pi/);
+    assert.doesNotMatch(resolved.error ?? "", /commandcode/, "a hidden default must never be substituted");
+    assert.deepEqual(resolved.configuredChain, [
+      "antigravity-acp/gemini-3.8-flash-low",
+      "codex/gpt-5.6-luna",
+    ]);
+    assert.equal(resolved.dropped?.length, 2);
+  });
+
+  it("resolveOrchestratorModel fails loud when no provider is enabled at all (#1011)", () => {
+    const resolved = resolveOrchestratorModel({
+      fallbackList: ["antigravity-acp/gemini-3.8-flash-low", "codex/gpt-5.6-luna"],
+      availableProviders: new Set<string>(),
+    });
+    assert.equal(resolved.exhausted, true);
+    assert.equal(resolved.provider, "");
+    assert.match(resolved.error ?? "", /Live enabled providers: none/);
+  });
+
+  it("resolveOrchestratorModel re-checks the configured primary and recovers after a transient outage (#1011)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "paseo-primary-recovery-"));
+    try {
+      const cbPath = join(dir, "model-health.json");
+      recordModelQuotaFailure(
+        "pi",
+        "commandcode/deepseek/deepseek-v4-flash",
+        "429 quota",
+        cbPath,
+        3600,
+        1000,
+      );
+      const chain = [
+        "pi/commandcode/deepseek/deepseek-v4-flash",
+        "antigravity/gemini-3.8-flash-low",
+      ];
+      const cooling = resolveOrchestratorModel({
+        fallbackList: chain,
+        circuitBreakerPath: cbPath,
+        availableProviders: new Set(["pi", "antigravity"]),
+        nowSec: 1500,
+      });
+      assert.equal(cooling.key, "antigravity/gemini-3.8-flash-low");
+      assert.deepEqual(
+        (cooling.dropped ?? []).map((d) => [d.key, d.reason]),
+        [["pi/commandcode/deepseek/deepseek-v4-flash", "quota_exhausted"]],
+      );
+
+      // Cooldown expires: the next spawn re-checks the primary and wins again.
+      const recovered = resolveOrchestratorModel({
+        fallbackList: chain,
+        circuitBreakerPath: cbPath,
+        availableProviders: new Set(["pi", "antigravity"]),
+        nowSec: 5000,
+      });
+      assert.equal(recovered.key, "pi/commandcode/deepseek/deepseek-v4-flash");
+      assert.deepEqual(recovered.dropped, []);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("handleUppidiFleetAlerts returns persisted banners and honors the scoped override (#1011)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "paseo-fleet-alerts-"));
+    const alertsPath = join(dir, "model-alerts.json");
+    const previous = process.env.UPPIDI_FLEET_ALERTS_PATH;
+    process.env.UPPIDI_FLEET_ALERTS_PATH = alertsPath;
+    try {
+      assert.equal(defaultModelAlertsPath(), alertsPath);
+      recordModelAlert(
+        {
+          repo: "forge.mrs.uppidi.com/xpufx-org/paseo",
+          role: "orchestrator",
+          message: "boom",
+          configuredChain: ["a/b"],
+          dropped: [{ key: "a/b", provider: "a", model: "b", reason: "provider_disabled" }],
+          availableProviders: ["pi"],
+          createdAt: new Date().toISOString(),
+        },
+        alertsPath,
+      );
+      const out = await handleUppidiFleetAlerts();
+      assert.equal(out.ok, true);
+      assert.equal(out.alerts.length, 1);
+      assert.equal(out.alerts[0].message, "boom");
+      assert.equal(out.alerts[0].dropped[0].reason, "provider_disabled");
+    } finally {
+      if (previous === undefined) delete process.env.UPPIDI_FLEET_ALERTS_PATH;
+      else process.env.UPPIDI_FLEET_ALERTS_PATH = previous;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("resolveOrchestratorModel fails loud for a stale saved config of disabled providers (#987/#1011)", () => {
+    const dir = mkdtempSync(join(tmpdir(), "paseo-role-models-stale-"));
+    const configPath = join(dir, "uppidi-fleet-role-models.json");
+    writeFileSync(
+      configPath,
+      JSON.stringify({
+        orchestrator: {
+          role: "orchestrator",
+          primaryModel: "antigravity-acp/gemini-3.8-flash-low",
+          fallbackGroup: ["antigravity-acp/gemini-3.8-flash-low", "codex/gpt-5.6-luna"],
+        },
+      }),
+    );
+    const previous = process.env.UPPIDI_FLEET_ROLE_MODELS_CONFIG;
+    process.env.UPPIDI_FLEET_ROLE_MODELS_CONFIG = configPath;
+    try {
+      const resolved = resolveOrchestratorModel({ availableProviders: new Set(["pi"]) });
+      assert.equal(resolved.exhausted, true);
+      assert.equal(resolved.provider, "");
+      assert.match(resolved.error ?? "", /Live enabled providers: pi/);
+    } finally {
+      if (previous === undefined) delete process.env.UPPIDI_FLEET_ROLE_MODELS_CONFIG;
+      else process.env.UPPIDI_FLEET_ROLE_MODELS_CONFIG = previous;
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("runWatchdogAudit records quota failure into circuit breaker and suppresses steer (#890)", async () => {
     const dir = mkdtempSync(join(tmpdir(), "paseo-watchdog-cb-"));
     try {
@@ -3095,11 +5201,12 @@ describe("fleet agent health taxonomy classifier (#529)", () => {
           {
             id: "agent-quota-exhausted",
             title: "Orchestrator · xpufx-org/paseo",
-            status: "running",
+            status: "error",
             lastError: "",
             provider: "opencode",
             model: "muse-spark-1.3-contributor-free",
             recentTimeline: "[Error] provider-retry: Provider retry (attempt 1): Free usage exceeded, subscribe to Go",
+            labels: { role: "orchestrator" },
           },
         ],
       ]);
@@ -3115,6 +5222,7 @@ describe("fleet agent health taxonomy classifier (#529)", () => {
         now,
         agentMap,
         frontDeskId: "front-desk-1",
+        orchestratorRecords: [{ key: "xpufx-org/paseo", agentId: "agent-quota-exhausted" }],
         deliver: async (_target, msg, opts) => {
           if (opts?.steer) steerAttempted = true;
           alertDelivered = msg;
@@ -3383,13 +5491,14 @@ describe("hook-router taxonomy recovery pipeline (#529)", () => {
       delivered.push({ id, msg, steer: o?.steer });
       return true;
     };
-    const map = new Map<string, WatchdogAgent>([["agent-zombie", { id: "agent-zombie", status: "running" }]]);
+    const map = new Map<string, WatchdogAgent>([["agent-zombie", { id: "agent-zombie", status: "running", role: "orchestrator", labels: { role: "orchestrator" } }]]);
 
     const audit = await router.runWatchdogAudit({
       agentMap: map,
       agentsDir,
       diskMetadata: undefined,
       cancellations: new Map(),
+      orchestratorRecords: [{ key: "test-repo", agentId: "agent-zombie" }],
       deliver: fakeDeliver,
       stopAgent: async (id) => {
         stopped.push(id);
@@ -3416,7 +5525,7 @@ describe("hook-router taxonomy recovery pipeline (#529)", () => {
       return true;
     };
     const map = new Map<string, WatchdogAgent>([
-      ["agent-quota", { id: "agent-quota", status: "idle", lastError: "You've hit your usage limit" }],
+      ["agent-quota", { id: "agent-quota", status: "idle", lastError: "You've hit your usage limit", role: "orchestrator", labels: { role: "orchestrator" } }],
     ]);
 
     const audit = await router.runWatchdogAudit({
@@ -3443,7 +5552,7 @@ describe("hook-router taxonomy recovery pipeline (#529)", () => {
       delivered.push({ id, msg });
       return true;
     };
-    const map = new Map<string, WatchdogAgent>([["agent-ghost", { id: "agent-ghost", status: "idle" }]]);
+    const map = new Map<string, WatchdogAgent>([["agent-ghost", { id: "agent-ghost", status: "idle", role: "orchestrator", labels: { role: "orchestrator" } }]]);
 
     const runOnce = () =>
       router.runWatchdogAudit({
@@ -3506,7 +5615,7 @@ describe("hook-router taxonomy recovery pipeline (#529)", () => {
       return true;
     };
     const map = new Map<string, WatchdogAgent>([
-      ["wedged-1", { id: "wedged-1", status: "idle" }],
+      ["wedged-1", { id: "wedged-1", status: "idle", role: "orchestrator", labels: { role: "orchestrator" } }],
     ]);
 
     const audit = await router.runWatchdogAudit({
@@ -3539,7 +5648,7 @@ describe("hook-router taxonomy recovery pipeline (#529)", () => {
       return true;
     };
     const map = new Map<string, WatchdogAgent>([
-      ["orch-loop", { id: "orch-loop", status: "idle" }],
+      ["orch-loop", { id: "orch-loop", status: "idle", role: "orchestrator", labels: { role: "orchestrator" } }],
     ]);
     const cancellations = new Map([["orch-loop", cancelTime]]);
 
@@ -3643,6 +5752,23 @@ describe("hook-router teardown cleanup methods (#774)", () => {
     assert.equal(router.getQueue("frontdesk").length, 0);
   });
 
+  it("reads a frontdesk.json written to the persisted hook state dir by another process (#1068)", () => {
+    const persistedDir = join(tempDir, "persisted", "orchestrators");
+    const prevHookStateDir = process.env.HOOK_STATE_DIR;
+    mkdirSync(persistedDir, { recursive: true });
+    process.env.HOOK_STATE_DIR = persistedDir;
+    try {
+      writeFileSync(
+        join(persistedDir, "frontdesk.json"),
+        JSON.stringify({ version: 1, agentId: "fd-persisted", updatedAt: null, by: "frontdesk" }),
+      );
+      assert.equal(router.readFrontDesk()?.agentId, "fd-persisted");
+    } finally {
+      if (prevHookStateDir === undefined) delete process.env.HOOK_STATE_DIR;
+      else process.env.HOOK_STATE_DIR = prevHookStateDir;
+    }
+  });
+
   it("clearAllOrchestrators unlinks all orchestrator files but preserves frontdesk", () => {
     router.writeOrchestrator("repo-a", "agent-a");
     router.writeOrchestrator("repo-b", "agent-b");
@@ -3666,6 +5792,75 @@ describe("hook-router teardown cleanup methods (#774)", () => {
     const cleared = router.clearQueue("test-repo");
     assert.ok(cleared >= 1);
     assert.equal(router.getQueue("test-repo").length, 0);
+  });
+
+  it("broadcastTeardownNotice delivers notice exactly once across simulated pause+resume drain cycle (#1118)", async () => {
+    const deliveries: Array<{ agentId: string; msg: string; steer: boolean }> = [];
+    (router as any).deliverMessage = async (agentId: string, msg: string, options?: any) => {
+      deliveries.push({ agentId, msg, steer: Boolean(options?.steer) });
+      return true;
+    };
+
+    router.writeFrontDesk("fd-survivor");
+    router.writeOrchestrator("repo-survivor", "orch-survivor");
+
+    // Pause all queues as happens during fleet teardown / halt
+    router.pause("all");
+
+    // Broadcast teardown notice for worker teardown (Front Desk and Orchestrator survive)
+    const notice = "[Fleet Teardown] Workers culled";
+    const res = await router.broadcastTeardownNotice(notice, { targets: ["workers"] });
+
+    assert.equal(res.delivered, 2, "immediate delivery should succeed for both survivors");
+    assert.equal(deliveries.length, 2, "both surviving agents received immediate steer delivery");
+    assert.equal(deliveries[0].agentId, "fd-survivor");
+    assert.equal(deliveries[0].steer, true);
+    assert.equal(deliveries[1].agentId, "orch-survivor");
+    assert.equal(deliveries[1].steer, true);
+
+    // Queues must be clean: immediate delivery succeeded so no queued entry should remain
+    assert.equal(router.getQueue("frontdesk").length, 0, "frontdesk queue should not retain entry");
+    assert.equal(router.getQueue("repo-survivor").length, 0, "orchestrator queue should not retain entry");
+
+    // Clear recorded deliveries and simulate fleet resume / drain
+    deliveries.length = 0;
+    router.resume("all");
+
+    // Allow any pending async drain to complete
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    assert.equal(
+      deliveries.length,
+      0,
+      "resume drain must not deliver duplicate teardown notice when immediate steer delivery succeeded",
+    );
+  });
+
+  it("broadcastTeardownNotice leaves notice queued for retry when immediate delivery fails (#1118)", async () => {
+    const deliveries: Array<{ agentId: string; msg: string }> = [];
+    let deliverShouldFail = true;
+    (router as any).deliverMessage = async (agentId: string, msg: string) => {
+      deliveries.push({ agentId, msg });
+      return !deliverShouldFail;
+    };
+
+    router.writeFrontDesk("fd-agent");
+    router.pause("all");
+
+    const notice = "[Fleet Teardown] Notice for retry";
+    const res = await router.broadcastTeardownNotice(notice, { targets: ["workers"] });
+
+    assert.equal(res.delivered, 0, "immediate delivery failed");
+    assert.equal(router.getQueue("frontdesk").length, 1, "notice must remain queued for retry");
+
+    // Now allow delivery to succeed and unpause
+    deliverShouldFail = false;
+    router.resume("all");
+
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    assert.equal(deliveries.length, 2, "1 failed initial delivery + 1 successful drain delivery");
+    assert.equal(router.getQueue("frontdesk").length, 0, "queue drained after resume");
   });
 });
 
@@ -3695,7 +5890,7 @@ describe("hook-router Front Desk non-interrupting delivery and watchdog alerts (
     const frontDeskId = "fd-agent-780";
     let agentStatus = "running";
     let turnEndedHandler: any = null;
-    const sentMessages: Array<{ text: string; steer?: boolean }> = [];
+    const sentMessages: Array<{ text: string; activeTurnBehavior?: "interrupt" | "steer" }> = [];
 
     const mockPaseo = {
       agents: {
@@ -3704,7 +5899,7 @@ describe("hook-router Front Desk non-interrupting delivery and watchdog alerts (
           return {
             current: () => ({ id, status: agentStatus, activeTurn: agentStatus === "running" ? { id: "turn-1" } : null }),
             send: async (text: string, options?: any) => {
-              sentMessages.push({ text, steer: options?.steer });
+              sentMessages.push({ text, activeTurnBehavior: options?.activeTurnBehavior });
             },
           };
         },
@@ -3754,14 +5949,14 @@ describe("hook-router Front Desk non-interrupting delivery and watchdog alerts (
 
     // Message delivered without steering
     assert.equal(sentMessages.length, 1);
-    assert.equal(sentMessages[0].steer, false);
+    assert.equal(sentMessages[0].activeTurnBehavior, "interrupt");
     assert.equal(router.getQueue("frontdesk").length, 0);
   });
 
   it("SOS webhook for Front Desk bypasses busy check and delivers with steer: true", async () => {
     const frontDeskId = "fd-agent-780-sos";
     let agentStatus = "running";
-    const sentMessages: Array<{ text: string; steer?: boolean }> = [];
+    const sentMessages: Array<{ text: string; activeTurnBehavior?: "interrupt" | "steer" }> = [];
 
     const mockPaseo = {
       agents: {
@@ -3770,7 +5965,7 @@ describe("hook-router Front Desk non-interrupting delivery and watchdog alerts (
           return {
             current: () => ({ id, status: agentStatus, activeTurn: { id: "turn-sos" } }),
             send: async (text: string, options?: any) => {
-              sentMessages.push({ text, steer: options?.steer });
+              sentMessages.push({ text, activeTurnBehavior: options?.activeTurnBehavior });
             },
           };
         },
@@ -3803,9 +5998,9 @@ describe("hook-router Front Desk non-interrupting delivery and watchdog alerts (
 
     await new Promise((r) => setTimeout(r, 20));
 
-    // Delivered immediately with steer: true despite agentStatus === "running"
+    // Delivered immediately with activeTurnBehavior: steer despite agentStatus === "running"
     assert.equal(sentMessages.length, 1);
-    assert.equal(sentMessages[0].steer, true);
+    assert.equal(sentMessages[0].activeTurnBehavior, "steer");
     assert.ok(sentMessages[0].text.includes("Emergency"));
   });
 
@@ -4184,6 +6379,108 @@ describe("hook-router stale latestAgentMap cache invalidation and live verificat
     assert.equal(router.busyAttempts.has(key), false);
   });
 
+  it("steers queued work after the bounded busy-attempt limit", async () => {
+    const key = "forge.mrs.uppidi.com/xpufx-org/busy-timeout";
+    const targetAgentId = "agent-busy-timeout";
+    const sentMessages: Array<{ text: string; options: any }> = [];
+
+    const mockPaseo = {
+      agents: {
+        ref: (id: string) => ({
+          current: () => ({ id, status: "running", activeTurn: { id: "turn-stalled" } }),
+          refresh: async () => ({
+            agent: { id, status: "running", activeTurn: { id: "turn-stalled" } },
+          }),
+          send: async (text: string, options: any) => {
+            sentMessages.push({ text, options });
+          },
+        }),
+      },
+    } as any;
+    const mockServer = {
+      paseo: mockPaseo,
+      events: { on: () => () => {} },
+      on: () => () => {},
+      before: () => () => {},
+      handle: () => {},
+      registerSettings: () => ({} as any),
+      registerProvider: () => {},
+    } as unknown as PluginServerContext;
+
+    const router = new HookRouter(mockServer, {
+      queueDir,
+      stateDir,
+      port: 0,
+      drainBusyAttemptLimit: 1,
+    });
+    router.writeOrchestrator(key, targetAgentId);
+
+    router.enqueue(key, "Prompt for the stalled active turn");
+    await new Promise((r) => setTimeout(r, 30));
+
+    assert.equal(sentMessages.length, 1);
+    assert.equal(sentMessages[0].text, "Prompt for the stalled active turn");
+    assert.equal(sentMessages[0].options.activeTurnBehavior, "steer");
+    assert.equal(router.getQueue(key).length, 0);
+    // The streak is retained after a steer so the next busy drain can keep
+    // escalating toward the interrupt threshold (#1265).
+    assert.equal(router.busyAttempts.get(key), 1);
+  });
+
+  it("escalates from steer to interrupting the stalled turn at the interrupt threshold (#1265)", async () => {
+    const key = "forge.mrs.uppidi.com/xpufx-org/drain-escalation";
+    const targetAgentId = "agent-drain-escalation";
+    const sentMessages: Array<{ text: string; options: any }> = [];
+
+    const mockPaseo = {
+      agents: {
+        ref: (id: string) => ({
+          current: () => ({ id, status: "running", activeTurn: { id: "turn-runaway" } }),
+          refresh: async () => ({
+            agent: { id, status: "running", activeTurn: { id: "turn-runaway" } },
+          }),
+          send: async (text: string, options: any) => {
+            sentMessages.push({ text, options });
+          },
+        }),
+      },
+    } as any;
+    const mockServer = {
+      paseo: mockPaseo,
+      events: { on: () => () => {} },
+      on: () => () => {},
+      before: () => () => {},
+      handle: () => {},
+      registerSettings: () => ({} as any),
+      registerProvider: () => {},
+    } as unknown as PluginServerContext;
+
+    const router = new HookRouter(mockServer, {
+      queueDir,
+      stateDir,
+      port: 0,
+      drainBusyAttemptLimit: 8,
+      drainInterruptAttemptLimit: 12,
+    });
+    router.writeOrchestrator(key, targetAgentId);
+    // Seven prior busy checks: the next four drains steer (8..11) and the fifth
+    // interrupts (12) because the turn never yields.
+    router.busyAttempts.set(key, 7);
+
+    for (let i = 0; i < 5; i += 1) {
+      router.enqueue(key, `Prompt ${i} for the runaway turn`);
+      await new Promise((r) => setTimeout(r, 30));
+    }
+
+    assert.equal(sentMessages.length, 5);
+    for (const message of sentMessages.slice(0, 4)) {
+      assert.equal(message.options.activeTurnBehavior, "steer");
+    }
+    assert.equal(sentMessages[4].options.activeTurnBehavior, "interrupt");
+    assert.equal(router.getQueue(key).length, 0);
+    assert.equal(router.busyAttempts.has(key), false, "the interrupt ends the busy streak");
+  });
+
   it("agent.updated lifecycle event with idle status immediately updates cache and resets busyAttempts", async () => {
     const key = "forge.mrs.uppidi.com/xpufx-org/update-test";
     const targetAgentId = "agent-lifecycle-updated";
@@ -4355,10 +6652,12 @@ describe("hook-router ensure-orchestrator deterministic resolution and idempoten
     assert.match(res.error ?? "", /repo is required/);
   });
 
-  it("returns error when no workspace found for unknown repository", async () => {
+  it("returns an actionable error when no workspace found for unknown repository", async () => {
     const res = await router.ensureOrchestrator({ repo: "unknown/repo" });
     assert.equal(res.ok, false);
+    assert.equal(res.errorCode, "workspace_not_found");
     assert.match(res.error ?? "", /No workspace found/);
+    assert.match(res.error ?? "", /Remediation:/);
     assert.equal(res.repo, "unknown/repo");
   });
 
@@ -4423,6 +6722,151 @@ describe("hook-router ensure-orchestrator deterministic resolution and idempoten
     // Verify authoritative registry is updated
     const record = router.readOrchestrator("xpufx-org/paseo");
     assert.equal(record?.agentId, "agent-1");
+  });
+
+  it("falls back to an enabled host provider when the configured default is disabled (#973)", async () => {
+    const fallbackSpawns: any[] = [];
+    const fallbackRouter = new HookRouter(null, {
+      queueDir,
+      stateDir,
+      port: 0,
+      workspacesData: [
+        {
+          workspaceId: "ws-paseo-main",
+          cwd: tempRepoDir,
+          displayName: "Paseo",
+          isolation: "local",
+          projectKey: "remote:forge.mrs.uppidi.com:222/xpufx-org/paseo",
+        },
+      ],
+      orchestratorModelFallback: [
+        "antigravity-acp/gemini-3.8-flash-low",
+        "antigravity/gemini-3.8-flash-low",
+      ],
+      circuitBreakerPath: join(tempDir, "model-health-fallback.json"),
+      availableProvidersData: ["antigravity"],
+      providerModeResolver: async () => ({ modes: [] }),
+      spawnAgent: async (opts) => {
+        fallbackSpawns.push(opts);
+        return { id: "agent-fallback" };
+      },
+    });
+    (fallbackRouter as any).hasParentAgentLabel = async () => false;
+
+    const res = await fallbackRouter.ensureOrchestrator({ repo: "xpufx-org/paseo" });
+    assert.equal(res.ok, true);
+    assert.equal(fallbackSpawns.length, 1);
+    assert.equal(fallbackSpawns[0].provider, "antigravity");
+    assert.equal(fallbackSpawns[0].model, "gemini-3.8-flash-low");
+    assert.equal(res.resolvedModelKey, "antigravity/gemini-3.8-flash-low");
+    assert.deepEqual(
+      (res.droppedModels ?? []).map((d) => [d.key, d.reason]),
+      [["antigravity-acp/gemini-3.8-flash-low", "provider_disabled"]],
+    );
+    await fallbackRouter.stop();
+  });
+
+  it("fails loud, persists a banner, and posts the board alert when the chain is exhausted (#1011)", async () => {
+    const alertsPath = join(tempDir, "model-alerts.json");
+    const posted: Array<{ repo: string; alert: any }> = [];
+    const exhaustedRouter = new HookRouter(null, {
+      queueDir,
+      stateDir,
+      port: 0,
+      workspacesData: [
+        {
+          workspaceId: "ws-paseo-main",
+          cwd: tempRepoDir,
+          displayName: "Paseo",
+          isolation: "local",
+          projectKey: "remote:forge.mrs.uppidi.com:222/xpufx-org/paseo",
+        },
+      ],
+      orchestratorModelFallback: [
+        "antigravity-acp/gemini-3.8-flash-low",
+        "codex/gpt-5.6-luna",
+      ],
+      circuitBreakerPath: join(tempDir, "model-health-exhausted.json"),
+      modelAlertsPath: alertsPath,
+      availableProvidersData: ["pi"],
+      providerModeResolver: async () => ({ modes: [] }),
+      postModelExhaustionAlert: async (repo, alert) => {
+        posted.push({ repo, alert });
+      },
+      spawnAgent: async () => {
+        throw new Error("must not spawn on total exhaustion");
+      },
+    });
+
+    const res = await exhaustedRouter.ensureOrchestrator({ repo: "xpufx-org/paseo" });
+    assert.equal(res.ok, false);
+    assert.equal(res.errorCode, "model_exhausted");
+    assert.match(res.error ?? "", /No orchestrator model is satisfiable/);
+    assert.deepEqual(
+      (res.droppedModels ?? []).map((d) => [d.key, d.reason]),
+      [
+        ["antigravity-acp/gemini-3.8-flash-low", "provider_disabled"],
+        ["codex/gpt-5.6-luna", "provider_disabled"],
+      ],
+    );
+    assert.equal(posted.length, 1);
+    assert.equal(posted[0].repo, "forge.mrs.uppidi.com/xpufx-org/paseo");
+    assert.match(posted[0].alert.message, /Live enabled providers: pi/);
+
+    // Persistent banner survives for the dashboard to read.
+    const persisted = readModelAlerts(alertsPath);
+    const key = "forge.mrs.uppidi.com/xpufx-org/paseo";
+    assert.ok(persisted[key], "the exhaustion banner must be persisted");
+    assert.deepEqual(persisted[key].configuredChain, [
+      "antigravity-acp/gemini-3.8-flash-low",
+      "codex/gpt-5.6-luna",
+    ]);
+    assert.equal(persisted[key].dropped.length, 2);
+    await exhaustedRouter.stop();
+  });
+
+  it("clears a stale exhaustion banner once a spawn resolves again (#1011)", async () => {
+    const alertsPath = join(tempDir, "model-alerts-clear.json");
+    const key = "forge.mrs.uppidi.com/xpufx-org/paseo";
+    recordModelAlert(
+      {
+        repo: key,
+        role: "orchestrator",
+        message: "stale",
+        configuredChain: ["antigravity-acp/gemini-3.8-flash-low"],
+        dropped: [],
+        availableProviders: ["pi"],
+        createdAt: new Date().toISOString(),
+      },
+      alertsPath,
+    );
+    assert.ok(readModelAlerts(alertsPath)[key]);
+
+    const recoveryRouter = new HookRouter(null, {
+      queueDir,
+      stateDir,
+      port: 0,
+      workspacesData: [
+        {
+          workspaceId: "ws-paseo-main",
+          cwd: tempRepoDir,
+          displayName: "Paseo",
+          isolation: "local",
+          projectKey: "remote:forge.mrs.uppidi.com:222/xpufx-org/paseo",
+        },
+      ],
+      orchestratorModelFallback: ["antigravity/gemini-3.8-flash-low"],
+      circuitBreakerPath: join(tempDir, "model-health-recovery.json"),
+      modelAlertsPath: alertsPath,
+      availableProvidersData: ["antigravity"],
+      providerModeResolver: async () => ({ modes: [] }),
+      spawnAgent: async () => ({ id: "agent-recovered" }),
+    });
+    (recoveryRouter as any).hasParentAgentLabel = async () => false;
+    const res = await recoveryRouter.ensureOrchestrator({ repo: "xpufx-org/paseo" });
+    assert.equal(res.ok, true);
+    assert.equal(readModelAlerts(alertsPath)[key], undefined, "recovery must clear the banner");
+    await recoveryRouter.stop();
   });
 
   it("is idempotent: returns existing active orchestrator without duplicate spawns", async () => {
@@ -4500,15 +6944,19 @@ describe("hook-router ensure-orchestrator deterministic resolution and idempoten
     const badBody = await badRes.json();
     assert.equal(badBody.ok, false);
 
-    // 2. Unknown repo -> 404
+    // 2. Unknown repo -> 422 with an actionable diagnostic naming the registry
     const notFoundRes = await fetch(`http://127.0.0.1:${router.port}/orchestrators/spawn`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ repo: "unknown/repo" }),
     });
-    assert.equal(notFoundRes.status, 404);
+    assert.equal(notFoundRes.status, 422);
     const notFoundBody = await notFoundRes.json();
     assert.equal(notFoundBody.ok, false);
+    assert.equal(notFoundBody.errorCode, "workspace_not_found");
+    assert.match(notFoundBody.error, /No workspace found for repository "unknown\/repo"/);
+    assert.match(notFoundBody.error, /Remediation:/);
+    assert.match(notFoundBody.error, /workspace open --cwd/);
     assert.equal(
       router.readOrchestrator("unknown/repo"),
       null,
@@ -4560,6 +7008,27 @@ describe("hook-router ensure-orchestrator deterministic resolution and idempoten
     const body = await res.json();
     assert.equal(body.ok, false);
     assert.equal(router.readOrchestrator("xpufx-org/paseo"), null);
+  });
+
+  it("spawning an orchestrator for an unenrolled repo does not enroll it or mutate settings.json (#1312)", async () => {
+    const unenrolledRepo = "xpufx-org/paseo";
+    assert.equal(router.isEnrolledRepo(unenrolledRepo), false);
+
+    const provRes = await fetch(`http://127.0.0.1:${router.port}/orchestrators/spawn`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ repo: unenrolledRepo }),
+    });
+    assert.equal(provRes.status, 200);
+    const provBody = await provRes.json();
+    assert.equal(provBody.ok, true);
+    assert.equal(provBody.status, "provisioned");
+
+    // Orchestrator record is registered, but unenrolledRepo is NOT in enrolledRepos
+    assert.equal(router.readOrchestrator(unenrolledRepo)?.agentId, "agent-1");
+    assert.equal(router.isEnrolledRepo(unenrolledRepo), false);
+    assert.ok(!router.getEnrolledRepos().includes(unenrolledRepo));
+    assert.ok(!(loadRouterConfig().enrolledRepos ?? []).includes(unenrolledRepo));
   });
 });
 
@@ -4720,6 +7189,68 @@ describe("orchestrator provider mode resolution (#894)", () => {
     const modeIdx = capturedRuns[0].indexOf("--mode");
     assert.ok(modeIdx >= 0, "expected --mode in CLI args");
     assert.equal(capturedRuns[0][modeIdx + 1], "full-access");
+  });
+
+  it("forwards auto_accept in the SDK create payload and scopes cwd to the workspace root (#974)", async () => {
+    const payloads: any[] = [];
+    const router = makeRouter({
+      providerModeResolver: async () => ({ modes: [{ id: "yolo", label: "YOLO" }], defaultModeId: "yolo" }),
+    });
+    (router as any).activePaseo = {
+      agents: {
+        create: async (payload: any) => {
+          payloads.push(payload);
+          return { id: "agent-sdk-974" };
+        },
+        ref: (id: string) => ({
+          current: () => ({ id, labels: {} }),
+          setMode: async () => {},
+          update: async () => {},
+        }),
+      },
+    };
+
+    const res = await router.ensureOrchestrator({ repo: "xpufx-org/paseo" });
+    assert.equal(res.ok, true);
+    assert.equal(res.agentId, "agent-sdk-974");
+    assert.equal(res.autoAcceptApplied, true);
+    assert.equal(res.autoAllow, undefined, "the SDK path pre-grants; no CLI auto-allow runs");
+    assert.equal(payloads.length, 1);
+    assert.deepEqual(payloads[0].config.featureValues, { auto_accept: true });
+    assert.equal(payloads[0].config.cwd, tempRepoDir);
+    assert.equal(payloads[0].cwd, tempRepoDir);
+    assert.equal(payloads[0].workspaceId, "ws-paseo-main");
+    assert.equal(payloads[0].workspace, "ws-paseo-main");
+  });
+
+  it("pre-grants a workspace-scoped permission on the CLI fallback and passes no auto-accept flag (#974)", async () => {
+    const grantScopes: Array<{ agentId: string; scopes: readonly string[] }> = [];
+    const router = makeRouter({
+      allowCliSpawn: true,
+      providerModeResolver: async () => ({ modes: [] }),
+      spawnAutoAllow: async (agentId, scopePrefixes) => {
+        grantScopes.push({ agentId, scopes: scopePrefixes });
+        return { allowed: true, permissionId: "perm-974", scope: tempRepoDir };
+      },
+    });
+
+    const res = await router.ensureOrchestrator({ repo: "xpufx-org/paseo" });
+    assert.equal(res.ok, true);
+    assert.equal(res.agentId, "agent-cli");
+    assert.equal(res.autoAcceptApplied, false);
+    assert.deepEqual(res.autoAllow, { allowed: true, permissionId: "perm-974", scope: tempRepoDir });
+    assert.deepEqual(grantScopes, [{ agentId: "agent-cli", scopes: [tempRepoDir] }]);
+
+    assert.equal(capturedRuns.length, 1);
+    const args = capturedRuns[0];
+    assert.equal(args[args.indexOf("--cwd") + 1], tempRepoDir, "CLI spawn scopes execution to the workspace root");
+    assert.equal(
+      args.some(
+        (a) => a === "--auto-accept" || a.startsWith("--auto-accept") || a === "--feature" || a.startsWith("auto_accept"),
+      ),
+      false,
+      "paseo run exposes no auto-accept flag; it must not be passed",
+    );
   });
 });
 
@@ -4882,6 +7413,7 @@ describe("board sweep auto-reconciliation (#794)", () => {
   });
 
   it("marks an absent orchestrator stale on the first sweep and auto-heals it (#889)", async () => {
+    router.enrollRepo("xpufx-org/paseo");
     router.writeOrchestrator("xpufx-org/paseo", "dead-agent");
     (router as any).fetchAgentMap = async () => new Map();
 
@@ -4900,6 +7432,374 @@ describe("board sweep auto-reconciliation (#794)", () => {
       new Map([["errored-agent", { id: "errored-agent", status: "error" }]]);
 
     assert.equal(await router.getActiveOrchestrator("xpufx-org/paseo"), null);
+  });
+
+  it("recovers a lost orchestrator registration from a live labelled agent (#987)", async () => {
+    const liveMap = new Map<string, WatchdogAgent>([
+      [
+        "agent-recovered",
+        {
+          id: "agent-recovered",
+          status: "idle",
+          labels: { role: "orchestrator", category: "orchestrator", repo: "xpufx-org/paseo" },
+        },
+      ],
+    ]);
+
+    const active = await router.getActiveOrchestrator("xpufx-org/paseo", liveMap);
+    assert.ok(active, "a live labelled orchestrator is adopted into the registry");
+    assert.equal(active?.agentId, "agent-recovered");
+
+    const record = router.readOrchestrator("xpufx-org/paseo");
+    assert.equal(record?.agentId, "agent-recovered");
+    assert.equal(record?.by, "recovered");
+    assert.equal(record?.stale, false);
+  });
+
+  it("does not provision a duplicate when a live orchestrator exists without a registration (#987)", async () => {
+    router.enrollRepo("xpufx-org/paseo");
+    const liveMap = new Map<string, WatchdogAgent>([
+      [
+        "agent-lost-reg",
+        { id: "agent-lost-reg", status: "running", labels: { role: "orchestrator", repo: "xpufx-org/paseo" } },
+      ],
+    ]);
+
+    const ensured = await router.ensureUnstaffedEnrolledRepo("xpufx-org/paseo", { agentMap: liveMap });
+
+    assert.equal(ensured, null, "a live orchestrator must short-circuit provisioning");
+    assert.equal(spawnedCalls.length, 0, "no duplicate orchestrator may be spawned");
+    assert.equal(router.readOrchestrator("xpufx-org/paseo")?.agentId, "agent-lost-reg");
+    assert.equal(router.readOrchestrator("xpufx-org/paseo")?.by, "recovered");
+  });
+
+  it("watchdog auto-provisions an unstaffed enrolled repo with pending work (#987)", async () => {
+    router.enrollRepo("xpufx-org/paseo");
+    (router as any).fetchAgentMap = async () => new Map();
+    (router as any).queues.set("xpufx-org/paseo", [
+      { id: "m1", key: "xpufx-org/paseo", msg: "pending", ts: Date.now() },
+    ]);
+
+    const audit = await router.runWatchdogAudit({
+      agentMap: new Map(),
+      orchestratorRecords: [],
+      reloadAgent: async () => ({ ok: true }),
+    });
+
+    assert.ok(
+      audit.anomalies.some((a) => a.type === "ORCHESTRATOR_PROVISIONED" && a.key === "xpufx-org/paseo"),
+      "expected the watchdog to provision an orchestrator for the unstaffed queue",
+    );
+    assert.equal(spawnedCalls.length, 1, "one orchestrator is provisioned, not a duplicate");
+    assert.equal(router.readOrchestrator("xpufx-org/paseo")?.agentId, "agent-1");
+    assert.ok(
+      deliveredMessages.some((d) => d.msg.includes("auto-provisioned orchestrator agent-1")),
+      "Front Desk is told the queue was auto-staffed",
+    );
+  });
+
+  it("recovers a registered orchestrator omitted by a stale cached agent map (#987)", async () => {
+    router.enrollRepo("xpufx-org/paseo");
+    router.writeOrchestrator("xpufx-org/paseo", "agent-live-registered");
+
+    const staleMap = new Map<string, WatchdogAgent>(); // stale: omits the live registration
+    const freshMap = new Map<string, WatchdogAgent>([
+      ["agent-live-registered", { id: "agent-live-registered", status: "idle" }],
+    ]);
+    let fetches = 0;
+    (router as any).fetchAgentMap = async () => {
+      fetches += 1;
+      return freshMap;
+    };
+
+    const ensured = await router.ensureUnstaffedEnrolledRepo("xpufx-org/paseo", { agentMap: staleMap });
+
+    assert.equal(ensured, null, "the live registered orchestrator must be found after refresh");
+    assert.equal(spawnedCalls.length, 0, "no duplicate orchestrator may be spawned");
+    assert.equal(fetches, 1, "exactly one fresh roster fetch is attempted");
+    assert.equal(router.readOrchestrator("xpufx-org/paseo")?.agentId, "agent-live-registered");
+  });
+
+  it("coalesces concurrent auto-ensure calls into a single orchestrator spawn (#987)", async () => {
+    router.enrollRepo("xpufx-org/paseo");
+    (router as any).fetchAgentMap = async () => new Map();
+
+    let ensureCalls = 0;
+    const realEnsure = router.ensureOrchestrator.bind(router);
+    router.ensureOrchestrator = (async (input: any) => {
+      ensureCalls += 1;
+      return await realEnsure(input);
+    }) as typeof router.ensureOrchestrator;
+
+    const [a, b, c] = await Promise.all([
+      router.ensureUnstaffedEnrolledRepo("xpufx-org/paseo", { reason: "concurrent a" }),
+      router.ensureUnstaffedEnrolledRepo("xpufx-org/paseo", { reason: "concurrent b" }),
+      router.ensureUnstaffedEnrolledRepo("xpufx-org/paseo", { reason: "concurrent c" }),
+    ]);
+
+    assert.equal(spawnedCalls.length, 1, "concurrent ensures must coalesce to one spawn");
+    assert.equal(ensureCalls, 1, "the per-repo guard coalesces before provisioning");
+    assert.ok(a && b === a && c === a, "all callers share the coalesced result");
+    assert.equal(router.readOrchestrator("xpufx-org/paseo")?.agentId, "agent-1");
+  });
+
+  it("detects live orchestrators by title/name matching 'Orchestrator · <repo>' without labels (#993)", async () => {
+    const liveMap = new Map<string, WatchdogAgent>([
+      [
+        "agent-title-orch",
+        {
+          id: "agent-title-orch",
+          status: "running",
+          name: "Orchestrator · forge.mrs.uppidi.com/xpufx-org/paseo",
+        },
+      ],
+    ]);
+
+    const active = await router.getActiveOrchestrator("xpufx-org/paseo", liveMap);
+    assert.ok(active, "a live agent with matching Orchestrator title is adopted");
+    assert.equal(active?.agentId, "agent-title-orch");
+
+    const record = router.readOrchestrator("xpufx-org/paseo");
+    assert.equal(record?.agentId, "agent-title-orch");
+  });
+
+  it("performs a pre-spawn check against the latest live agent roster to guarantee no duplicate orchestrator is spawned (#993)", async () => {
+    router.enrollRepo("xpufx-org/paseo");
+    const liveMap = new Map<string, WatchdogAgent>([
+      [
+        "agent-live-prespawn",
+        {
+          id: "agent-live-prespawn",
+          status: "idle",
+          title: "Orchestrator · xpufx-org/paseo",
+        },
+      ],
+    ]);
+    (router as any).fetchAgentMap = async () => liveMap;
+
+    const result = await router.ensureOrchestrator({ repo: "xpufx-org/paseo" });
+    assert.equal(result.ok, true);
+    assert.equal(result.status, "existing");
+    assert.equal(result.agentId, "agent-live-prespawn");
+    assert.equal(spawnedCalls.length, 0, "pre-spawn check prevented duplicate agent spawn");
+  });
+
+  it("enforces singleton invariant by archiving duplicate extras and keeping the newest authoritative agent (#993)", async () => {
+    const archivedIds: string[] = [];
+    (router as any).archiveAgent = async (id: string) => {
+      archivedIds.push(id);
+      return true;
+    };
+
+    const duplicateMap = new Map<string, WatchdogAgent>([
+      [
+        "agent-older",
+        {
+          id: "agent-older",
+          status: "idle",
+          title: "Orchestrator · xpufx-org/paseo",
+          updatedAt: "2026-10-06T10:00:00Z",
+        },
+      ],
+      [
+        "agent-newer",
+        {
+          id: "agent-newer",
+          status: "running",
+          name: "Orchestrator · forge.mrs.uppidi.com/xpufx-org/paseo",
+          updatedAt: "2026-10-06T11:00:00Z",
+        },
+      ],
+    ]);
+
+    const active = await router.getActiveOrchestrator("xpufx-org/paseo", duplicateMap);
+    assert.ok(active);
+    assert.equal(active?.agentId, "agent-newer", "the newest agent must be kept as authoritative");
+    assert.deepEqual(archivedIds, ["agent-older"], "the older duplicate extra must be archived");
+
+    const record = router.readOrchestrator("xpufx-org/paseo");
+    assert.equal(record?.agentId, "agent-newer");
+  });
+
+  it("guards runBoardSweep so concurrent auto-ensures do not spawn duplicate orchestrators (#993)", async () => {
+    router.enrollRepo("xpufx-org/paseo");
+    (router as any).fetchAgentMap = async () => new Map();
+
+    let sweepCheckCount = 0;
+    const realBoardCheck = (router as any).runBoardCheck.bind(router);
+    (router as any).runBoardCheck = async (repo: string) => {
+      sweepCheckCount++;
+      await new Promise((r) => setTimeout(r, 20));
+      return await realBoardCheck(repo);
+    };
+
+    const [sweep1, sweep2] = await Promise.all([
+      router.runBoardSweep(["xpufx-org/paseo"]),
+      router.runBoardSweep(["xpufx-org/paseo"]),
+    ]);
+
+    assert.equal(sweep1.ok, true);
+    assert.equal(sweep2.ok, true);
+    assert.equal(sweepCheckCount, 1, "concurrent sweeps must coalesce and not duplicate board checks");
+    assert.equal(spawnedCalls.length, 1, "exactly one orchestrator is spawned across concurrent sweeps");
+  });
+
+  it("standardizes agent identity on title/name and cwd without reliance on labels (#999)", async () => {
+    // 1. isOrchestratorAgent identification by title/name variants without labels
+    assert.equal(isOrchestratorAgent({ title: "Orchestrator · xpufx-org/paseo" }), true);
+    assert.equal(isOrchestratorAgent({ name: "Orchestrator · forge.mrs.uppidi.com/xpufx-org/paseo" }), true);
+    assert.equal(isOrchestratorAgent({ title: "Orchestrator - xpufx-org/paseo" }), true);
+    assert.equal(isOrchestratorAgent({ title: "Orchestrator: xpufx-org/paseo" }), true);
+    assert.equal(isOrchestratorAgent({ title: "orchestrator" }), true);
+    assert.equal(isOrchestratorAgent({ title: "Worker: task-1" }), false);
+    assert.equal(isOrchestratorAgent({ title: "Front Desk" }), false);
+
+    // 2. isFrontDeskAgent resolves strictly from roster id and explicit role metadata (#1143)
+    assert.equal(isFrontDeskAgent({ role: "front-desk" }), true);
+    assert.equal(isFrontDeskAgent({ labels: { role: "front-desk" } }), true);
+    assert.equal(isFrontDeskAgent({ labels: { category: "front-desk" } }), true);
+    assert.equal(isFrontDeskAgent({ id: "fd-1" } as any, "fd-1"), true);
+    // Bare display names alone never grant the role, no matter how desk-like.
+    assert.equal(isFrontDeskAgent({ title: "Front Desk" }), false);
+    assert.equal(isFrontDeskAgent({ name: "Front Desk (primary)" }), false);
+    assert.equal(isFrontDeskAgent({ title: "frontdesk" }), false);
+    assert.equal(isFrontDeskAgent({ title: "Orchestrator · xpufx-org/paseo" }), false);
+    assert.equal(isFrontDeskAgent({ title: "Worker: coding" }), false);
+    // Explicit metadata wins over the title either way.
+    assert.equal(isFrontDeskAgent({ title: "Some Session", labels: { role: "front-desk" } }), true);
+    assert.equal(
+      isFrontDeskAgent({ title: "Front Desk", labels: { role: "retired-front-desk" } }),
+      false,
+      "retired sessions are rejected even when the title claims the desk (#1143)"
+    );
+    assert.equal(
+      isFrontDeskAgent({ title: "paseo#1119 Front Desk live recovery" }),
+      false,
+      "workers on front-desk issues are isolated by branch/title (#1143)"
+    );
+
+    // 3. isOrchestratorMatchingRepo matches forge-qualified and slug titles without labels
+    const orchAgent: WatchdogAgent = {
+      id: "orch-unlabelled",
+      title: "Orchestrator · forge.mrs.uppidi.com/xpufx-org/paseo",
+      status: "idle",
+    };
+    assert.equal(isOrchestratorMatchingRepo(orchAgent, "xpufx-org/paseo"), true);
+    assert.equal(isOrchestratorMatchingRepo(orchAgent, "forge.mrs.uppidi.com/xpufx-org/paseo"), true);
+    assert.equal(isOrchestratorMatchingRepo(orchAgent, "other-org/other-repo"), false);
+
+    // 4. isOrchestratorMatchingRepo matches agent cwd against workspace checkout without labels
+    const workspaceCheckout = "/home/dev-user/.paseo/worktrees/repo-checkout";
+    const cwdOrchAgent: WatchdogAgent = {
+      id: "orch-cwd",
+      title: "Orchestrator · unlabelled",
+      cwd: workspaceCheckout,
+      status: "running",
+    };
+    assert.equal(
+      isOrchestratorMatchingRepo(cwdOrchAgent, "xpufx-org/paseo", workspaceCheckout),
+      true,
+      "matches when agent cwd matches repo workspace checkout",
+    );
+    assert.equal(
+      isOrchestratorMatchingRepo(cwdOrchAgent, "xpufx-org/paseo", "/other/workspace"),
+      false,
+      "does not match when agent cwd differs from repo workspace checkout",
+    );
+
+    // 5. findLiveOrchestratorAgents finds agent by cwd when title is generic
+    const liveMapWithCwd = new Map<string, WatchdogAgent>([
+      [
+        "orch-cwd-match",
+        {
+          id: "orch-cwd-match",
+          title: "Orchestrator",
+          cwd: "/home/dev-user/code/platform",
+          status: "running",
+        },
+      ],
+    ]);
+    const matches = findLiveOrchestratorAgents(
+      "xpufx-org/platform",
+      liveMapWithCwd,
+      null,
+      "/home/dev-user/code/platform",
+    );
+    assert.equal(matches.length, 1);
+    assert.equal(matches[0].id, "orch-cwd-match");
+
+    // 6. getActiveOrchestrator adopts live orchestrator discovered via cwd matching without labels
+    router.enrollRepo("xpufx-org/platform");
+    (router as any).resolveWorkspace = (repo: string) => ({ cwd: "/home/dev-user/code/platform" });
+    const active = await router.getActiveOrchestrator("xpufx-org/platform", liveMapWithCwd);
+    assert.ok(active);
+    assert.equal(active?.agentId, "orch-cwd-match");
+  });
+});
+
+describe("authoritative deterministic roster roles and eager startup reconciliation (#1143)", () => {
+  it("findLiveFrontDeskAgents returns only live label-tagged desks, newest first", () => {
+    const map = new Map<string, WatchdogAgent>([
+      ["fd-old", { id: "fd-old", title: "Front Desk", labels: { role: "front-desk" }, status: "idle", updatedAt: "2026-01-01T00:00:00.000Z" }],
+      ["fd-new", { id: "fd-new", title: "Front Desk", labels: { role: "front-desk" }, status: "running", updatedAt: "2026-01-02T00:00:00.000Z" }],
+      // Retired sessions are never candidates, even with the newest timestamp.
+      ["fd-retired", { id: "fd-retired", title: "Front Desk (retired)", labels: { role: "retired-front-desk" }, status: "running", updatedAt: "2026-01-03T00:00:00.000Z" }],
+      // Workers whose branch/title mentions Front Desk are isolated.
+      ["w-fd-issue", { id: "w-fd-issue", title: "paseo#1119 Front Desk live recovery", status: "running", updatedAt: "2026-01-04T00:00:00.000Z" }],
+      // Archived desks are not live.
+      ["fd-archived", { id: "fd-archived", title: "Front Desk", labels: { role: "front-desk" }, status: "idle", archivedAt: "2026-01-05T00:00:00.000Z" }],
+    ]);
+    const ordered = findLiveFrontDeskAgents(map);
+    assert.deepEqual(ordered.map((a) => a.id), ["fd-new", "fd-old"]);
+  });
+
+  it("reconcileEnrolledOrchestrators adopts label-tagged live orchestrators per enrolled repo", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "paseo-test-1143-reconcile-"));
+    try {
+      const router = new HookRouter(null, {
+        queueDir: join(tempDir, "queues"),
+        stateDir: join(tempDir, "state"),
+        port: 0,
+      });
+      router.enrollRepo("xpufx-org/paseo");
+      (router as any).fetchAgentMap = async () =>
+        new Map<string, WatchdogAgent>([
+          ["orch-live", { id: "orch-live", title: "some opaque title", labels: { role: "orchestrator", repo: "xpufx-org/paseo" }, status: "running" }],
+        ]);
+      const res = await router.reconcileEnrolledOrchestrators();
+      assert.equal(res.reconciled, 1);
+      assert.ok(res.repos.some((r) => r.includes("xpufx-org/paseo")));
+      assert.equal(router.readOrchestrator("xpufx-org/paseo")?.agentId, "orch-live");
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("start() eagerly reconciles both Front Desk and enrolled orchestrators", async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), "paseo-test-1143-start-"));
+    const router = new HookRouter(null, {
+      queueDir: join(tempDir, "queues"),
+      stateDir: join(tempDir, "state"),
+      port: 0,
+    });
+    try {
+      let frontDeskReconciled = false;
+      let orchestratorsReconciled = false;
+      (router as any).reconcileFrontDesk = async () => {
+        frontDeskReconciled = true;
+        return { ok: true, recovered: false };
+      };
+      (router as any).reconcileEnrolledOrchestrators = async () => {
+        orchestratorsReconciled = true;
+        return { reconciled: 0, repos: [] };
+      };
+      await router.start();
+      assert.equal(frontDeskReconciled, true, "start must reconcile Front Desk");
+      assert.equal(orchestratorsReconciled, true, "start must eagerly reconcile enrolled orchestrators (#1143)");
+    } finally {
+      await router.stop().catch(() => undefined);
+      rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -5143,16 +8043,16 @@ describe("hook-router direct-action guards (#847)", () => {
       assert.match(d.reason, /pull request/);
     });
 
-    it("skips terminal acceptance labels", () => {
+    it("does not bypass for terminal acceptance labels (#996)", () => {
       for (const label of CLOSE_GUARD_ACCEPTED_LABELS) {
         const d = closeGuardDecision({ ...target, labels: [label] });
-        assert.equal(d.act, false, `expected ${label} to allow closure`);
-        assert.match(d.reason, /acceptance label/);
+        assert.equal(d.act, true, `expected ${label} to be intercepted`);
+        assert.match(d.reason, /targeted actor closed an issue/);
       }
     });
 
-    it("acts when a target actor closes a non-terminal issue", () => {
-      const d = closeGuardDecision({ ...target, labels: ["kind/bug"] });
+    it("acts when a target actor closes an issue regardless of labels", () => {
+      const d = closeGuardDecision({ ...target, labels: ["kind/bug", "state/4-done", "confirmed-done"] });
       assert.equal(d.act, true);
     });
 
@@ -5161,11 +8061,6 @@ describe("hook-router direct-action guards (#847)", () => {
       assert.equal(d.act, true);
       const skipped = closeGuardDecision({ ...target, actor: "dave", targetActors: ["bob", "carol"] });
       assert.equal(skipped.act, false);
-    });
-
-    it("supports custom accepted labels", () => {
-      const d = closeGuardDecision({ ...target, labels: ["state/3-verify"], acceptedLabels: ["state/3-verify"] });
-      assert.equal(d.act, false);
     });
   });
 
@@ -5310,12 +8205,28 @@ describe("hook-router direct-action guards (#847)", () => {
       assert.equal(requests.length, 0);
     });
 
-    it("allows closure when a terminal acceptance label is present", async () => {
+    it("reopens even when a terminal acceptance label is present (#996)", async () => {
       const router = makeRouter();
-      installFetch(() => ({ data: { number: 7, labels: [{ name: "state/4-done" }] } }));
-      const res = await router.runCloseGuard(issueBody("closed", { actor: "xpufx" }));
-      assert.equal(res.acted, false);
-      assert.equal(requests.filter((r) => r.method === "PATCH").length, 0);
+      installFetch((req) => {
+        if (req.method === "GET") {
+          return {
+            data: {
+              number: 7,
+              title: "Bug",
+              state: "closed",
+              labels: [{ name: "state/4-done" }],
+              html_url: `${REPO_URL}/issues/7`,
+            },
+          };
+        }
+        if (req.method === "PATCH") return { data: { number: 7, state: "open" } };
+        if (req.method === "POST" && req.url.endsWith("/comments")) return { data: { id: 1 } };
+        return { status: 404 };
+      });
+      const res = await router.runCloseGuard(issueBody("closed", { actor: "xpufx", number: 7, state: "closed" }));
+      assert.equal(res.acted, true);
+      assert.equal(res.reopened, true);
+      assert.equal(requests.filter((r) => r.method === "PATCH").length, 1);
     });
 
     it("still reopens when the policy comment fails", async () => {
@@ -5699,9 +8610,9 @@ describe("hook-router repository onboarding (#847)", () => {
   const CATALOGUE = {
     manifest_version: 1,
     labels: [
-      { name: "priority/0-SOS", color: "#b60205", exclusive: true, description: "SOS" },
-      { name: "priority/1-high", color: "#d93f0b", exclusive: true, description: "High" },
-      { name: "attention/0-orchestrator", color: "#fbca04", exclusive: false, description: "Orchestrator" },
+      { name: "priority/sos", color: "#b60205", exclusive: true, description: "SOS" },
+      { name: "priority/high", color: "#d93f0b", exclusive: true, description: "High" },
+      { name: "attention/orchestrator", color: "#fbca04", exclusive: false, description: "Orchestrator" },
     ],
   };
 
@@ -5799,11 +8710,11 @@ describe("hook-router repository onboarding (#847)", () => {
       assert.equal(labelPosts.length, 3);
       assert.deepEqual(
         labelPosts.map((r) => r.body.name),
-        ["priority/0-SOS", "priority/1-high", "attention/0-orchestrator"],
+        ["priority/sos", "priority/high", "attention/orchestrator"],
       );
       assert.equal(labelPosts[0].url, `https://${HOST}/api/v1/repos/${REPO}/labels`);
       assert.deepEqual(labelPosts[0].body, {
-        name: "priority/0-SOS",
+        name: "priority/sos",
         color: "#b60205",
         description: "SOS",
         exclusive: true,
@@ -5821,8 +8732,8 @@ describe("hook-router repository onboarding (#847)", () => {
       const router = makeRouter();
       seedFetch({
         existingLabels: [
-          { id: 5, name: "priority/1-high", color: "#d93f0b" },
-          { id: 6, name: "attention/0-orchestrator", color: "#fbca04" },
+          { id: 5, name: "priority/high", color: "#d93f0b" },
+          { id: 6, name: "attention/orchestrator", color: "#fbca04" },
         ],
       });
 
@@ -5838,9 +8749,9 @@ describe("hook-router repository onboarding (#847)", () => {
       const router = makeRouter();
       seedFetch({
         existingLabels: [
-          { id: 5, name: "priority/1-high", color: "#000000", exclusive: true, description: "Old" },
-          { id: 6, name: "attention/0-orchestrator", color: "#fbca04", exclusive: false, description: "Orchestrator" },
-          { id: 7, name: "priority/0-SOS", color: "#b60205", exclusive: true, description: "SOS" },
+          { id: 5, name: "priority/high", color: "#000000", exclusive: true, description: "Old" },
+          { id: 6, name: "attention/orchestrator", color: "#fbca04", exclusive: false, description: "Orchestrator" },
+          { id: 7, name: "priority/sos", color: "#b60205", exclusive: true, description: "SOS" },
         ],
       });
 
@@ -5854,7 +8765,7 @@ describe("hook-router repository onboarding (#847)", () => {
       assert.ok(patch, "expected a label PATCH");
       assert.equal(patch!.url, `https://${HOST}/api/v1/repos/${REPO}/labels/5`);
       assert.deepEqual(patch!.body, {
-        name: "priority/1-high",
+        name: "priority/high",
         color: "#d93f0b",
         description: "High",
       });
@@ -5878,7 +8789,7 @@ describe("hook-router repository onboarding (#847)", () => {
     it("paginates the existing label list", async () => {
       const router = makeRouter();
       const page1 = Array.from({ length: 50 }, (_, i) => ({ id: i + 1, name: `l/${i}` }));
-      const page2 = [{ id: 51, name: "attention/0-orchestrator", color: "#fbca04" }];
+      const page2 = [{ id: 51, name: "attention/orchestrator", color: "#fbca04" }];
       installFetch((req) => {
         if (req.url === CATALOGUE_URL) return { data: CATALOGUE };
         if (req.url.endsWith("/labels?limit=50&page=1")) return { data: page1 };
@@ -6012,5 +8923,2729 @@ describe("hook-router repository onboarding (#847)", () => {
 
       assert.deepEqual(seen, [{ event: "repository", action: "created" }]);
     });
+  });
+});
+
+describe("HookRouter canonical ALL HALT mode (#994)", () => {
+  let tempDir: string;
+  let queueDir: string;
+  let stateDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "paseo-halt-test-"));
+    queueDir = join(tempDir, "queues");
+    stateDir = join(tempDir, "state");
+  });
+
+  afterEach(() => {
+    try {
+      rmSync(tempDir, { recursive: true, force: true });
+    } catch {}
+  });
+
+  it("router.halt() sets isHalted() and engages pause('all')", () => {
+    const router = new HookRouter(null, { queueDir, stateDir, port: 0 });
+    assert.equal(router.isHalted(), false);
+    assert.equal(router.isPaused("any/repo"), false);
+
+    router.halt();
+
+    assert.equal(router.isHalted(), true);
+    assert.equal(router.isPaused("any/repo"), true);
+    assert.equal(router.isAllPaused(), true);
+  });
+
+  it("immediately rejects or skips auto-provisioning when halted", async () => {
+    let spawnAttempts = 0;
+    const router = new HookRouter(null, {
+      queueDir,
+      stateDir,
+      port: 0,
+      spawnAgent: async () => {
+        spawnAttempts++;
+        return { id: "test-agent" };
+      },
+    });
+
+    router.halt();
+
+    // 1. ensureOrchestrator
+    const orchRes = await router.ensureOrchestrator({ repo: "xpufx-org/test-repo" });
+    assert.equal(orchRes.ok, false);
+    assert.match(orchRes.error || "", /halted/i);
+    assert.equal(spawnAttempts, 0);
+
+    // 2. ensureUnstaffedEnrolledRepo
+    const unstaffedRes = await router.ensureUnstaffedEnrolledRepo("xpufx-org/test-repo", { reason: "test" });
+    assert.equal(unstaffedRes, null);
+    assert.equal(spawnAttempts, 0);
+  });
+
+  it("pauses webhook queue ingress when halted", async () => {
+    const router = new HookRouter(null, { queueDir, stateDir, port: 0 });
+    router.halt();
+
+    const payload = {
+      repository: { full_name: "xpufx-org/test-repo" },
+      issue: { number: 42, title: "Test issue" },
+      sender: { login: "someone" },
+    };
+
+    const res = await router.ingestWebhook("issues", payload);
+    assert.equal(res.result, "suppressed");
+    assert.equal(router.getQueue("xpufx-org/test-repo").length, 0);
+  });
+
+  it("pauses background loops (watchdog and board sweep) when halted", async () => {
+    let auditRan = false;
+    let sweepRan = false;
+
+    const router = new HookRouter(null, {
+      queueDir,
+      stateDir,
+      port: 0,
+      watchdogIntervalMs: 50,
+      boardSweepIntervalMs: 50,
+    });
+
+    // Replace methods before starting loops
+    (router as any).runWatchdogAudit = async () => {
+      auditRan = true;
+      return { ok: true, now: Date.now(), anomalies: [], actions: [] };
+    };
+    (router as any).runBoardSweep = async () => {
+      sweepRan = true;
+      return { ok: true, actionable: [], staleWipRecovered: [], errors: [], prunedCount: 0, autoEnsured: [], notified: 0 };
+    };
+
+    router.startBackgroundLoops();
+    router.halt();
+
+    // Wait 120ms to verify timers were cancelled and loops do not execute
+    await new Promise((resolve) => setTimeout(resolve, 120));
+
+    assert.equal(auditRan, false, "watchdog loop should not run after halt");
+    assert.equal(sweepRan, false, "board sweep loop should not run after halt");
+  });
+
+  it("resumes halt state on router.resume('all')", () => {
+    const router = new HookRouter(null, { queueDir, stateDir, port: 0 });
+    router.halt();
+    assert.equal(router.isHalted(), true);
+
+    router.resume("all");
+    assert.equal(router.isHalted(), false);
+    assert.equal(router.isAllPaused(), false);
+  });
+
+  it("exposes halted and teardownInProgress on the status overview (#1013)", () => {
+    const router = new HookRouter(null, { queueDir, stateDir, port: 0 });
+
+    const before = router.getStatusOverview();
+    assert.equal(before.halted, false);
+    assert.equal(before.teardownInProgress, false);
+
+    router.halt();
+    assert.equal(router.getStatusOverview().halted, true);
+
+    router.markTeardownStart();
+    assert.equal(router.getStatusOverview().teardownInProgress, true);
+
+    router.markTeardownEnd();
+    assert.equal(router.getStatusOverview().teardownInProgress, false);
+  });
+
+  it("ignores resume while a teardown is in progress and allows it afterwards (#1013)", () => {
+    const router = new HookRouter(null, { queueDir, stateDir, port: 0 });
+    router.halt();
+    router.markTeardownStart();
+
+    router.resume("all");
+    assert.equal(router.isHalted(), true, "resume must not clear the halt during teardown");
+
+    const refused = router.resumeAll();
+    assert.equal(refused.ok, false);
+    assert.equal(refused.resumed, false);
+    assert.match(refused.error || "", /teardown/i);
+
+    router.markTeardownEnd();
+    const allowed = router.resumeAll();
+    assert.equal(allowed.ok, true);
+    assert.equal(allowed.resumed, true);
+    assert.equal(router.isHalted(), false);
+  });
+});
+
+// ──────────────────────────────────────────────────────────────────────────
+// Boot-mode persistence (#1112)
+// ──────────────────────────────────────────────────────────────────────────
+
+describe("HookRouter startModeOnBoot — constructor initialisation (#1112)", () => {
+  let tempDir: string;
+  let queueDir: string;
+  let stateDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "paseo-bootmode-test-"));
+    queueDir = join(tempDir, "queues");
+    stateDir = join(tempDir, "state");
+    // Reset the singleton and set up storage pointing at our tempDir
+    resetUppidiFleetSettingsStorageInstance();
+    // First call establishes the singleton; in test mode the singleton is only set when no options are passed
+    // and testActive is false. Since we ARE in test mode, we must pass baseDir explicitly each time.
+    // But the HookRouter constructor calls getUppidiFleetSettingsStorage() without options.
+    // Solution: set PASEO_HOME to point to our tempDir so the default path resolves there.
+  });
+
+  afterEach(() => {
+    try {
+      rmSync(tempDir, { recursive: true, force: true });
+    } catch {}
+    resetUppidiFleetSettingsStorageInstance();
+  });
+
+  function createMockServer(): PluginServerContext {
+    return {
+      on: () => () => {},
+      before: () => () => {},
+      handle: () => {},
+      registerSettings: () => ({} as any),
+      registerProvider: () => {},
+    } as unknown as PluginServerContext;
+  }
+
+  /** Write settings by temporarily redirecting PASEO_HOME so both storage and constructor share the same dir. */
+  function writeSettings(partial: Partial<UppidiFleetSettings>): void {
+    const oldPaseoHome = process.env.PASEO_HOME;
+    process.env.PASEO_HOME = tempDir;
+    try {
+      resetUppidiFleetSettingsStorageInstance();
+      const storage = getUppidiFleetSettingsStorage();
+      const current = storage.read();
+      storage.write(Object.assign({}, current, partial));
+    } finally {
+      if (oldPaseoHome === undefined) {
+        delete process.env.PASEO_HOME;
+      } else {
+        process.env.PASEO_HOME = oldPaseoHome;
+      }
+    }
+  }
+
+  it("startModeOnBoot: 'halt' initializes in HALT mode with isHaltedState = true", () => {
+    writeSettings({ startModeOnBoot: "halt" });
+
+    const server = createMockServer();
+    const router = new HookRouter(server, { queueDir, stateDir, port: 0 });
+
+    assert.equal((router as any)._mode, "HALT");
+    assert.equal(router.isHalted(), true);
+    assert.equal(router.isAllPaused(), true);
+  });
+
+  it("startModeOnBoot: 'run' overrides persisted HALT mode", () => {
+    // Persist a HALT mode from a previous session
+    saveRouterConfig({ mode: "HALT" });
+    // But settings say to always run
+    writeSettings({ startModeOnBoot: "run" });
+
+    const server = createMockServer();
+    const router = new HookRouter(server, { queueDir, stateDir, port: 0 });
+
+    assert.equal((router as any)._mode, "RUN");
+    assert.equal(router.isHalted(), false);
+  });
+
+  it("persisted mode: 'HALT' sets isHaltedState = true (previous-state default)", () => {
+    // Persist HALT mode but leave startModeOnBoot at its default ('previous-state')
+    saveRouterConfig({ mode: "HALT" });
+
+    const server = createMockServer();
+    const router = new HookRouter(server, { queueDir, stateDir, port: 0 });
+
+    assert.equal((router as any)._mode, "HALT");
+    assert.equal(router.isHalted(), true);
+    assert.equal(router.isAllPaused(), true);
+  });
+
+  it("persisted mode: 'STOP' sets isHaltedState = true", () => {
+    saveRouterConfig({ mode: "STOP" });
+
+    const server = createMockServer();
+    const router = new HookRouter(server, { queueDir, stateDir, port: 0 });
+
+    assert.equal((router as any)._mode, "STOP");
+    assert.equal(router.isHalted(), true);
+    assert.equal(router.isAllPaused(), true);
+  });
+
+  it("startModeOnBoot: 'previous-state' with no persisted mode falls back to settings mode", () => {
+    writeSettings({ mode: "DRAIN", startModeOnBoot: "previous-state" });
+
+    const server = createMockServer();
+    const router = new HookRouter(server, { queueDir, stateDir, port: 0 });
+
+    assert.equal((router as any)._mode, "DRAIN");
+    assert.equal(router.isHalted(), false); // DRAIN is not a halted mode
+  });
+
+  it("start() under HALT mode skips reconcileFrontDesk and reconcileEnrolledOrchestrators", async () => {
+    writeSettings({ startModeOnBoot: "halt" });
+
+    let frontDeskReconciled = false;
+    let orchestratorReconciled = false;
+
+    const server = createMockServer();
+    const router = new HookRouter(server, { queueDir, stateDir, port: 0 });
+
+    // Patch reconciliation methods to track calls
+    const origReconcileFrontDesk = router.reconcileFrontDesk.bind(router);
+    const origReconcileOrchestrators = router.reconcileEnrolledOrchestrators.bind(router);
+
+    router.reconcileFrontDesk = async () => {
+      frontDeskReconciled = true;
+      return origReconcileFrontDesk();
+    };
+    router.reconcileEnrolledOrchestrators = async () => {
+      orchestratorReconciled = true;
+      return origReconcileOrchestrators();
+    };
+
+    await router.start();
+
+    assert.equal(frontDeskReconciled, false, "reconcileFrontDesk should be skipped in HALT mode");
+    assert.equal(orchestratorReconciled, false, "reconcileEnrolledOrchestrators should be skipped in HALT mode");
+    assert.equal(router.isHalted(), true);
+  });
+
+  it("start() under HALT mode does not start background loops", async () => {
+    writeSettings({ startModeOnBoot: "halt" });
+
+    let watchdogRan = false;
+    let sweepRan = false;
+
+    const server = createMockServer();
+    const router = new HookRouter(server, {
+      queueDir,
+      stateDir,
+      port: 0,
+      watchdogIntervalMs: 50,
+      boardSweepIntervalMs: 50,
+    });
+
+    // Replace loop methods to detect execution
+    (router as any).runWatchdogAudit = async () => {
+      watchdogRan = true;
+      return { ok: true, now: Date.now(), anomalies: [], actions: [] };
+    };
+    (router as any).runBoardSweep = async () => {
+      sweepRan = true;
+      return { ok: true, actionable: [], staleWipRecovered: [], errors: [], prunedCount: 0, autoEnsured: [], notified: 0 };
+    };
+
+    await router.start();
+
+    // Wait long enough for timers to fire if they were started
+    await new Promise((resolve) => setTimeout(resolve, 150));
+
+    assert.equal(watchdogRan, false, "watchdog should not run when started in HALT mode");
+    assert.equal(sweepRan, false, "board sweep should not run when started in HALT mode");
+  });
+});
+
+
+describe("HookRouter role rotation (#1019)", () => {
+  let tempDir: string;
+  let queueDir: string;
+  let stateDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "paseo-rotation-test-"));
+    queueDir = join(tempDir, "queues");
+    stateDir = join(tempDir, "state");
+    mkdirSync(queueDir, { recursive: true });
+    mkdirSync(stateDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    try {
+      rmSync(tempDir, { recursive: true, force: true });
+    } catch {}
+  });
+
+  function makeRouter(overrides: Partial<HookRouterOptions> = {}) {
+    const spawned: any[] = [];
+    const archived: string[] = [];
+    const delivered: Array<{ id: string; text: string; options?: any }> = [];
+    const router = new HookRouter(null, {
+      queueDir,
+      stateDir,
+      port: 0,
+      rotationAutoEnabled: true,
+      workspacesData: [
+        {
+          workspaceId: "ws-paseo-main",
+          cwd: tempDir,
+          displayName: "Paseo",
+          isolation: "local",
+          projectKey: "remote:forge.mrs.uppidi.com:222/xpufx-org/paseo",
+        },
+      ],
+      orchestratorModelFallback: ["antigravity-acp/gemini-3.8-flash-low"],
+      circuitBreakerPath: join(tempDir, "model-health.json"),
+      spawnAgent: async (opts) => {
+        spawned.push(opts);
+        return { id: `agent-new-${spawned.length}` };
+      },
+      archiveAgent: async (id) => {
+        archived.push(id);
+        return true;
+      },
+      ...overrides,
+    });
+    (router as any).deliverMessage = async (id: string, text: string, options?: any) => {
+      delivered.push({ id, text, options });
+      return true;
+    };
+    return { router, spawned, archived, delivered };
+  }
+
+  it("rotates an orchestrator: spawn -> verify -> deliver brief -> archive incumbent", async () => {
+    const { router, spawned, archived, delivered } = makeRouter();
+    router.writeOrchestrator("xpufx-org/paseo", "agent-old", "test");
+    (router as any).fetchAgentMap = async () =>
+      new Map<string, WatchdogAgent>([
+        ["agent-new-1", { id: "agent-new-1", role: "orchestrator", title: "Orchestrator · xpufx-org/paseo", status: "idle" }],
+      ]);
+
+    const res = await router.rotateRole({ role: "orchestrator", repo: "xpufx-org/paseo", reason: "operator test", force: true });
+
+    assert.equal(res.ok, true);
+    assert.equal(res.oldAgentId, "agent-old");
+    assert.equal(res.agentId, "agent-new-1");
+    assert.equal(spawned.length, 1, "exactly one replacement is spawned");
+    assert.equal(archived.length, 1, "exactly one agent is archived");
+    assert.equal(archived[0], "agent-old", "the incumbent is archived, never the replacement");
+    assert.equal(router.readOrchestrator("xpufx-org/paseo")?.agentId, "agent-new-1");
+    assert.equal(delivered.length, 1);
+    assert.equal(delivered[0].id, "agent-new-1");
+    assert.match(delivered[0].text, /Rotation Brief/);
+    assert.match(delivered[0].text, /operator test/);
+    assert.ok(delivered[0].options?.steer, "the brief is steered to the replacement");
+  });
+
+  it("aborts cleanly on spawn failure and leaves the incumbent registered", async () => {
+    const { router, archived } = makeRouter({ spawnAgent: async () => null });
+    router.writeOrchestrator("xpufx-org/paseo", "agent-old", "test");
+    (router as any).fetchAgentMap = async () => new Map();
+
+    const res = await router.rotateRole({ role: "orchestrator", repo: "xpufx-org/paseo", force: true });
+
+    assert.equal(res.ok, false);
+    assert.equal(res.errorCode, "spawn_failed");
+    assert.equal(archived.length, 0, "the incumbent is not archived when the spawn fails");
+    assert.equal(router.readOrchestrator("xpufx-org/paseo")?.agentId, "agent-old");
+  });
+
+  it("archives the replacement and restores the incumbent when verification fails", async () => {
+    const { router, archived } = makeRouter();
+    router.writeOrchestrator("xpufx-org/paseo", "agent-old", "test");
+    // The live roster never shows the spawned replacement.
+    (router as any).fetchAgentMap = async () => new Map<string, WatchdogAgent>([["agent-old", { id: "agent-old" }]]);
+
+    const res = await router.rotateRole({ role: "orchestrator", repo: "xpufx-org/paseo", force: true });
+
+    assert.equal(res.ok, false);
+    assert.equal(res.errorCode, "verify_failed");
+    assert.deepEqual(archived, ["agent-new-1"]);
+    assert.equal(router.readOrchestrator("xpufx-org/paseo")?.agentId, "agent-old", "incumbent registry is restored");
+  });
+
+  it("allows only one rotation per role at a time", async () => {
+    const { router } = makeRouter();
+    router.writeOrchestrator("xpufx-org/paseo", "agent-old", "test");
+    (router as any).fetchAgentMap = async () =>
+      new Map<string, WatchdogAgent>([
+        ["agent-new-1", { id: "agent-new-1", role: "orchestrator", title: "Orchestrator · xpufx-org/paseo" }],
+      ]);
+
+    const first = router.rotateRole({ role: "orchestrator", repo: "xpufx-org/paseo", reason: "first", force: true });
+    const second = await router.rotateRole({ role: "orchestrator", repo: "xpufx-org/paseo", reason: "second", force: true });
+    const firstRes = await first;
+
+    assert.equal(second.ok, false);
+    assert.equal(second.errorCode, "in_flight");
+    assert.equal(firstRes.ok, true);
+  });
+
+  it("rotates the Front Desk singleton with the injected spawn seam", async () => {
+    const spawnedFd: string[] = [];
+    const { router, archived, delivered } = makeRouter({
+      spawnFrontDesk: async (input) => {
+        spawnedFd.push(input.title);
+        return { id: "fd-new" };
+      },
+    });
+    router.writeFrontDesk("fd-old", "test");
+    (router as any).fetchAgentMap = async () =>
+      new Map<string, WatchdogAgent>([["fd-new", { id: "fd-new", role: "front-desk", title: "Front Desk" }]]);
+
+    const res = await router.rotateRole({ role: "front-desk", reason: "manual", force: true });
+
+    assert.equal(res.ok, true);
+    assert.equal(res.oldAgentId, "fd-old");
+    assert.equal(res.agentId, "fd-new");
+    assert.deepEqual(spawnedFd, ["Front Desk"]);
+    assert.deepEqual(archived, ["fd-old"]);
+    assert.equal(router.readFrontDesk()?.agentId, "fd-new");
+    assert.equal(delivered[0].id, "fd-new");
+  });
+
+  it("round-trips the policy and applies a per-repo override", () => {
+    const { router } = makeRouter();
+    router.setRotationPolicyRole("orchestrator", undefined, { maxTurns: 9 });
+    assert.equal(router.getRotationPolicyFor("orchestrator", "xpufx-org/paseo").maxTurns, 9);
+
+    router.setRotationPolicyRole("orchestrator", "xpufx-org/paseo", { maxTurns: 3 });
+    assert.equal(router.getRotationPolicyFor("orchestrator", "xpufx-org/paseo").maxTurns, 3);
+    assert.equal(router.getRotationPolicyFor("orchestrator", "xpufx-org/other").maxTurns, 9);
+  });
+
+  it("reports status and remaining cooldown after a rotation", async () => {
+    const { router } = makeRouter();
+    router.writeOrchestrator("xpufx-org/paseo", "agent-old", "test");
+    (router as any).fetchAgentMap = async () =>
+      new Map<string, WatchdogAgent>([
+        ["agent-new-1", { id: "agent-new-1", role: "orchestrator", title: "Orchestrator · xpufx-org/paseo" }],
+      ]);
+
+    await router.rotateRole({ role: "orchestrator", repo: "xpufx-org/paseo", reason: "test", force: true });
+    const status = router.rotationStatus({ role: "orchestrator", repo: "xpufx-org/paseo" });
+    assert.equal(status.ok, true);
+    assert.equal(status.statuses.length, 1);
+    assert.equal(status.statuses[0].agentId, "agent-new-1");
+    assert.ok(status.statuses[0].lastRotationAt);
+    assert.ok(status.statuses[0].cooldownRemainingMs > 0);
+    assert.equal(status.statuses[0].policy.maxTurns, 50);
+  });
+
+  it("automatically rotates when age crosses the threshold and respects cooldown", async () => {
+    const { router } = makeRouter();
+    router.writeOrchestrator("xpufx-org/paseo", "agent-old", "test");
+    const oldTs = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
+    (router as any).fetchAgentMap = async () =>
+      new Map<string, WatchdogAgent>([
+        [
+          "agent-old",
+          { id: "agent-old", role: "orchestrator", title: "Orchestrator · xpufx-org/paseo", updatedAt: oldTs },
+        ],
+        ["agent-new-1", { id: "agent-new-1", role: "orchestrator", title: "Orchestrator · xpufx-org/paseo" }],
+      ]);
+
+    const first = await router.evaluateAutomaticRotations();
+    assert.ok(first.some((r) => r.ok && r.role === "orchestrator"), "age trigger rotates the stale orchestrator");
+
+    // A second evaluation within the cooldown window must not rotate again.
+    const second = await router.evaluateAutomaticRotations();
+    assert.equal(second.some((r) => r.ok), false, "cooldown suppresses a second automatic rotation");
+  });
+});
+
+describe("merge-event hook (#1076)", () => {
+  const REPO = "xpufx-org/paseo";
+  const REPO_URL = "https://forge.mrs.uppidi.com/xpufx-org/paseo";
+  const REPO_KEY = "forge.mrs.uppidi.com/xpufx-org/paseo";
+  const realExecFile = promisify(execFile);
+
+  let tempDir: string;
+  let queueDir: string;
+  let stateDir: string;
+  let mergeEventLogPath: string;
+  let remoteDir: string;
+  let checkoutDir: string;
+  let workDir: string;
+  let paseoCalls: string[][];
+
+  function git(cwd: string, ...args: string[]): string {
+    return execFileSync(
+      "git",
+      ["-c", "user.email=test@example.com", "-c", "user.name=Fleet Test", ...args],
+      { cwd, encoding: "utf8" },
+    ).trim();
+  }
+
+  function initRepo(): void {
+    remoteDir = join(tempDir, "remote.git");
+    checkoutDir = join(tempDir, "checkout");
+    workDir = join(tempDir, "work");
+    execFileSync("git", ["init", "--bare", "--initial-branch=main", remoteDir]);
+    execFileSync("git", ["clone", remoteDir, checkoutDir]);
+    execFileSync("git", ["clone", remoteDir, workDir]);
+    writeFileSync(join(workDir, "README.md"), "one\n");
+    git(workDir, "add", "README.md");
+    git(workDir, "commit", "-m", "init: seed repo");
+    git(workDir, "push", "origin", "main");
+    git(checkoutDir, "fetch", "origin");
+    git(checkoutDir, "merge", "--ff-only", "origin/main");
+  }
+
+  function pushCommit(file: string, body: string, message: string): void {
+    writeFileSync(join(workDir, file), body);
+    git(workDir, "add", file);
+    git(workDir, "commit", "-m", message);
+    git(workDir, "push", "origin", "main");
+  }
+
+  function headOf(dir: string): string {
+    return git(dir, "rev-parse", "HEAD");
+  }
+
+  function makeRouter(overrides: Partial<HookRouterOptions> = {}): HookRouter {
+    return new HookRouter(null, {
+      queueDir,
+      stateDir,
+      port: 0,
+      mergeEventLogPath,
+      ...overrides,
+    });
+  }
+
+  function mergedPrBody(): any {
+    return {
+      action: "closed",
+      repository: { full_name: REPO, html_url: REPO_URL, clone_url: `${REPO_URL}.git` },
+      pull_request: { number: 7, title: "fix: merged", merged: true, html_url: `${REPO_URL}/pulls/7` },
+      sender: { login: "xpufx" },
+    };
+  }
+
+  function reloadCalls(): string[][] {
+    return paseoCalls.filter((args) => args[0] === "plugin" && args[1] === "reload");
+  }
+
+  function sentMessages(agentId: string): string[] {
+    return paseoCalls
+      .filter((args) => args[0] === "send" && args.includes(agentId))
+      .map((args) => String(args[args.length - 1]));
+  }
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "paseo-merge-event-test-"));
+    queueDir = join(tempDir, "queues");
+    stateDir = join(tempDir, "state");
+    mergeEventLogPath = join(tempDir, "merge-events.json");
+    paseoCalls = [];
+    initRepo();
+    // Real git in the throwaway repos; the `paseo` client is stubbed so no live
+    // plugin reload or agent delivery ever runs in the test.
+    setExecFileAsyncForTest(async (file: string, args: readonly string[], opts?: unknown) => {
+      if (file === "paseo") {
+        paseoCalls.push([...args]);
+        return { stdout: "", stderr: "" };
+      }
+      return (await realExecFile(file, args as string[], opts as any)) as any;
+    });
+  });
+
+  afterEach(() => {
+    setExecFileAsyncForTest(null);
+    try {
+      rmSync(tempDir, { recursive: true, force: true });
+    } catch {}
+  });
+
+  it("fast-forwards a merged repo, reloads the plugin, and announces from->to with the applied titles", async () => {
+    const router = makeRouter({
+      mergeEventHooks: { [REPO]: { checkoutPath: checkoutDir, pluginId: "uppidi-fleet" } },
+    });
+    router.writeFrontDesk("frontdesk-agent");
+    router.writeOrchestrator(REPO, "orchestrator-agent");
+    const before = headOf(checkoutDir);
+    pushCommit("fix-a.txt", "a\n", "fix(uppidi-fleet): first merged fix (#1068)");
+    pushCommit("fix-b.txt", "b\n", "fix(uppidi-fleet): second merged fix (#1072)");
+
+    const res = await router.runMergeEvent(mergedPrBody());
+
+    assert.equal(res.status, "fast-forwarded");
+    assert.equal(res.fastForwarded, true);
+    assert.equal(res.reloaded, true);
+    const after = headOf(checkoutDir);
+    assert.notEqual(after, before);
+    assert.equal(res.fromSha, before.slice(0, 7));
+    assert.equal(res.toSha, after.slice(0, 7));
+    assert.deepEqual(res.titles, [
+      "fix(uppidi-fleet): first merged fix (#1068)",
+      "fix(uppidi-fleet): second merged fix (#1072)",
+    ]);
+    assert.deepEqual(reloadCalls(), [["plugin", "reload", "uppidi-fleet"]]);
+
+    const frontDesk = sentMessages("frontdesk-agent").join("\n");
+    const orchestrator = sentMessages("orchestrator-agent").join("\n");
+    assert.match(frontDesk, /Merge Event/);
+    assert.match(frontDesk, /first merged fix/);
+    assert.match(orchestrator, /Merge Event/);
+    assert.match(orchestrator, /second merged fix/);
+
+    const records = readMergeEventRecords(mergeEventLogPath);
+    assert.equal(records.length, 1);
+    assert.equal(records[0].repo, REPO_KEY);
+    assert.equal(records[0].fromSha, before.slice(0, 7));
+    assert.equal(records[0].toSha, after.slice(0, 7));
+    assert.equal(records[0].status, "fast-forwarded");
+    assert.equal(records[0].reloaded, true);
+  });
+
+  it("skips a dirty checkout and reports exactly why", async () => {
+    const router = makeRouter({
+      mergeEventHooks: { [REPO]: { checkoutPath: checkoutDir, pluginId: "uppidi-fleet" } },
+    });
+    writeFileSync(join(checkoutDir, "README.md"), "dirty local edit\n");
+    const before = headOf(checkoutDir);
+    pushCommit("fix.txt", "x\n", "fix: remote change");
+
+    const res = await router.runMergeEvent(mergedPrBody());
+
+    assert.equal(res.status, "skipped");
+    assert.match(res.reason, /dirty/);
+    assert.match(res.reason, /README\.md/);
+    assert.equal(headOf(checkoutDir), before);
+    assert.equal(reloadCalls().length, 0);
+    const records = readMergeEventRecords(mergeEventLogPath);
+    assert.equal(records.length, 1);
+    assert.equal(records[0].status, "skipped");
+  });
+
+  it("skips a divergent checkout without merging and reports the divergence", async () => {
+    const router = makeRouter({
+      mergeEventHooks: { [REPO]: { checkoutPath: checkoutDir, pluginId: "uppidi-fleet" } },
+    });
+    writeFileSync(join(checkoutDir, "local.txt"), "local\n");
+    git(checkoutDir, "add", "local.txt");
+    git(checkoutDir, "commit", "-m", "local: diverging commit");
+    const localHead = headOf(checkoutDir);
+    pushCommit("remote.txt", "remote\n", "fix: remote commit");
+
+    const res = await router.runMergeEvent(mergedPrBody());
+
+    assert.equal(res.status, "skipped");
+    assert.match(res.reason, /diverged/);
+    assert.equal(headOf(checkoutDir), localHead);
+    assert.equal(reloadCalls().length, 0);
+  });
+
+  it("fast-forwards without reloading when no plugin is bound", async () => {
+    const router = makeRouter({
+      mergeEventHooks: { [REPO]: { checkoutPath: checkoutDir } },
+    });
+    pushCommit("fix.txt", "x\n", "fix: no plugin bound");
+
+    const res = await router.runMergeEvent(mergedPrBody());
+
+    assert.equal(res.status, "fast-forwarded");
+    assert.equal(res.reloaded, false);
+    assert.match(res.record!.reloadReason, /no plugin bound/);
+    assert.equal(reloadCalls().length, 0);
+  });
+
+  it("is a no-op for a repo with no merge-event mapping", async () => {
+    const router = makeRouter({ mergeEventHooks: {} });
+    const before = headOf(checkoutDir);
+    pushCommit("fix.txt", "x\n", "fix: unmapped");
+
+    const res = await router.runMergeEvent(mergedPrBody());
+
+    assert.equal(res.acted, false);
+    assert.match(res.reason, /no merge-event mapping/);
+    assert.equal(headOf(checkoutDir), before);
+    assert.equal(readMergeEventRecords(mergeEventLogPath).length, 0);
+  });
+
+  it("is idempotent: a merge with nothing new announces already current", async () => {
+    const router = makeRouter({
+      mergeEventHooks: { [REPO]: { checkoutPath: checkoutDir, pluginId: "uppidi-fleet" } },
+    });
+    router.writeFrontDesk("frontdesk-agent");
+    pushCommit("fix.txt", "x\n", "fix: only merge");
+    await router.runMergeEvent(mergedPrBody());
+    paseoCalls = [];
+
+    const res = await router.runMergeEvent(mergedPrBody());
+
+    assert.equal(res.status, "already-current");
+    assert.equal(res.alreadyCurrent, true);
+    assert.match(res.reason, /already current/);
+    assert.match(sentMessages("frontdesk-agent").join("\n"), /already current/);
+    assert.equal(reloadCalls().length, 0);
+  });
+
+  it("resolves a binding across bare and forge-qualified repo keys", () => {
+    assert.deepEqual(
+      resolveMergeEventHook(REPO_KEY, { [REPO]: { checkoutPath: "/tmp/x" } }),
+      { checkoutPath: "/tmp/x" },
+    );
+    assert.deepEqual(
+      resolveMergeEventHook(REPO, { [REPO_KEY]: { checkoutPath: "/tmp/y", pluginId: "p" } }),
+      { checkoutPath: "/tmp/y", pluginId: "p" },
+    );
+    assert.equal(resolveMergeEventHook(REPO, {}), null);
+  });
+
+  it("formats the applied commit titles into the notice body", () => {
+    const body = formatMergeEventNotice({
+      repo: REPO_KEY,
+      checkoutPath: "/tmp/checkout",
+      pluginId: "uppidi-fleet",
+      timestamp: "2026-10-07T00:00:00.000Z",
+      fromSha: "aaaaaaa",
+      toSha: "bbbbbbb",
+      titles: ["fix: one", "fix: two"],
+      fastForwarded: true,
+      alreadyCurrent: false,
+      reloaded: true,
+      reloadReason: "ok",
+      newRevision: "bbbbbbb",
+      status: "fast-forwarded",
+      reason: "2 commit(s) applied; reload ok",
+    });
+    assert.match(body, /aaaaaaa.*bbbbbbb/);
+    assert.match(body, /fix: one/);
+    assert.match(body, /fix: two/);
+  });
+
+  it("dispatches a merged pull_request.closed event to the merge-event handler", async () => {
+    const router = makeRouter();
+    const seen: any[] = [];
+    (router as any).runMergeEvent = async (body: any) => {
+      seen.push(body);
+      return { acted: true, reason: "stub" };
+    };
+
+    await router.runDirectActions("pull_request", { action: "closed", pull_request: { merged: true } });
+    await router.runDirectActions("pull_request", { action: "closed", pull_request: { merged: false } });
+    await router.runDirectActions("pull_request", { action: "opened", pull_request: { merged: true } });
+
+    assert.equal(seen.length, 1);
+  });
+});
+
+describe("HookRouter Paseo SDK capture and host checkout fallback (#1170)", () => {
+  let tempDir: string;
+  let queueDir: string;
+  let stateDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "paseo-sdk-test-"));
+    queueDir = join(tempDir, "queues");
+    stateDir = join(tempDir, "state");
+    clearHookLogs();
+  });
+
+  afterEach(() => {
+    try {
+      rmSync(tempDir, { recursive: true, force: true });
+    } catch {}
+    setActivePaseo(null);
+    setActiveHookRouter(null);
+  });
+
+  it("retains active Paseo SDK instance across setActivePaseo and assigns to active and new routers", () => {
+    const mockPaseo1 = { workspaces: { list: async () => ({ entries: [] }) } } as any;
+    const mockPaseo2 = { workspaces: { list: async () => ({ entries: [] }) } } as any;
+
+    const router1 = new HookRouter({} as any, { queueDir, stateDir, port: 0 });
+    assert.equal(router1.getPaseo(), null);
+
+    // Set globally via module function
+    setActivePaseo(mockPaseo1);
+
+    // Active router registered via setActiveHookRouter picks up activePaseoInstance
+    setActiveHookRouter(router1);
+    assert.equal(router1.getPaseo(), mockPaseo1);
+    assert.equal(getActiveHookRouter(), router1);
+
+    // HookRouter.setActivePaseo updates active router
+    HookRouter.setActivePaseo(mockPaseo2);
+    assert.equal(router1.getPaseo(), mockPaseo2);
+
+    // New router registered gets active Paseo
+    const router2 = new HookRouter({} as any, { queueDir, stateDir, port: 0 });
+    setActiveHookRouter(router2);
+    assert.equal(router2.getPaseo(), mockPaseo2);
+
+    // Direct instance method works as well
+    router2.setActivePaseo(mockPaseo1);
+    assert.equal(router2.getPaseo(), mockPaseo1);
+  });
+
+  it("resolveWorkspaceCanonical returns null when daemon list has no match and does not fall back to host checkout", async () => {
+    const fakeHome = mkdtempSync(join(tempDir, "fake-home-"));
+    const origHome = process.env.HOME;
+    process.env.HOME = fakeHome;
+
+    try {
+      const repoName = "test-repo-fallback";
+      const checkoutDir = join(fakeHome, "code", repoName);
+      mkdirSync(checkoutDir, { recursive: true });
+
+      const mockPaseo = {
+        workspaces: {
+          list: async () => ({ entries: [] }),
+        },
+      } as any;
+
+      const router = new HookRouter({} as any, { queueDir, stateDir, port: 0 });
+      router.setActivePaseo(mockPaseo);
+
+      const resolved = await (router as any).resolveWorkspaceCanonical(repoName);
+      assert.equal(resolved, null);
+    } finally {
+      process.env.HOME = origHome;
+    }
+  });
+
+  it("resolveWorkspaceCanonical resolves when daemon list matches registered workspace", async () => {
+    const repoName = "test-repo-registered";
+    const mockPaseo = {
+      workspaces: {
+        list: async () => ({
+          entries: [
+            {
+              workspaceId: "wks_registered",
+              cwd: "/some/path/to/test-repo-registered",
+              repo: repoName,
+            },
+          ],
+        }),
+      },
+    } as any;
+
+    const router = new HookRouter({} as any, { queueDir, stateDir, port: 0 });
+    router.setActivePaseo(mockPaseo);
+
+    const resolved = await (router as any).resolveWorkspaceCanonical(repoName);
+    assert.deepEqual(resolved, {
+      workspaceId: "wks_registered",
+      cwd: "/some/path/to/test-repo-registered",
+      projectId: undefined,
+      displayName: undefined,
+      repo: repoName,
+    });
+  });
+
+  it("resolveWorkspaceCanonical returns null when paseo is null", async () => {
+    const fakeHome = mkdtempSync(join(tempDir, "fake-home-"));
+    const origHome = process.env.HOME;
+    process.env.HOME = fakeHome;
+
+    try {
+      const repoName = "test-repo-no-paseo";
+      const checkoutDir = join(fakeHome, "code", repoName);
+      mkdirSync(checkoutDir, { recursive: true });
+
+      const router = new HookRouter({} as any, { queueDir, stateDir, port: 0 });
+      assert.equal(router.getPaseo(), null);
+
+      const resolved = await (router as any).resolveWorkspaceCanonical(repoName);
+      assert.equal(resolved, null);
+    } finally {
+      process.env.HOME = origHome;
+    }
+  });
+});
+
+describe("HookRouter fleet dormancy and hibernation (#1181)", () => {
+  let tempDir: string;
+  let queueDir: string;
+  let stateDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "paseo-dormancy-test-"));
+    queueDir = join(tempDir, "queues");
+    stateDir = join(tempDir, "state");
+  });
+
+  afterEach(() => {
+    try {
+      rmSync(tempDir, { recursive: true, force: true });
+    } catch {
+      // ignore
+    }
+  });
+
+  describe("WAKEUP_RULES and isActionableWakeupEvent", () => {
+    it("matches operator slash commands in comments and reviews", () => {
+      assert.equal(
+        isActionableWakeupEvent("issue_comment", {
+          comment: { body: "Hey @agent, please /orchestrator inspect this issue" },
+        }),
+        true,
+      );
+      assert.equal(
+        isActionableWakeupEvent("pull_request_review", {
+          review: { body: "Looks solid, /approve" },
+        }),
+        true,
+      );
+      assert.equal(
+        isActionableWakeupEvent("issue_comment", {
+          comment: { body: "/sweep" },
+        }),
+        true,
+      );
+      assert.equal(SLASH_SWEEP_RE.test("/sweep"), true);
+      assert.equal(SLASH_SWEEP_RE.test("please /sweep now"), true);
+      assert.equal(SLASH_SWEEP_RE.test("/sweeper"), false);
+    });
+
+    it("matches action-token label additions", () => {
+      const actionableLabels = [
+        "attention/orchestrator",
+        "attention/frontdesk",
+        "priority/sos",
+        "state/review",
+        "review/needed",
+        "flag/stop-work",
+      ];
+      for (const name of actionableLabels) {
+        assert.equal(
+          isActionableWakeupEvent("issues", {
+            action: "labeled",
+            label: { name },
+          }),
+          true,
+          `expected label ${name} to trigger wakeup`,
+        );
+      }
+      // Unlabeled action-token is passive, not a wakeup
+      assert.equal(
+        isActionableWakeupEvent("issues", {
+          action: "unlabeled",
+          label: { name: "attention/orchestrator" },
+        }),
+        false,
+      );
+    });
+
+    it("matches lifecycle advance events", () => {
+      assert.equal(isActionableWakeupEvent("issues", { action: "opened" }), true);
+      assert.equal(isActionableWakeupEvent("issues", { action: "reopened" }), true);
+      assert.equal(isActionableWakeupEvent("pull_request", { action: "opened" }), true);
+      assert.equal(isActionableWakeupEvent("pull_request", { action: "ready_for_review" }), true);
+    });
+
+    it("treats passive noise, self-stamped comments, closed issues, and metadata labels as non-actionable", () => {
+      // Self-stamped comments
+      assert.equal(
+        isActionableWakeupEvent("issue_comment", {
+          action: "created",
+          comment: {
+            body: "Completed task\n\n---\n<sub>🤖 **Worker** (`abc1234`) · `model` · `repo:branch` · _now_</sub>",
+          },
+        }),
+        false,
+      );
+
+      // Issues closed
+      assert.equal(isActionableWakeupEvent("issues", { action: "closed" }), false);
+
+      // Unlabeled
+      assert.equal(
+        isActionableWakeupEvent("issues", {
+          action: "unlabeled",
+          label: { name: "state/wip" },
+        }),
+        false,
+      );
+
+      // Cosmetic / metadata labels
+      assert.equal(
+        isActionableWakeupEvent("issues", {
+          action: "labeled",
+          label: { name: "format/needed" },
+        }),
+        false,
+      );
+      assert.equal(
+        isActionableWakeupEvent("issues", {
+          action: "labeled",
+          label: { name: "size/m" },
+        }),
+        false,
+      );
+      assert.equal(
+        isActionableWakeupEvent("issues", {
+          action: "labeled",
+          label: { name: "target/upstream" },
+        }),
+        false,
+      );
+
+      // Unknown / cosmetic edits
+      assert.equal(isActionableWakeupEvent("issues", { action: "edited" }), false);
+      assert.equal(isActionableWakeupEvent("pull_request", { action: "synchronize" }), false);
+    });
+  });
+
+  describe("dormancy state tracking (isDormant, refreshDormancy, exitQuiescence)", () => {
+    it("evaluates isDormant correctly based on queues, unstaffed enrolled queues, and running turns", () => {
+      const router = new HookRouter({} as any, { queueDir, stateDir, port: 0 });
+
+      // Clean empty router with no agent map -> dormant
+      assert.equal(router.isDormant(), true);
+
+      // If there are live running turns in agentMap -> not dormant
+      const runningMap = new Map<string, any>([
+        ["ag-1", { id: "ag-1", status: "running" }],
+      ]);
+      assert.equal(router.isDormant(runningMap), false);
+
+      const busyMap = new Map<string, any>([
+        ["ag-2", { id: "ag-2", status: "idle", activeTurn: { id: "turn-1" } }],
+      ]);
+      assert.equal(router.isDormant(busyMap), false);
+
+      const idleMap = new Map<string, any>([
+        ["ag-3", { id: "ag-3", status: "idle" }],
+      ]);
+      assert.equal(router.isDormant(idleMap), true);
+
+      // If halted -> never dormant
+      router.halt();
+      assert.equal(router.isDormant(), false);
+      router.resume("all");
+      (router as any).isHaltedState = false;
+
+      // If queues have messages -> not dormant
+      router.enqueue("xpufx-org/test", "Hello queue");
+      assert.equal(router.isDormant(), false);
+    });
+
+    it("refreshes dormancy and transitions quiescent state", () => {
+      const router = new HookRouter({} as any, { queueDir, stateDir, port: 0 });
+      assert.equal(router.isQuiescent, false);
+
+      // refresh with idle fleet -> enters quiescent
+      const q = router.refreshDormancy(new Map());
+      assert.equal(q, true);
+      assert.equal(router.isQuiescent, true);
+      assert.ok(router.lastQuiescenceChangeAt);
+
+      // explicit exitQuiescence leaves quiescent mode
+      router.exitQuiescence("test wakeup");
+      assert.equal(router.isQuiescent, false);
+    });
+  });
+
+  describe("delta-gated board sweep notification suppression", () => {
+    it("suppresses Front Desk notification when actionable candidates digest is unchanged", async () => {
+      const deliveries: Array<{ agentId: string; prompt: string }> = [];
+      const mockPaseo = {
+        agents: {
+          ref: (id: string) => ({
+            send: async (prompt: string) => {
+              deliveries.push({ agentId: id, prompt });
+              return { ok: true };
+            },
+          }),
+        },
+      } as any;
+
+      const router = new HookRouter({} as any, { queueDir, stateDir, port: 0 });
+      router.setActivePaseo(mockPaseo);
+
+      // Register front desk agent so notifications have a target
+      router.writeFrontDesk("fd-1", "operator");
+
+      const candidates = [
+        {
+          number: 101,
+          title: "Fix issue",
+          labels: [{ name: "attention/orchestrator" }],
+          category: "actionable",
+          is_dispatchable: true,
+          created_at: new Date().toISOString(),
+          comments: 2,
+        },
+      ];
+
+      const io: IssuesCheckIo = {
+        getOpenIssues: async () => ({
+          ok: true,
+          issues: candidates as any,
+        }),
+        getLatestComments: async () => [],
+        getIssueComments: async () => [],
+        runStaleWipCommand: async () => true,
+        loadCache: async () => ({}),
+        saveCache: async () => {},
+      };
+
+      // First sweep: actionable work found, candidate digest is recorded, Front Desk is notified
+      const firstSweep = await router.runBoardSweep(["xpufx-org/paseo"], io);
+      assert.equal(firstSweep.ok, true);
+      assert.equal(firstSweep.notified, 1);
+      assert.equal(deliveries.length, 1);
+      assert.ok(deliveries[0].prompt.includes("xpufx-org/paseo: 1 actionable"));
+
+      // Second sweep with identical candidates: suppressed due to delta gating
+      const secondSweep = await router.runBoardSweep(["xpufx-org/paseo"], io);
+      assert.equal(secondSweep.ok, true);
+      assert.equal(secondSweep.notified, 0);
+      assert.equal(deliveries.length, 1, "expected no new notification delivered");
+
+      // Third sweep with explicit: true: delivers despite unchanged digest
+      const explicitSweep = await router.runBoardSweep(["xpufx-org/paseo"], io, { explicit: true });
+      assert.equal(explicitSweep.ok, true);
+      assert.equal(explicitSweep.notified, 1);
+      assert.equal(deliveries.length, 2, "expected explicit sweep to deliver");
+
+      // Fourth sweep with changed candidates: delivers again
+      const changedCandidates = [
+        ...candidates,
+        {
+          number: 102,
+          title: "Another issue",
+          labels: [{ name: "priority/sos" }],
+          category: "actionable",
+          is_dispatchable: true,
+          created_at: new Date().toISOString(),
+          comments: 0,
+        },
+      ];
+      const changedIo: IssuesCheckIo = {
+        ...io,
+        getOpenIssues: async () => ({
+          ok: true,
+          issues: changedCandidates as any,
+        }),
+      };
+      const fourthSweep = await router.runBoardSweep(["xpufx-org/paseo"], changedIo);
+      assert.equal(fourthSweep.ok, true);
+      assert.equal(fourthSweep.notified, 1);
+      assert.equal(deliveries.length, 3, "expected delivery when candidate set changes");
+    });
+
+    it("re-emits an unchanged attention/orchestrator ticket on the periodic reconciliation pass (#1263)", async () => {
+      const deliveries: Array<{ agentId: string; prompt: string }> = [];
+      const mockPaseo = {
+        agents: {
+          ref: (id: string) => ({
+            send: async (prompt: string) => {
+              deliveries.push({ agentId: id, prompt });
+              return { ok: true };
+            },
+          }),
+        },
+      } as any;
+
+      const router = new HookRouter({} as any, {
+        queueDir,
+        stateDir,
+        port: 0,
+        boardReconciliationIntervalMs: 2 * 60 * 60 * 1000,
+      });
+      router.setActivePaseo(mockPaseo);
+      router.writeFrontDesk("fd-1", "operator");
+
+      const issue = {
+        number: 1020,
+        title: "MCP injection",
+        state: "open",
+        updated_at: "2026-10-06T17:11:38Z",
+        created_at: "2026-10-06T17:11:38Z",
+        comments: 0,
+        labels: [{ name: "attention/orchestrator" }, { name: "kind/feature" }],
+      };
+      const io: IssuesCheckIo = {
+        getOpenIssues: async () => ({ ok: true, issues: [issue] as any }),
+        getLatestComments: async () => [],
+        getIssueComments: async () => [],
+        runStaleWipCommand: async () => true,
+        // Byte-matches the persisted signature, so the ticket is seen and unchanged.
+        loadCache: async () => ({
+          "1020": {
+            updated_at: "2026-10-06T17:11:38Z",
+            labels: ["attention/orchestrator", "kind/feature"],
+            comments_count: 0,
+          },
+        }),
+        saveCache: async () => {},
+      };
+
+      const t0 = 1_800_000_000_000;
+      const firstSweep = await router.runBoardSweep(["xpufx-org/paseo"], io, { now: t0 });
+      assert.equal(firstSweep.notified, 1);
+      assert.equal(deliveries.length, 1);
+
+      // Before the interval: an unchanged digest suppresses re-delivery.
+      const suppressed = await router.runBoardSweep(["xpufx-org/paseo"], io, { now: t0 + 60_000 });
+      assert.equal(suppressed.notified, 0);
+      assert.equal(deliveries.length, 1, "expected no delivery before the reconciliation interval");
+
+      // At the interval: the full reconciliation pass re-emits the ticket.
+      const reconciled = await router.runBoardSweep(["xpufx-org/paseo"], io, {
+        now: t0 + 2 * 60 * 60 * 1000,
+      });
+      assert.equal(reconciled.notified, 1);
+      assert.equal(deliveries.length, 2, "expected reconciliation to re-deliver the unchanged ticket");
+      assert.ok(deliveries[1].prompt.includes("xpufx-org/paseo: 1 actionable"));
+    });
+  });
+});
+
+
+describe("repo automation tiers (#1282)", () => {
+  let tempDir: string;
+  let queueDir: string;
+  let stateDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "paseo-automation-tier-test-"));
+    queueDir = join(tempDir, "queues");
+    stateDir = join(tempDir, "state");
+    clearSettingsStorage();
+  });
+
+  afterEach(() => {
+    try {
+      rmSync(tempDir, { recursive: true, force: true });
+    } catch {}
+  });
+
+  function makeRouter(overrides: Partial<HookRouterOptions> = {}): HookRouter {
+    return new HookRouter(null, { queueDir, stateDir, port: 0, ...overrides });
+  }
+
+  function dispatchableIo(): IssuesCheckIo {
+    return {
+      getOpenIssues: async () => ({
+        ok: true,
+        issues: [
+          {
+            number: 5,
+            title: "t",
+            state: "open",
+            updated_at: "2026-01-01T00:00:00Z",
+            created_at: "2026-01-01T00:00:00Z",
+            comments: 0,
+            labels: [
+              { name: "spec/2-approved" },
+              { name: "attention/1-agent" },
+              { name: "target/uppidi-fleet" },
+            ],
+          },
+        ],
+      }),
+      getLatestComments: async () => [],
+      getIssueComments: async () => [],
+      runStaleWipCommand: async () => true,
+      loadCache: async () => ({
+        5: { updated_at: "2025-12-01T00:00:00Z", labels: ["stale-marker"], comments_count: 0 },
+      }),
+      saveCache: async () => {},
+    };
+  }
+
+  it("defaults to full-active and applies explicit tiers authoritatively", () => {
+    const router = makeRouter();
+    assert.equal(router.getRepoAutomationTier("xpufx-org/paseo"), "full-active");
+
+    const paused = router.toggleRepoAutomationTier("xpufx-org/paseo", "paused");
+    assert.equal(paused.tier, "paused");
+    assert.equal(paused.isPaused, true);
+    assert.deepEqual(router.getPausedRepos(), ["xpufx-org/paseo"]);
+    assert.equal(router.getRepoAutomationTier("forge.mrs.uppidi.com/xpufx-org/paseo"), "paused");
+
+    const kanban = router.toggleRepoAutomationTier("xpufx-org/paseo", "kanban-only");
+    assert.equal(kanban.tier, "kanban-only");
+    assert.equal(kanban.isKanbanOnly, true);
+    assert.deepEqual(router.getPausedRepos(), [], "tier set is authoritative, not additive");
+    assert.deepEqual(router.getKanbanOnlyRepos(), ["xpufx-org/paseo"]);
+
+    const active = router.toggleRepoAutomationTier("xpufx-org/paseo", "full-active");
+    assert.equal(active.tier, "full-active");
+    assert.deepEqual(router.getKanbanOnlyRepos(), []);
+    assert.deepEqual(router.getPausedRepos(), []);
+  });
+
+  it("persists the tier through plugin settings", () => {
+    const router = makeRouter();
+    router.toggleRepoAutomationTier("xpufx-org/paseo", "kanban-only");
+    const config = loadRouterConfig();
+    assert.deepEqual(config.kanbanOnlyRepos, ["xpufx-org/paseo"]);
+    assert.deepEqual(config.pausedRepos, []);
+  });
+
+  it("reports kanban-only and paused repos through getFleetRosterInfo", () => {
+    const router = makeRouter();
+    setActiveHookRouter(router);
+    try {
+      router.toggleRepoAutomationTier("xpufx-org/paseo", "kanban-only");
+      router.toggleRepoAutomationTier("xpufx-org/platform", "paused");
+      const roster = getFleetRosterInfo();
+      assert.deepEqual(roster.kanbanOnlyRepos, ["xpufx-org/paseo"]);
+      assert.deepEqual(roster.pausedRepos, ["xpufx-org/platform"]);
+    } finally {
+      setActiveHookRouter(null);
+    }
+  });
+
+  it("bars every candidate from dispatch for kanban-only repos", async () => {
+    const router = makeRouter();
+    router.toggleRepoAutomationTier("xpufx-org/paseo", "kanban-only");
+    const res = await router.runBoardCheck("xpufx-org/paseo", "forge.test", dispatchableIo());
+    assert.equal(res.candidates.length, 1);
+    assert.equal(res.candidates[0].is_dispatchable, false);
+    assert.equal(
+      res.candidates[0].reason,
+      "Kanban-only passive repository (automation barred)",
+    );
+  });
+
+  it("buffers dispatchable candidates for paused repos", async () => {
+    const router = makeRouter();
+    router.toggleRepoAutomationTier("xpufx-org/paseo", "paused");
+    const res = await router.runBoardCheck("xpufx-org/paseo", "forge.test", dispatchableIo());
+    assert.equal(res.candidates[0].is_dispatchable, false);
+    assert.equal(res.candidates[0].reason, "Repository dispatch is paused (queue buffered)");
+  });
+
+  it("leaves full-active candidates dispatchable", async () => {
+    const router = makeRouter();
+    const res = await router.runBoardCheck("xpufx-org/paseo", "forge.test", dispatchableIo());
+    assert.equal(res.candidates[0].is_dispatchable, true);
+  });
+
+  it("suppresses queue drain and auto-staffing for kanban-only repositories", async () => {
+    const router = makeRouter();
+    router.enrollRepo("xpufx-org/kanban-passive");
+    router.toggleRepoAutomationTier("xpufx-org/kanban-passive", "kanban-only");
+
+    assert.equal(router.isRepoDispatchSuppressed("xpufx-org/kanban-passive"), true);
+    assert.equal(router.isRepoDispatchSuppressed("xpufx-org/other-active"), false);
+
+    // auto-ensure returns null because autonomous dispatch is barred
+    const ensured = await router.ensureUnstaffedEnrolledRepo("xpufx-org/kanban-passive");
+    assert.equal(ensured, null);
+
+    // enqueued work does not trigger drain
+    const entry = router.enqueue("xpufx-org/kanban-passive", "test message", false);
+    assert.ok(entry);
+    assert.equal(router.getQueue("xpufx-org/kanban-passive").length, 1);
+  });
+});
+
+describe("backward transition steering (#1282)", () => {
+  const REPO = "xpufx-org/paseo";
+  const REPO_URL = "https://forge.mrs.uppidi.com/xpufx-org/paseo";
+  const REPO_KEY = "forge.mrs.uppidi.com/xpufx-org/paseo";
+
+  let tempDir: string;
+  let queueDir: string;
+  let stateDir: string;
+  let requests: Array<{ url: string; method: string; body: any }>;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "paseo-backward-transition-test-"));
+    queueDir = join(tempDir, "queues");
+    stateDir = join(tempDir, "state");
+    requests = [];
+    setTokenResolverForTest(async () => "test-token");
+  });
+
+  afterEach(() => {
+    setFetchForTest(null);
+    setTokenResolverForTest(null);
+    try {
+      rmSync(tempDir, { recursive: true, force: true });
+    } catch {}
+  });
+
+  type FetchReply = { status?: number; data?: any };
+  function installFetch(
+    handler: (req: { url: string; method: string; body: any }) => FetchReply | undefined,
+  ) {
+    setFetchForTest(async (input: string, init?: any) => {
+      const method = String(init?.method ?? "GET").toUpperCase();
+      const body = init?.body ? JSON.parse(init.body) : undefined;
+      const req = { url: input, method, body };
+      requests.push(req);
+      const reply = handler(req) ?? {};
+      const status = reply.status ?? 200;
+      return {
+        ok: status >= 200 && status < 300,
+        status,
+        statusText: "",
+        json: async () => reply.data ?? {},
+      };
+    });
+  }
+
+  function makeRouter(overrides: Partial<HookRouterOptions> = {}): HookRouter {
+    return new HookRouter(null, {
+      queueDir,
+      stateDir,
+      port: 0,
+      backwardTransitionSteeringEnabled: true,
+      ...overrides,
+    });
+  }
+
+  function backwardBody() {
+    return {
+      action: "unlabeled",
+      repository: { full_name: REPO, html_url: REPO_URL, clone_url: `${REPO_URL}.git` },
+      sender: { login: "operator" },
+      label: { name: "state/review" },
+      issue: {
+        number: 42,
+        title: "Rework the widget",
+        state: "open",
+        html_url: `${REPO_URL}/issues/42`,
+        labels: [{ name: "state/wip" }],
+      },
+    };
+  }
+
+  it("detects only a review-removal that lands on a wip label", () => {
+    assert.equal(isBackwardStateTransition(backwardBody()), true);
+    assert.equal(
+      isBackwardStateTransition({ ...backwardBody(), action: "labeled" }),
+      false,
+    );
+    assert.equal(
+      isBackwardStateTransition({
+        ...backwardBody(),
+        label: { name: "state/wip" },
+        issue: { labels: [{ name: "state/review" }] },
+      }),
+      false,
+    );
+    assert.equal(
+      isBackwardStateTransition({
+        ...backwardBody(),
+        issue: { labels: [{ name: "kind/bug" }] },
+      }),
+      false,
+    );
+    assert.equal(isBackwardStateTransition({ action: "unlabeled" }), false);
+  });
+
+  it("posts the change-request steering comment and notifies the repo queue", async () => {
+    const router = makeRouter();
+    installFetch((req) => {
+      if (req.method === "POST" && req.url.endsWith("/comments")) return { data: { id: 1 } };
+      return { status: 404 };
+    });
+
+    const res = await router.runBackwardTransitionSteering(backwardBody());
+    assert.equal(res.acted, true);
+    assert.equal(res.commented, true);
+    assert.equal(res.notified, true);
+
+    const comment = requests.find((r) => r.method === "POST" && r.url.endsWith("/comments"));
+    assert.ok(comment);
+    assert.equal(
+      comment!.url,
+      `https://forge.mrs.uppidi.com/api/v1/repos/${REPO}/issues/42/comments`,
+    );
+    assert.ok(comment!.body.body.includes(BACKWARD_TRANSITION_STEERING_MARKER));
+    assert.equal(router.getQueue(REPO_KEY).length, 1);
+  });
+
+  it("still notifies when the steering comment fails", async () => {
+    const router = makeRouter();
+    installFetch(() => ({ status: 500 }));
+    const res = await router.runBackwardTransitionSteering(backwardBody());
+    assert.equal(res.commented, false);
+    assert.equal(res.notified, true);
+    assert.equal(res.acted, true);
+  });
+
+  it("is disabled by default in test mode", async () => {
+    const router = new HookRouter(null, { queueDir, stateDir, port: 0 });
+    installFetch(() => ({ data: {} }));
+    const res = await router.runBackwardTransitionSteering(backwardBody());
+    assert.equal(res.acted, false);
+    assert.equal(res.reason, "backward transition steering disabled");
+    assert.equal(requests.length, 0);
+  });
+
+  it("does nothing for non-backward label changes", async () => {
+    const router = makeRouter();
+    installFetch(() => ({ data: {} }));
+    const res = await router.runBackwardTransitionSteering({
+      ...backwardBody(),
+      action: "labeled",
+      label: { name: "state/review" },
+    });
+    assert.equal(res.acted, false);
+    assert.equal(res.reason, "not a backward state transition");
+    assert.equal(requests.length, 0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Unified agent spawning & role-model whitelist enforcement (#1215)
+// ---------------------------------------------------------------------------
+
+describe("unified agent spawning endpoints (#1215)", () => {
+  let tempDir: string;
+  let queueDir: string;
+  let stateDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "paseo-spawn-test-"));
+    queueDir = join(tempDir, "queues");
+    stateDir = join(tempDir, "state");
+  });
+
+  afterEach(() => {
+    try {
+      rmSync(tempDir, { recursive: true, force: true });
+    } catch {}
+  });
+
+  it("POST /agents/spawn rejects invalid roles with 400", async () => {
+    const server = {
+      on: () => () => {},
+      before: () => () => {},
+      handle: () => {},
+      registerSettings: () => ({} as any),
+      registerProvider: () => {},
+    } as unknown as PluginServerContext;
+    const router = new HookRouter(server, { queueDir, stateDir, port: 0 });
+    await router.start();
+    try {
+      const res = await fetch(`http://127.0.0.1:${router.port}/agents/spawn`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role: "badger" }),
+      });
+      assert.equal(res.status, 400);
+      const body = await res.json();
+      assert.equal(body.ok, false);
+      assert.ok(body.error.includes("Invalid role"));
+    } finally {
+      await router.stop();
+    }
+  });
+
+  it("POST /agents/spawn validates model whitelist — allowed model succeeds", async () => {
+    const spawnedAgents: Array<{ title: string; prompt: string; labels: Record<string, string>; model: string }> = [];
+    const mockSpawnAgent = async (opts: {
+      title: string;
+      prompt: string;
+      cwd?: string;
+      workspaceId?: string;
+      mode?: string;
+      provider?: string;
+      model?: string;
+      labels?: Record<string, string>;
+    }) => {
+      spawnedAgents.push({
+        title: opts.title,
+        prompt: opts.prompt,
+        labels: opts.labels ?? {},
+        model: opts.model ?? "",
+      });
+      return { id: `spawned-${Date.now()}` };
+    };
+
+    // Determine a whitelisted orchestrator model from the current config
+    const roles = loadSavedRoleModels();
+    const orchConfig = roles["orchestrator"];
+    const whitelistedModel = orchConfig?.primaryModel || "antigravity-acp/gemini-3.8-flash-low";
+
+    const server = {
+      on: () => () => {},
+      before: () => () => {},
+      handle: () => {},
+      registerSettings: () => ({} as any),
+      registerProvider: () => {},
+    } as unknown as PluginServerContext;
+    const router = new HookRouter(server, {
+      queueDir,
+      stateDir,
+      port: 0,
+      spawnAgent: mockSpawnAgent,
+    });
+    await router.start();
+    try {
+      const res = await fetch(`http://127.0.0.1:${router.port}/agents/spawn`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          role: "orchestrator",
+          repo: "xpufx-org/test-repo",
+          model: whitelistedModel,
+        }),
+      });
+      assert.equal(res.status, 200);
+      const body = await res.json();
+      assert.equal(body.ok, true);
+      assert.ok(body.agentId);
+      assert.equal(body.role, "orchestrator");
+      assert.equal(spawnedAgents.length, 1);
+      assert.ok(spawnedAgents[0].prompt.includes(renderSkillDirective("orchestrator")));
+      assert.ok(spawnedAgents[0].labels["role"] === "orchestrator");
+    } finally {
+      await router.stop();
+    }
+  });
+
+  it("POST /agents/spawn rejects non-whitelisted model with 400", async () => {
+    const server = {
+      on: () => () => {},
+      before: () => () => {},
+      handle: () => {},
+      registerSettings: () => ({} as any),
+      registerProvider: () => {},
+    } as unknown as PluginServerContext;
+    const router = new HookRouter(server, { queueDir, stateDir, port: 0 });
+    await router.start();
+    try {
+      const res = await fetch(`http://127.0.0.1:${router.port}/agents/spawn`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          role: "worker",
+          repo: "xpufx-org/test-repo",
+          model: "nemotron-3.5-lightning-free",
+        }),
+      });
+      assert.equal(res.status, 400);
+      const body = await res.json();
+      assert.equal(body.ok, false);
+      assert.ok(body.error.includes("not authorized"));
+    } finally {
+      await router.stop();
+    }
+  });
+
+  it("POST /workers/spawn appends coding-agent skill directive and fleet role labels", async () => {
+    const spawnedAgents: Array<{ title: string; prompt: string; labels: Record<string, string> }> = [];
+    const mockSpawnAgent = async (opts: {
+      title: string;
+      prompt: string;
+      cwd?: string;
+      workspaceId?: string;
+      mode?: string;
+      provider?: string;
+      model?: string;
+      labels?: Record<string, string>;
+    }) => {
+      spawnedAgents.push({
+        title: opts.title,
+        prompt: opts.prompt,
+        labels: opts.labels ?? {},
+      });
+      return { id: `spawned-${Date.now()}` };
+    };
+
+    const server = {
+      on: () => () => {},
+      before: () => () => {},
+      handle: () => {},
+      registerSettings: () => ({} as any),
+      registerProvider: () => {},
+    } as unknown as PluginServerContext;
+    const router = new HookRouter(server, {
+      queueDir,
+      stateDir,
+      port: 0,
+      spawnAgent: mockSpawnAgent,
+    });
+    await router.start();
+    try {
+      const res = await fetch(`http://127.0.0.1:${router.port}/workers/spawn`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          repo: "xpufx-org/paseo",
+          issueIndex: 1144,
+        }),
+      });
+      assert.equal(res.status, 200);
+      const body = await res.json();
+      assert.equal(body.ok, true);
+      assert.ok(body.agentId);
+
+      assert.equal(spawnedAgents.length, 1);
+      const agent = spawnedAgents[0];
+      // Must include coding-agent skill directive
+      assert.ok(agent.prompt.includes("### Coding agent skill"), "Worker prompt must include coding-agent skill directive");
+      // Must include teax usage instructions
+      assert.ok(agent.prompt.includes("teax"), "Worker prompt must mention teax CLI");
+      assert.ok(agent.prompt.includes("-R xpufx-org/paseo"), "Worker prompt must show teax -R form");
+      // Must have fleet role label
+      assert.equal(agent.labels["fleet.role"], "worker");
+      assert.equal(agent.labels["role"], "worker");
+      assert.equal(agent.labels["category"], "coding-agent");
+      assert.equal(agent.labels["repo"], "forge.mrs.uppidi.com/xpufx-org/paseo");
+      assert.equal(agent.labels["fleet.issue"], "1144");
+    } finally {
+      await router.stop();
+    }
+  });
+
+  it("POST /frontdesk/spawn registers front desk in router state", async () => {
+    let registeredFrontDesk: string | null = null;
+    const mockSpawnAgent = async (opts: { title: string; prompt: string }) => {
+      return { id: `fd-spawned-${Date.now()}` };
+    };
+
+    const server = {
+      on: () => () => {},
+      before: () => () => {},
+      handle: () => {},
+      registerSettings: () => ({} as any),
+      registerProvider: () => {},
+    } as unknown as PluginServerContext;
+    const router = new HookRouter(server, {
+      queueDir,
+      stateDir,
+      port: 0,
+      spawnAgent: mockSpawnAgent,
+    });
+    await router.start();
+    try {
+      const res = await fetch(`http://127.0.0.1:${router.port}/frontdesk/spawn`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      assert.equal(res.status, 200);
+      const body = await res.json();
+      assert.equal(body.ok, true);
+      assert.ok(body.agentId);
+
+      // Verify front desk was registered
+      const infoRes = await fetch(`http://127.0.0.1:${router.port}/info`);
+      const infoBody = await infoRes.json();
+      assert.equal(infoBody.frontDeskAgentId, body.agentId);
+    } finally {
+      await router.stop();
+    }
+  });
+
+  it("POST /agents/spawn defaults model when omitted", async () => {
+    const spawnedModels: string[] = [];
+    const mockSpawnAgent = async (opts: { model?: string }) => {
+      spawnedModels.push(opts.model ?? "");
+      return { id: `default-model-spawn` };
+    };
+
+    // Get the expected front-desk default from config
+    const roles = loadSavedRoleModels();
+    const fdConfig = roles["front-desk"] ?? DEFAULT_ROLE_MODELS["front-desk"];
+    const expectedModel = fdConfig.primaryModel;
+
+    const server = {
+      on: () => () => {},
+      before: () => () => {},
+      handle: () => {},
+      registerSettings: () => ({} as any),
+      registerProvider: () => {},
+    } as unknown as PluginServerContext;
+    const router = new HookRouter(server, {
+      queueDir,
+      stateDir,
+      port: 0,
+      spawnAgent: mockSpawnAgent,
+    });
+    await router.start();
+    try {
+      const res = await fetch(`http://127.0.0.1:${router.port}/agents/spawn`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          role: "frontdesk",
+        }),
+      });
+      assert.equal(res.status, 200);
+      const body = await res.json();
+      assert.equal(body.ok, true);
+      // Should resolve to the configured primary model for front-desk
+      assert.ok(spawnedModels[0], "Model should be resolved from defaults");
+      assert.equal(spawnedModels[0], expectedModel);
+    } finally {
+      await router.stop();
+    }
+  });
+
+  it("POST /workers/spawn requires repo", async () => {
+    const server = {
+      on: () => () => {},
+      before: () => () => {},
+      handle: () => {},
+      registerSettings: () => ({} as any),
+      registerProvider: () => {},
+    } as unknown as PluginServerContext;
+    const router = new HookRouter(server, { queueDir, stateDir, port: 0 });
+    await router.start();
+    try {
+      const res = await fetch(`http://127.0.0.1:${router.port}/workers/spawn`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({}),
+      });
+      assert.equal(res.status, 400);
+      const body = await res.json();
+      assert.equal(body.ok, false);
+      assert.ok(body.error.includes("repo is required"));
+    } finally {
+      await router.stop();
+    }
+  });
+
+  it("POST /agents/spawn requires repo for orchestrator and worker", async () => {
+    const server = {
+      on: () => () => {},
+      before: () => () => {},
+      handle: () => {},
+      registerSettings: () => ({} as any),
+      registerProvider: () => {},
+    } as unknown as PluginServerContext;
+    const router = new HookRouter(server, { queueDir, stateDir, port: 0 });
+    await router.start();
+    try {
+      // Orchestrator without repo
+      let res = await fetch(`http://127.0.0.1:${router.port}/agents/spawn`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role: "orchestrator" }),
+      });
+      assert.equal(res.status, 400);
+      let body = await res.json();
+      assert.equal(body.ok, false);
+      assert.ok(body.error.includes("repo is required"));
+
+      // Worker without repo
+      res = await fetch(`http://127.0.0.1:${router.port}/agents/spawn`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role: "worker" }),
+      });
+      assert.equal(res.status, 400);
+      body = await res.json();
+      assert.equal(body.ok, false);
+      assert.ok(body.error.includes("repo is required"));
+    } finally {
+      await router.stop();
+    }
+  });
+
+  it("POST /agents/spawn with role orchestrator does not enroll unenrolled repo (#1312)", async () => {
+    const mockSpawnAgent = async () => ({ id: "agent-spawn-router-1312" });
+    const server = {
+      events: { on: () => () => {} },
+      on: () => () => {},
+      before: () => () => {},
+      handle: () => {},
+      registerSettings: () => ({} as any),
+      registerProvider: () => {},
+    } as unknown as PluginServerContext;
+    const router = new HookRouter(server, {
+      queueDir,
+      stateDir,
+      port: 0,
+      spawnAgent: mockSpawnAgent,
+    });
+    await router.start();
+    try {
+      const unenrolled = "xpufx-org/unenrolled-agent-spawn";
+      const res = await fetch(`http://127.0.0.1:${router.port}/agents/spawn`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role: "orchestrator", repo: unenrolled, workspace: tempDir }),
+      });
+      assert.equal(res.status, 200);
+      const body = await res.json();
+      assert.equal(body.ok, true);
+      assert.equal(body.agentId, "agent-spawn-router-1312");
+
+      // Verified: orchestrator record is written, but unenrolled is NOT added to enrolledRepos
+      assert.equal(router.readOrchestrator(unenrolled)?.agentId, "agent-spawn-router-1312");
+      assert.equal(router.isEnrolledRepo(unenrolled), false);
+      assert.ok(!router.getEnrolledRepos().includes(unenrolled));
+      assert.ok(!(loadRouterConfig().enrolledRepos ?? []).includes(unenrolled));
+    } finally {
+      await router.stop();
+    }
+  });
+});
+
+describe("model whitelist verification (#1215)", () => {
+  it("verifyModelWhitelist accepts models in primaryModel + fallbackGroup", () => {
+    const roles = loadSavedRoleModels();
+    const orchConfig = roles["orchestrator"];
+    const allowed = new Set([
+      orchConfig.primaryModel,
+      ...(orchConfig.fallbackGroup ?? []),
+    ]);
+    // Pick any model from the configured whitelist
+    const testModel = orchConfig.primaryModel;
+    const ok = verifyModelWhitelist("orchestrator", testModel);
+    assert.equal(ok.allowed, true);
+  });
+
+  it("verifyModelWhitelist rejects models not in the role's whitelist", () => {
+    const bad = verifyModelWhitelist("worker", "nemotron-3.5-lightning-free");
+    assert.equal(bad.allowed, false);
+    assert.ok(bad.error.includes("not authorized"));
+  });
+
+  it("resolveSpawnModel returns default when model is undefined", () => {
+    const result = resolveSpawnModel("frontdesk", undefined);
+    assert.equal(result.resolvedFrom, "default");
+    // Should resolve to whatever the configured front-desk primary is
+    const roles = loadSavedRoleModels();
+    const fdConfig = roles["front-desk"] ?? DEFAULT_ROLE_MODELS["front-desk"];
+    assert.equal(result.model, fdConfig.primaryModel);
+  });
+
+  it("resolveSpawnModel throws when model is not whitelisted", () => {
+    assert.throws(
+      () => resolveSpawnModel("worker", "nemotron-3.5-lightning-free"),
+      { message: /not authorized/ },
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Sweep digest persistence and gating (#1352)
+// ---------------------------------------------------------------------------
+
+describe("sweep digest persistence (#1352)", () => {
+  let testDir: string;
+
+  beforeEach(() => {
+    testDir = mkdtempSync(join(tmpdir(), "paseo-sweep-digest-test-"));
+    resetSweepDigestStorage();
+  });
+
+  afterEach(() => {
+    try {
+      rmSync(testDir, { recursive: true, force: true });
+    } catch {}
+    resetSweepDigestStorage();
+  });
+
+  it("saves and loads sweep digests from disk", () => {
+    const storage = getSweepDigestStorage({ baseDir: testDir });
+    const payload: SweepDigestsPayload = {
+      digests: { "org/repo": "abc123", "org/other": "def456" },
+      errorSignature: "err1|err2",
+      lastBoardReconciliationAt: null,
+    };
+    storage.write(payload);
+
+    // Reset and reload
+    resetSweepDigestStorage();
+    const reloaded = getSweepDigestStorage({ baseDir: testDir });
+    const restored = reloaded.read();
+    assert.deepStrictEqual(restored.digests, payload.digests);
+    assert.strictEqual(restored.errorSignature, payload.errorSignature);
+    assert.strictEqual(restored.lastBoardReconciliationAt, null);
+  });
+
+  it("restores lastBoardReconciliationAt across restarts", () => {
+    const storage = getSweepDigestStorage({ baseDir: testDir });
+    const payload: SweepDigestsPayload = {
+      digests: {},
+      errorSignature: "",
+      lastBoardReconciliationAt: 1_800_000_000_000,
+    };
+    storage.write(payload);
+
+    resetSweepDigestStorage();
+    const reloaded = getSweepDigestStorage({ baseDir: testDir });
+    const restored = reloaded.read();
+    assert.strictEqual(restored.lastBoardReconciliationAt, 1_800_000_000_000);
+  });
+
+  it("returns default empty state when file does not exist", () => {
+    const storage = getSweepDigestStorage({ baseDir: testDir });
+    const data = storage.read();
+    assert.deepStrictEqual(data.digests, {});
+    assert.strictEqual(data.errorSignature, "");
+    assert.strictEqual(data.lastBoardReconciliationAt, null);
+  });
+});
+
+describe("delta suppression when digests are unchanged (#1352)", () => {
+  let tempDir: string;
+  let queueDir: string;
+  let stateDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "paseo-delta-suppress-test-"));
+    queueDir = join(tempDir, "queues");
+    stateDir = join(tempDir, "state");
+    clearSettingsStorage();
+    resetSweepDigestStorage();
+  });
+
+  afterEach(() => {
+    try {
+      rmSync(tempDir, { recursive: true, force: true });
+    } catch {}
+    resetSweepDigestStorage();
+  });
+
+  function makeRouter(overrides: Partial<HookRouterOptions> = {}): HookRouter {
+    return new HookRouter(null, { queueDir, stateDir, port: 0, ...overrides });
+  }
+
+  it("suppresses notification when actionable digest matches persisted state", async () => {
+    const deliveries: Array<{ agentId: string; prompt: string }> = [];
+    const mockPaseo = {
+      agents: {
+        ref: (id: string) => ({
+          send: async (prompt: string) => {
+            deliveries.push({ agentId: id, prompt });
+            return { ok: true };
+          },
+        }),
+      },
+    } as any;
+
+    const router = makeRouter();
+    router.setActivePaseo(mockPaseo);
+    router.writeFrontDesk("fd-1", "operator");
+
+    const candidates = [
+      {
+        number: 101,
+        title: "Fix issue",
+        labels: [{ name: "attention/orchestrator" }],
+        category: "orchestrator_triage",
+        is_dispatchable: false,
+        comments: 2,
+        updated_at: "2026-01-01T00:00:00Z",
+        created_at: "2026-01-01T00:00:00Z",
+      },
+    ];
+
+    const io: IssuesCheckIo = {
+      getOpenIssues: async () => ({ ok: true, issues: candidates as any }),
+      getLatestComments: async () => [],
+      getIssueComments: async () => [],
+      runStaleWipCommand: async () => true,
+      loadCache: async () => ({}),
+      saveCache: async () => {},
+    };
+
+    // First sweep: notifies
+    const first = await router.runBoardSweep(["xpufx-org/paseo"], io);
+    assert.equal(first.notified, 1);
+    assert.equal(deliveries.length, 1);
+
+    // Second sweep with identical candidates: suppressed
+    const second = await router.runBoardSweep(["xpufx-org/paseo"], io);
+    assert.equal(second.notified, 0);
+    assert.equal(deliveries.length, 1, "no new delivery after digest match");
+  });
+});
+
+describe("zero-dispatch suppression (#1352)", () => {
+  let tempDir: string;
+  let queueDir: string;
+  let stateDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "paseo-zero-dispatch-test-"));
+    queueDir = join(tempDir, "queues");
+    stateDir = join(tempDir, "state");
+    clearSettingsStorage();
+    resetSweepDigestStorage();
+  });
+
+  afterEach(() => {
+    try {
+      rmSync(tempDir, { recursive: true, force: true });
+    } catch {}
+    resetSweepDigestStorage();
+  });
+
+  function makeRouter(overrides: Partial<HookRouterOptions> = {}): HookRouter {
+    return new HookRouter(null, { queueDir, stateDir, port: 0, ...overrides });
+  }
+
+  it("suppresses notification when dispatchableCount === 0 and triageCount === 0", async () => {
+    const deliveries: Array<{ agentId: string; prompt: string }> = [];
+    const mockPaseo = {
+      agents: {
+        ref: (id: string) => ({
+          send: async (prompt: string) => {
+            deliveries.push({ agentId: id, prompt });
+            return { ok: true };
+          },
+        }),
+      },
+    } as any;
+
+    const router = makeRouter();
+    router.setActivePaseo(mockPaseo);
+    router.writeFrontDesk("fd-1", "operator");
+
+    // Empty board — no candidates at all
+    const io: IssuesCheckIo = {
+      getOpenIssues: async () => ({ ok: true, issues: [] }),
+      getLatestComments: async () => [],
+      getIssueComments: async () => [],
+      runStaleWipCommand: async () => true,
+      loadCache: async () => ({}),
+      saveCache: async () => {},
+    };
+
+    const result = await router.runBoardSweep(["xpufx-org/paseo"], io);
+    assert.equal(result.ok, true);
+    assert.equal(result.actionable.length, 0);
+    assert.equal(result.notified, 0);
+    assert.equal(deliveries.length, 0);
+  });
+
+  it("still notifies when there are triage items (dispatchable === 0 but count > 0)", async () => {
+    const deliveries: Array<{ agentId: string; prompt: string }> = [];
+    const mockPaseo = {
+      agents: {
+        ref: (id: string) => ({
+          send: async (prompt: string) => {
+            deliveries.push({ agentId: id, prompt });
+            return { ok: true };
+          },
+        }),
+      },
+    } as any;
+
+    const router = makeRouter();
+    router.setActivePaseo(mockPaseo);
+    router.writeFrontDesk("fd-1", "operator");
+
+    const candidates = [
+      {
+        number: 201,
+        title: "Needs triage",
+        labels: [{ name: "attention/orchestrator" }],
+        category: "orchestrator_triage",
+        is_dispatchable: false,
+        comments: 0,
+        updated_at: "2026-01-01T00:00:00Z",
+        created_at: "2026-01-01T00:00:00Z",
+      },
+    ];
+
+    const io: IssuesCheckIo = {
+      getOpenIssues: async () => ({ ok: true, issues: candidates as any }),
+      getLatestComments: async () => [],
+      getIssueComments: async () => [],
+      runStaleWipCommand: async () => true,
+      loadCache: async () => ({}),
+      saveCache: async () => {},
+    };
+
+    const result = await router.runBoardSweep(["xpufx-org/paseo"], io);
+    assert.equal(result.ok, true);
+    assert.equal(result.notified, 1, "triage items should trigger notification");
+    assert.equal(deliveries.length, 1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Zero-dispatch gate: Front Desk attention instead of raw triage count (#1354)
+// ---------------------------------------------------------------------------
+
+describe("zero-dispatch gate with explicit frontdesk attention (#1354)", () => {
+  let tempDir: string;
+  let queueDir: string;
+  let stateDir: string;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), "paseo-zero-dispatch-1354-test-"));
+    queueDir = join(tempDir, "queues");
+    stateDir = join(tempDir, "state");
+    clearSettingsStorage();
+    resetSweepDigestStorage();
+  });
+
+  afterEach(() => {
+    try {
+      rmSync(tempDir, { recursive: true, force: true });
+    } catch {}
+    resetSweepDigestStorage();
+  });
+
+  function makeRouter(overrides: Partial<HookRouterOptions> = {}): HookRouter {
+    return new HookRouter(null, { queueDir, stateDir, port: 0, ...overrides });
+  }
+
+  // Helper: create an IssuesCheckIo that returns a single candidate with the
+  // given properties. The candidate is returned as a RankedCandidate-style
+  // object so runIssuesCheck can process it through labelNames / classify.
+  function makeCandidatesIo(
+    issues: Array<Record<string, unknown>>,
+    cached = true,
+    comments: Array<Record<string, unknown>> = [],
+  ): IssuesCheckIo {
+    const cache: Record<string, any> = {};
+    if (cached) {
+      for (const issue of issues) {
+        cache[String(issue.number)] = {
+          updated_at: String(issue.updated_at ?? "2026-01-01T00:00:00Z"),
+          labels: ((issue.labels as any[]) ?? []).map((l) => (typeof l === "string" ? l : l.name)),
+          comments_count: Number(issue.comments ?? 0),
+        };
+      }
+    }
+    return {
+      getOpenIssues: async () => ({ ok: true, issues: issues as any }),
+      getLatestComments: async () => comments as any,
+      getIssueComments: async () => comments as any,
+      runStaleWipCommand: async () => true,
+      loadCache: async () => cache,
+      saveCache: async () => {},
+    };
+  }
+
+  it("suppresses notification when board has non-dispatchable backlog (state/verify, state/wip) but 0 dispatchable and 0 frontdesk attention", async () => {
+    const deliveries: Array<{ agentId: string; prompt: string }> = [];
+    const mockPaseo = {
+      agents: {
+        ref: (id: string) => ({
+          send: async (prompt: string) => {
+            deliveries.push({ agentId: id, prompt });
+            return { ok: true };
+          },
+        }),
+      },
+    } as any;
+
+    const router = makeRouter();
+    router.setActivePaseo(mockPaseo);
+    router.writeFrontDesk("fd-1", "operator");
+
+    // Tickets in state/verify and state/wip — non-dispatchable, no frontdesk attention
+    const io = makeCandidatesIo([
+      {
+        number: 101,
+        title: "In verification",
+        labels: [{ name: "state/verify" }, { name: "attention/orchestrator" }],
+        comments: 0,
+        updated_at: "2026-01-01T00:00:00Z",
+        created_at: "2026-01-01T00:00:00Z",
+      },
+      {
+        number: 102,
+        title: "In progress",
+        labels: [{ name: "state/wip" }, { name: "attention/orchestrator" }],
+        comments: 0,
+        updated_at: "2026-01-01T00:00:00Z",
+        created_at: "2026-01-01T00:00:00Z",
+      },
+    ]);
+
+    const result = await router.runBoardSweep(["xpufx-org/paseo"], io);
+    assert.equal(result.ok, true);
+    // Both tickets are actionable (non-empty board), but none have frontdesk attention
+    assert.ok(result.actionable.length > 0, "should have actionable items");
+    assert.equal(result.notified, 0, "notification should be suppressed: zero dispatchable and zero frontdesk attention");
+    assert.equal(deliveries.length, 0);
+  });
+
+  it("does NOT suppress notification when ticket has attention/frontdesk label", async () => {
+    const deliveries: Array<{ agentId: string; prompt: string }> = [];
+    const mockPaseo = {
+      agents: {
+        ref: (id: string) => ({
+          send: async (prompt: string) => {
+            deliveries.push({ agentId: id, prompt });
+            return { ok: true };
+          },
+        }),
+      },
+    } as any;
+
+    const router = makeRouter();
+    router.setActivePaseo(mockPaseo);
+    router.writeFrontDesk("fd-1", "operator");
+
+    const io = makeCandidatesIo([
+      {
+        number: 201,
+        title: "Needs operator review",
+        labels: [{ name: "state/verify" }, { name: "attention/frontdesk" }],
+        comments: 0,
+        updated_at: "2026-01-01T00:00:00Z",
+        created_at: "2026-01-01T00:00:00Z",
+      },
+    ]);
+
+    const result = await router.runBoardSweep(["xpufx-org/paseo"], io);
+    assert.equal(result.ok, true);
+    assert.ok(result.actionable.length > 0, "should have actionable items");
+    assert.equal(result.notified, 1, "notification should fire: attention/frontdesk label present");
+    assert.equal(deliveries.length, 1);
+  });
+
+  it("does NOT suppress notification when ticket has category 'sos' via priority/sos label", async () => {
+    const deliveries: Array<{ agentId: string; prompt: string }> = [];
+    const mockPaseo = {
+      agents: {
+        ref: (id: string) => ({
+          send: async (prompt: string) => {
+            deliveries.push({ agentId: id, prompt });
+            return { ok: true };
+          },
+        }),
+      },
+    } as any;
+
+    const router = makeRouter();
+    router.setActivePaseo(mockPaseo);
+    router.writeFrontDesk("fd-1", "operator");
+
+    const io = makeCandidatesIo([
+      {
+        number: 301,
+        title: "Critical bug in production",
+        labels: [{ name: "priority/sos" }, { name: "state/wip" }],
+        comments: 0,
+        updated_at: "2026-01-01T00:00:00Z",
+        created_at: "2026-01-01T00:00:00Z",
+      },
+    ]);
+
+    const result = await router.runBoardSweep(["xpufx-org/paseo"], io);
+    assert.equal(result.ok, true);
+    assert.ok(result.actionable.length > 0, "should have actionable items");
+    assert.equal(result.notified, 1, "notification should fire: SOS category present");
+    assert.equal(deliveries.length, 1);
+  });
+
+  it("suppresses notification when ticket has category 'feedback' on orchestrator issue without attention/frontdesk (#1357)", async () => {
+    const deliveries: Array<{ agentId: string; prompt: string }> = [];
+    const mockPaseo = {
+      agents: {
+        ref: (id: string) => ({
+          send: async (prompt: string) => {
+            deliveries.push({ agentId: id, prompt });
+            return { ok: true };
+          },
+        }),
+      },
+    } as any;
+
+    const router = makeRouter();
+    router.setActivePaseo(mockPaseo);
+    router.writeFrontDesk("fd-1", "operator");
+
+    // Human feedback on an orchestrator issue (isChanged=true via cache comments_count=0 vs issue comments=1)
+    const io = makeCandidatesIo(
+      [
+        {
+          number: 350,
+          title: "Orchestrator issue with human feedback",
+          labels: [{ name: "state/wip" }, { name: "attention/orchestrator" }],
+          comments: 1,
+          updated_at: "2026-01-01T01:00:00Z",
+          created_at: "2026-01-01T00:00:00Z",
+        },
+      ],
+      true,
+      [{ user: { login: "okcode" }, body: "Do it again." }],
+    );
+
+    const result = await router.runBoardSweep(["xpufx-org/paseo"], io);
+    assert.equal(result.ok, true);
+    assert.ok(result.actionable.length > 0, "should have actionable items");
+    // Candidate has category: 'feedback', but lacks attention/frontdesk -> suppressed
+    assert.equal(result.notified, 0, "orchestrator feedback must NOT wake Front Desk on board sweep");
+    assert.equal(deliveries.length, 0);
+  });
+
+  it("does NOT suppress notification when ticket has category 'feedback' AND attention/frontdesk (#1357)", async () => {
+    const deliveries: Array<{ agentId: string; prompt: string }> = [];
+    const mockPaseo = {
+      agents: {
+        ref: (id: string) => ({
+          send: async (prompt: string) => {
+            deliveries.push({ agentId: id, prompt });
+            return { ok: true };
+          },
+        }),
+      },
+    } as any;
+
+    const router = makeRouter();
+    router.setActivePaseo(mockPaseo);
+    router.writeFrontDesk("fd-1", "operator");
+
+    const io = makeCandidatesIo(
+      [
+        {
+          number: 351,
+          title: "Frontdesk issue with human feedback",
+          labels: [{ name: "state/verify" }, { name: "attention/frontdesk" }],
+          comments: 1,
+          updated_at: "2026-01-01T01:00:00Z",
+          created_at: "2026-01-01T00:00:00Z",
+        },
+      ],
+      true,
+      [{ user: { login: "okcode" }, body: "Operator feedback for frontdesk." }],
+    );
+
+    const result = await router.runBoardSweep(["xpufx-org/paseo"], io);
+    assert.equal(result.ok, true);
+    assert.ok(result.actionable.length > 0, "should have actionable items");
+    assert.equal(result.notified, 1, "frontdesk feedback MUST wake Front Desk");
+    assert.equal(deliveries.length, 1);
+  });
+
+  it("suppresses notification when ticket is new (is_new) but lacks attention/frontdesk and dispatchable=0 (#1357)", async () => {
+    const deliveries: Array<{ agentId: string; prompt: string }> = [];
+    const mockPaseo = {
+      agents: {
+        ref: (id: string) => ({
+          send: async (prompt: string) => {
+            deliveries.push({ agentId: id, prompt });
+            return { ok: true };
+          },
+        }),
+      },
+    } as any;
+
+    const router = makeRouter();
+    router.setActivePaseo(mockPaseo);
+    router.writeFrontDesk("fd-1", "operator");
+
+    // A brand-new issue with no special labels (not dispatchable, not attention/frontdesk)
+    const io = makeCandidatesIo(
+      [
+        {
+          number: 401,
+          title: "Brand new feature request",
+          labels: [{ name: "kind/feature" }, { name: "attention/orchestrator" }],
+          comments: 0,
+          updated_at: "2026-01-01T00:00:00Z",
+          created_at: "2026-01-01T00:00:00Z",
+        },
+      ],
+      false,
+    );
+
+    const result = await router.runBoardSweep(["xpufx-org/paseo"], io);
+    assert.equal(result.ok, true);
+    assert.ok(result.actionable.length > 0, "should have actionable items");
+    assert.equal(result.notified, 0, "untargeted new ticket must not wake Front Desk on board sweep");
+    assert.equal(deliveries.length, 0);
+  });
+
+  it("does NOT suppress notification when new ticket has attention/frontdesk (#1357)", async () => {
+    const deliveries: Array<{ agentId: string; prompt: string }> = [];
+    const mockPaseo = {
+      agents: {
+        ref: (id: string) => ({
+          send: async (prompt: string) => {
+            deliveries.push({ agentId: id, prompt });
+            return { ok: true };
+          },
+        }),
+      },
+    } as any;
+
+    const router = makeRouter();
+    router.setActivePaseo(mockPaseo);
+    router.writeFrontDesk("fd-1", "operator");
+
+    const io = makeCandidatesIo(
+      [
+        {
+          number: 402,
+          title: "New issue targeted at Front Desk",
+          labels: [{ name: "kind/feature" }, { name: "attention/frontdesk" }],
+          comments: 0,
+          updated_at: "2026-01-01T00:00:00Z",
+          created_at: "2026-01-01T00:00:00Z",
+        },
+      ],
+      false,
+    );
+
+    const result = await router.runBoardSweep(["xpufx-org/paseo"], io);
+    assert.equal(result.ok, true);
+    assert.ok(result.actionable.length > 0, "should have actionable items");
+    assert.equal(result.notified, 1, "new ticket with attention/frontdesk must wake Front Desk");
+    assert.equal(deliveries.length, 1);
+  });
+
+  it("suppresses notification when reconciliation is due but dispatchable=0 and frontdesk_attention=0", async () => {
+    const deliveries: Array<{ agentId: string; prompt: string }> = [];
+    const mockPaseo = {
+      agents: {
+        ref: (id: string) => ({
+          send: async (prompt: string) => {
+            deliveries.push({ agentId: id, prompt });
+            return { ok: true };
+          },
+        }),
+      },
+    } as any;
+
+    const router = makeRouter({ boardReconciliationIntervalMs: 60_000 });
+    router.setActivePaseo(mockPaseo);
+    router.writeFrontDesk("fd-1", "operator");
+
+    // Non-dispatchable backlog only — no frontdesk attention
+    const io = makeCandidatesIo([
+      {
+        number: 501,
+        title: "Stuck in verify",
+        labels: [{ name: "state/verify" }],
+        comments: 0,
+        updated_at: "2026-01-01T00:00:00Z",
+        created_at: "2026-01-01T00:00:00Z",
+      },
+    ]);
+
+    // First sweep at t=0
+    const t0 = Date.now();
+    const first = await router.runBoardSweep(["xpufx-org/paseo"], io, { now: t0 });
+    assert.equal(first.ok, true);
+    // First pass: actionable but zero frontdesk attention → suppressed
+    assert.ok(first.actionable.length > 0, "should have actionable items");
+    assert.equal(first.notified, 0, "first sweep: suppressed (zero frontdesk attention)");
+
+    // Second sweep shortly after — still suppressed (delta unchanged + gate closed)
+    const second = await router.runBoardSweep(["xpufx-org/paseo"], io, { now: t0 + 30_000 });
+    assert.equal(second.ok, true);
+    assert.equal(second.notified, 0, "second sweep: still suppressed");
+
+    // Third sweep after reconciliation interval — reconciliationDue is true,
+    // lastBoardReconciliationAt was updated on first sweep, so this triggers
+    // full reconciliation. But the gate still applies: no dispatchable AND no
+    // frontdesk attention → still suppressed.
+    const reconciled = await router.runBoardSweep(["xpufx-org/paseo"], io, { now: t0 + 120_000 });
+    assert.equal(reconciled.ok, true);
+    assert.ok(reconciled.actionable.length > 0, "should still have actionable items");
+    assert.equal(reconciled.notified, 0, "reconciliation sweep: still suppressed (zero dispatchable AND zero frontdesk attention)");
+  });
+});
+
+describe("watchdog exemption for idle front-desk and orchestrators (#1352)", () => {
+  it("exempts front-desk from ZOMBIE_HUNG_TURN when queue depth is 0 and active workers is 0", () => {
+    const stale = new Date(Date.UTC(2026, 5, 15, 11, 0, 0)).toISOString(); // 1 hour ago
+    const assessment = assessAgentHealth(
+      "fd-1",
+      { id: "fd-1", status: "running", lastActivityAt: stale },
+      null,
+      Date.UTC(2026, 5, 15, 12, 0, 0),
+      {
+        isFrontDesk: true,
+        isOrchestrator: false,
+        queueDepth: 0,
+        activeWorkers: 0,
+        runningStaleSeconds: 1800,
+      },
+    );
+    assert.ok(assessment.healthy, "front-desk with empty queue should not be flagged zombie");
+    assert.ok(!assessment.taxonomy.includes("ZOMBIE_HUNG_TURN"), "ZOMBIE_HUNG_TURN should be suppressed");
+  });
+
+  it("exempts registered orchestrator from ZOMBIE_HUNG_TURN when queue depth is 0 and active workers is 0", () => {
+    const stale = new Date(Date.UTC(2026, 5, 15, 11, 0, 0)).toISOString();
+    const assessment = assessAgentHealth(
+      "orch-1",
+      { id: "orch-1", status: "running", lastActivityAt: stale },
+      null,
+      Date.UTC(2026, 5, 15, 12, 0, 0),
+      {
+        isFrontDesk: false,
+        isOrchestrator: true,
+        queueDepth: 0,
+        activeWorkers: 0,
+        runningStaleSeconds: 1800,
+      },
+    );
+    assert.ok(assessment.healthy, "orchestrator with empty queue should not be flagged zombie");
+    assert.ok(!assessment.taxonomy.includes("ZOMBIE_HUNG_TURN"), "ZOMBIE_HUNG_TURN should be suppressed");
+  });
+
+  it("does NOT exempt when queue depth > 0", () => {
+    const stale = new Date(Date.UTC(2026, 5, 15, 11, 0, 0)).toISOString();
+    const assessment = assessAgentHealth(
+      "fd-1",
+      { id: "fd-1", status: "running", lastActivityAt: stale },
+      null,
+      Date.UTC(2026, 5, 15, 12, 0, 0),
+      {
+        isFrontDesk: true,
+        isOrchestrator: false,
+        queueDepth: 5,
+        activeWorkers: 0,
+        runningStaleSeconds: 1800,
+      },
+    );
+    assert.ok(!assessment.healthy, "front-desk with backlog should be flagged zombie");
+    assert.ok(assessment.taxonomy.includes("ZOMBIE_HUNG_TURN"));
+  });
+
+  it("does NOT exempt when active workers > 0", () => {
+    const stale = new Date(Date.UTC(2026, 5, 15, 11, 0, 0)).toISOString();
+    const assessment = assessAgentHealth(
+      "orch-1",
+      { id: "orch-1", status: "running", lastActivityAt: stale },
+      null,
+      Date.UTC(2026, 5, 15, 12, 0, 0),
+      {
+        isFrontDesk: false,
+        isOrchestrator: true,
+        queueDepth: 0,
+        activeWorkers: 3,
+        runningStaleSeconds: 1800,
+      },
+    );
+    assert.ok(!assessment.healthy, "orchestrator with active workers should be flagged zombie");
+    assert.ok(assessment.taxonomy.includes("ZOMBIE_HUNG_TURN"));
+  });
+
+  it("does NOT exempt non-fleet agents", () => {
+    const stale = new Date(Date.UTC(2026, 5, 15, 11, 0, 0)).toISOString();
+    const assessment = assessAgentHealth(
+      "worker-1",
+      { id: "worker-1", status: "running", lastActivityAt: stale },
+      null,
+      Date.UTC(2026, 5, 15, 12, 0, 0),
+      {
+        isFrontDesk: false,
+        isOrchestrator: false,
+        queueDepth: 0,
+        activeWorkers: 0,
+        runningStaleSeconds: 1800,
+      },
+    );
+    assert.ok(!assessment.healthy, "non-fleet agent should still be flagged zombie");
+    assert.ok(assessment.taxonomy.includes("ZOMBIE_HUNG_TURN"));
+  });
+
+  it("allows fresh activity to pass even without exemption", () => {
+    const fresh = new Date(Date.UTC(2026, 5, 15, 11, 59, 0)).toISOString();
+    const assessment = assessAgentHealth(
+      "fd-1",
+      { id: "fd-1", status: "running", lastActivityAt: fresh },
+      null,
+      Date.UTC(2026, 5, 15, 12, 0, 0),
+      {
+        isFrontDesk: false,
+        isOrchestrator: false,
+        queueDepth: 0,
+        activeWorkers: 0,
+        runningStaleSeconds: 1800,
+      },
+    );
+    assert.ok(assessment.healthy, "fresh activity should pass regardless of exemption");
+    assert.ok(!assessment.taxonomy.includes("ZOMBIE_HUNG_TURN"));
   });
 });

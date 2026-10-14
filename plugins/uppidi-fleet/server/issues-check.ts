@@ -26,7 +26,15 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { spawn } from "node:child_process";
 
-export const STALE_WIP_LABEL = "state/1-wip";
+import {
+  LABEL_ALIASES,
+  canonicalLabel,
+} from "@xpufx/backend-tickets/shared";
+
+export { LABEL_ALIASES, canonicalLabel };
+
+
+export const STALE_WIP_LABEL = "state/wip";
 export const STALE_WIP_REMINDER_MARKER = "<!-- forgejo-issues-check:stale-wip-reminder -->";
 /** Human-readable body of the stale-WIP triage notice, before the marker/footer. */
 export const STALE_WIP_NOTICE_TEXT =
@@ -44,46 +52,43 @@ export function staleWipNoticeBody({ envelope }: { envelope?: string | null } = 
   return `${STALE_WIP_NOTICE_TEXT}\n\n${STALE_WIP_REMINDER_MARKER}${footer}`;
 }
 // A stop-work or ignore directive always wins over automated recovery. Closed
-// issues are not returned by getOpenIssues(), and state/4-done is defensive.
+// issues are not returned by getOpenIssues(), and state/done is defensive.
 export const STALE_WIP_SKIP_LABELS: ReadonlySet<string> = new Set([
   "flag/stop-work",
   "flag/wont-do",
-  "attention/2-ignore",
-  "attention/3-ignore",
-  "state/4-done",
+  "attention/ignore",
+  "state/done",
 ]);
 
 // Blocking states for autonomous coding workers. Carried over from the source
 // module's surface; the checker itself reasons through the label sets below.
 export const WORKER_BLOCKING_LABELS: ReadonlySet<string> = new Set([
-  "state/1-wip",
-  "state/2-review",
-  "state/3-verify",
-  "state/4-done",
+  "state/wip",
+  "state/review",
+  "state/verify",
+  "state/done",
   "dep/blocked",
-  "upstream/1-blocked",
+  "upstream/blocked",
   "flag/stop-work",
   "flag/wont-do",
-  "attention/0-orchestrator",
   "attention/orchestrator",
-  "attention/1-user",
-  "attention/2-user",
-  "attention/2-ignore",
-  "attention/3-ignore",
-  "size/3-chunk",
-  "linked/0-needs-split",
-  "spec/0-needed",
-  "spec/1-checklist",
+  "attention/frontdesk",
+  "attention/user",
+  "attention/ignore",
+  "size/chunk",
+  "linked/needs-split",
+  "spec/needed",
+  "spec/checklist",
 ]);
 
 // --- Priority weights (lower = higher urgency) ---
 
 export const TIER_WEIGHTS: Readonly<Record<string, number>> = {
-  "priority/0-SOS": 0,
-  "priority/1-high": 1,
-  "priority/2-normal": 2,
-  "priority/3-low": 3,
-  "priority/4-backburner": 4,
+  "priority/sos": 0,
+  "priority/high": 1,
+  "priority/normal": 2,
+  "priority/low": 3,
+  "priority/backburner": 4,
 };
 
 export const KIND_WEIGHTS: Readonly<Record<string, number>> = {
@@ -100,10 +105,10 @@ export const KIND_WEIGHTS: Readonly<Record<string, number>> = {
 };
 
 export const EFFORT_WEIGHTS: Readonly<Record<string, number>> = {
-  "size/0-cheap": 0, // Quick wins first
-  "size/1-medium": 1,
-  "size/2-expensive": 2,
-  "size/3-chunk": 3,
+  "size/cheap": 0, // Quick wins first
+  "size/medium": 1,
+  "size/expensive": 2,
+  "size/chunk": 3,
 };
 
 export interface ForgejoIssue {
@@ -160,6 +165,8 @@ export interface IssuesCheckOutcome {
   exitCode: 0 | 1;
   rankedCandidates: RankedCandidate[];
   staleWipRecovery: StaleWipResult[];
+  /** Open issues filed under state/triage because they carried no board state. */
+  stateTriage: StateTriageResult[];
   savedState: Record<string, IssueSignature>;
 }
 
@@ -213,9 +220,11 @@ export class IssuesCheckTransportError extends Error {
 /** Label names exactly as the issue carries them; missing names stay undefined. */
 function labelNames(issue: ForgejoIssue): Array<string | undefined> {
   const raw = Array.isArray(issue?.labels) ? issue.labels : [];
-  return raw.map((label) =>
-    label && typeof label === "object" ? (label as { name?: unknown }).name as string | undefined : undefined,
-  );
+  return raw.map((label) => {
+    const name =
+      label && typeof label === "object" ? (label as { name?: unknown }).name : undefined;
+    return typeof name === "string" ? canonicalLabel(name) : undefined;
+  });
 }
 
 function labelSet(issue: ForgejoIssue): Set<string | undefined> {
@@ -225,7 +234,9 @@ function labelSet(issue: ForgejoIssue): Set<string | undefined> {
 export function cacheFilePath(repo: string): string {
   const slug = repo.replaceAll("/", "_");
   const home = process.env.HOME ?? homedir();
-  return join(home, ".paseo", "plugin-data", "xpufx", "uppidi-fleet", "board-state", `${slug}.json`);
+  const custom = (process.env.PASEO_HOME || "").trim();
+  const root = custom || join(home, ".paseo");
+  return join(root, "plugin-data", "xpufx", "uppidi-fleet", "board-state", `${slug}.json`);
 }
 
 /**
@@ -341,8 +352,8 @@ export async function recoverStaleWipIssue(
         `repos/${repo}/issues/${number}/comments`,
         "--hostname",
         hostname,
-        "--input",
-        "-",
+        "--data",
+        "@-",
       ],
       JSON.stringify({ body: reminder }),
     );
@@ -360,7 +371,7 @@ export async function recoverStaleWipIssue(
     "-R",
     repo,
     "--add-label",
-    "attention/0-orchestrator",
+    "attention/orchestrator",
     "--remove-label",
     STALE_WIP_LABEL,
   ]);
@@ -383,6 +394,82 @@ export async function sweepStaleWipIssues(
     const age = staleWipAge(issue, nowMs);
     if (age !== null && age / 1000 >= thresholdSeconds) {
       results.push(await recoverStaleWipIssue(io, hostname, repo, issue, { dryRun }));
+    }
+  }
+  return results;
+}
+
+/** Canonical prefix of every board state-machine label. */
+export const STATE_LABEL_PREFIX = "state/";
+/** Backlog column applied to open tickets that never received a board state. */
+export const TRIAGE_STATE_LABEL = "state/triage";
+
+/** True when the issue already carries at least one `state/*` label (canonical or legacy). */
+export function hasStateLabel(labelSet: Set<string | undefined>): boolean {
+  for (const label of labelSet) {
+    if (typeof label === "string" && label.startsWith(STATE_LABEL_PREFIX)) return true;
+  }
+  return false;
+}
+
+/**
+ * True for an open issue with no board state at all. Those tickets never entered
+ * the state machine, so the sweep files them under `state/triage` before Layer 1
+ * ranking sees them. Closed issues are ignored defensively.
+ */
+export function needsStateTriage(issue: ForgejoIssue): boolean {
+  const state = issue?.state ?? null;
+  if (state !== null && state !== "open") return false;
+  return !hasStateLabel(labelSet(issue));
+}
+
+export interface StateTriageResult {
+  number: number;
+  /** True when the issue was (or, on a dry run, would be) filed under state/triage. */
+  filed: boolean;
+  dry_run: boolean;
+}
+
+/**
+ * File a state-less open issue under `state/triage`. Only the one label is
+ * added, preserving priority, kind, attention, and every unrelated label.
+ */
+export async function normalizeStatelessIssue(
+  io: Pick<IssuesCheckIo, "runStaleWipCommand">,
+  hostname: string,
+  repo: string,
+  issue: ForgejoIssue,
+  { dryRun = false }: { dryRun?: boolean } = {},
+): Promise<StateTriageResult> {
+  const number = issue.number;
+  if (dryRun) return { number, filed: true, dry_run: true };
+  const filed = await io.runStaleWipCommand([
+    "teax",
+    "issue",
+    "edit",
+    String(number),
+    "--hostname",
+    hostname,
+    "-R",
+    repo,
+    "--add-label",
+    TRIAGE_STATE_LABEL,
+  ]);
+  return { number, filed, dry_run: false };
+}
+
+/** File every open issue that carries no `state/*` label under `state/triage`. */
+export async function sweepStatelessIssues(
+  io: Pick<IssuesCheckIo, "runStaleWipCommand">,
+  hostname: string,
+  repo: string,
+  issues: ForgejoIssue[],
+  { dryRun = false }: { dryRun?: boolean } = {},
+): Promise<StateTriageResult[]> {
+  const results: StateTriageResult[] = [];
+  for (const issue of issues) {
+    if (needsStateTriage(issue)) {
+      results.push(await normalizeStatelessIssue(io, hostname, repo, issue, { dryRun }));
     }
   }
   return results;
@@ -422,19 +509,27 @@ export function calculatePriorityTuple(issue: ForgejoIssue, isFeedbackDelta = fa
 
 export function isDispatchableCandidate(labelSet: Set<string>): boolean {
   // Hard stop or ignore flags
-  if (setIntersects(labelSet, ["flag/stop-work", "flag/wont-do", "attention/3-ignore", "attention/2-ignore", "state/4-done"])) {
+  if (setIntersects(labelSet, ["flag/stop-work", "flag/wont-do", "attention/ignore", "state/done"])) {
     return false;
   }
-  // Gated on user attention
-  if (setIntersects(labelSet, ["attention/1-user", "attention/2-user", "attention/user"])) return false;
+  // Gated on human attention: orchestrator or front-desk hand-off
+  if (setIntersects(labelSet, ["attention/user", "attention/orchestrator", "attention/frontdesk"])) return false;
   // Dependency or upstream blocked
-  if (setIntersects(labelSet, ["dep/blocked", "upstream/1-blocked"])) return false;
+  if (setIntersects(labelSet, ["dep/blocked", "upstream/blocked"])) return false;
   // Oversized or needs splitting
-  if (setIntersects(labelSet, ["size/3-chunk", "linked/0-needs-split"])) return false;
+  if (setIntersects(labelSet, ["size/chunk", "linked/needs-split"])) return false;
+  // Pre-code shaping
+  if (labelSet.has("spec/needed")) return false;
   // Active WIP (worker already assigned and actively executing)
-  if (labelSet.has("state/1-wip")) return false;
-  // Deliverable verification or review stages (pending orchestrator verification/PR merge)
-  if (setIntersects(labelSet, ["state/3-verify", "state/2-review"])) return false;
+  if (labelSet.has("state/wip")) return false;
+  // Deliverable review stage (pending orchestrator PR pre-flight audit)
+  if (labelSet.has("state/review")) return false;
+
+  // state/verify is only non-dispatchable when no attention/* signal overrides it.
+  // When attention/agent is attached the operator has explicitly handed the ticket
+  // to an agent — that driving signal trumps the lifecycle stage and lets a worker
+  // pick it up for verification work.
+  if (labelSet.has("state/verify") && !labelSet.has("attention/agent")) return false;
 
   // Natural autonomous dispatch: Open tickets without user blockers or hard stops
   return true;
@@ -469,7 +564,7 @@ export function classifyCandidate(
   }
 
   if (isNew) {
-    if (setIntersects(labelSet, ["attention/1-user", "attention/2-user", "attention/user"])) {
+    if (setIntersects(labelSet, ["attention/user"])) {
       return {
         category: "user_attention",
         is_dispatchable: false,
@@ -483,13 +578,22 @@ export function classifyCandidate(
     };
   }
 
-  if (labelSet.has("priority/0-SOS")) {
+  if (labelSet.has("priority/sos")) {
     const isDisp = isDispatchableCandidate(labelSet);
-    if (labelSet.has("state/3-verify") || labelSet.has("state/2-review")) {
+    if (labelSet.has("state/review")) {
       return {
         category: "sos",
         is_dispatchable: false,
-        reason: "Preempt all work (SOS deliverable completed; pre-flight verification required)",
+        reason: "Preempt all work (SOS deliverable completed; pre-flight PR audit required)",
+      };
+    }
+    if (labelSet.has("state/verify")) {
+      return {
+        category: "sos",
+        is_dispatchable: false,
+        reason: labelSet.has("attention/orchestrator")
+          ? "Preempt all work (SOS deliverable in state/verify; Orchestrator triage required)"
+          : "Preempt all work (SOS deliverable merged; awaiting operator verification)",
       };
     }
     return {
@@ -501,8 +605,26 @@ export function classifyCandidate(
     };
   }
 
+  // Follow-up on verified deliverable directed to Orchestrator
+  if (labelSet.has("state/verify") && labelSet.has("attention/orchestrator")) {
+    return {
+      category: "orchestrator_triage",
+      is_dispatchable: false,
+      reason: "Requires Orchestrator triage / investigation (state/verify follow-up directed by operator)",
+    };
+  }
+
+  // Merged deliverable awaiting operator verification
+  if (labelSet.has("state/verify")) {
+    return {
+      category: "operator_verify",
+      is_dispatchable: false,
+      reason: "Merged deliverable: awaiting human operator acceptance / live verification",
+    };
+  }
+
   // User attention needed
-  if (setIntersects(labelSet, ["attention/1-user", "attention/2-user", "attention/user"])) {
+  if (setIntersects(labelSet, ["attention/user"])) {
     return {
       category: "user_attention",
       is_dispatchable: false,
@@ -510,8 +632,8 @@ export function classifyCandidate(
     };
   }
 
-  // Deliverable verification
-  if (labelSet.has("state/3-verify") || labelSet.has("state/2-review")) {
+  // Deliverable PR review
+  if (labelSet.has("state/review")) {
     return {
       category: "verification",
       is_dispatchable: false,
@@ -520,7 +642,7 @@ export function classifyCandidate(
   }
 
   // Active WIP
-  if (labelSet.has("state/1-wip")) {
+  if (labelSet.has("state/wip")) {
     return {
       category: "in_progress",
       is_dispatchable: false,
@@ -529,7 +651,7 @@ export function classifyCandidate(
   }
 
   // Decomposition
-  if (labelSet.has("size/3-chunk") || labelSet.has("linked/0-needs-split")) {
+  if (labelSet.has("size/chunk") || labelSet.has("linked/needs-split")) {
     return {
       category: "decomposition",
       is_dispatchable: false,
@@ -538,7 +660,7 @@ export function classifyCandidate(
   }
 
   // Dependency blocked
-  if (labelSet.has("dep/blocked") || labelSet.has("upstream/1-blocked")) {
+  if (labelSet.has("dep/blocked") || labelSet.has("upstream/blocked")) {
     return {
       category: "blocked",
       is_dispatchable: false,
@@ -547,11 +669,30 @@ export function classifyCandidate(
   }
 
   // Pre-code shaping
-  if (labelSet.has("spec/0-needed")) {
+  if (labelSet.has("spec/needed")) {
     return {
       category: "shaping",
       is_dispatchable: false,
-      reason: "Pre-code shaping required: Orchestrator must formulate specification & checklist (spec/0-needed)",
+      reason: "Pre-code shaping required: Orchestrator must formulate specification & checklist (spec/needed)",
+    };
+  }
+
+  // Orchestrator explicit triage. Evaluated before the dispatchable fallthrough:
+  // an attention/orchestrator ticket is Layer 2 work even when nothing else blocks it.
+  if (labelSet.has("attention/orchestrator")) {
+    return {
+      category: "orchestrator_triage",
+      is_dispatchable: false,
+      reason: "Requires Orchestrator triage / investigation",
+    };
+  }
+
+  // Front-desk hand-off: the front desk owns routing, not a coding worker.
+  if (labelSet.has("attention/frontdesk")) {
+    return {
+      category: "orchestrator_triage",
+      is_dispatchable: false,
+      reason: "Requires Front Desk routing / triage",
     };
   }
 
@@ -566,15 +707,6 @@ export function classifyCandidate(
     };
   }
 
-  // Orchestrator explicit triage
-  if (labelSet.has("attention/0-orchestrator") || labelSet.has("attention/orchestrator")) {
-    return {
-      category: "orchestrator_triage",
-      is_dispatchable: false,
-      reason: "Requires Orchestrator triage / investigation",
-    };
-  }
-
   return {
     category: "orchestrator_triage",
     is_dispatchable: false,
@@ -584,33 +716,37 @@ export function classifyCandidate(
 
 export function isActionable(labelSet: Set<string>, role: IssuesCheckRole = "orchestrator"): boolean {
   // SOS trumps all blockers except hard stop-work
-  if (labelSet.has("priority/0-SOS")) {
+  if (labelSet.has("priority/sos")) {
     if (labelSet.has("flag/stop-work") || labelSet.has("flag/wont-do")) return false;
     return true;
   }
 
   // General suppressors for everyone
-  if (setIntersects(labelSet, ["flag/stop-work", "flag/wont-do", "attention/3-ignore", "attention/2-ignore"])) {
+  if (setIntersects(labelSet, ["flag/stop-work", "flag/wont-do", "attention/ignore"])) {
     return false;
   }
-  if (labelSet.has("state/4-done")) return false;
+  if (labelSet.has("state/done")) return false;
 
   if (role === "worker") {
-    // Workers can ONLY pick up dispatchable tasks
+    // Workers can ONLY pick up dispatchable tasks.
+    // Exception: attention/agent is the operator's explicit hand-off signal that
+    // trumps all lifecycle-stage blockers (including state/verify), letting a
+    // worker act on the ticket despite its stage.
+    if (labelSet.has("attention/agent")) return true;
     return isDispatchableCandidate(labelSet);
   }
 
   // Orchestrator role
-  if (setIntersects(labelSet, ["attention/1-user", "attention/2-user", "attention/user"])) {
+  if (setIntersects(labelSet, ["attention/user"])) {
     return true; // Orchestrator watches user-attention items to notify the operator
   }
-  if (labelSet.has("attention/0-orchestrator") || labelSet.has("attention/orchestrator")) return true;
-  if (labelSet.has("size/3-chunk") || labelSet.has("linked/0-needs-split")) return true; // Orchestrator action needed to chunk/split
-  if (labelSet.has("spec/0-needed") || labelSet.has("spec/1-checklist")) return true; // Shaping / gate tracking
-  if (labelSet.has("state/3-verify") || labelSet.has("state/2-review")) return true; // Deliverable pre-flight verification
-  if (labelSet.has("dep/blocked") || labelSet.has("upstream/1-blocked")) return true; // Dependency monitoring
-  if (["attention/1-agent", "attention/0-agent", "attention/agent"].some((a) => labelSet.has(a))) return true;
-  if (labelSet.has("spec/2-approved")) return true;
+  if (labelSet.has("attention/orchestrator")) return true;
+  if (labelSet.has("size/chunk") || labelSet.has("linked/needs-split")) return true; // Orchestrator action needed to chunk/split
+  if (labelSet.has("spec/needed") || labelSet.has("spec/checklist")) return true; // Shaping / gate tracking
+  if (labelSet.has("state/verify") || labelSet.has("state/review")) return true; // Deliverable pre-flight verification
+  if (labelSet.has("dep/blocked") || labelSet.has("upstream/blocked")) return true; // Dependency monitoring
+  if (labelSet.has("attention/agent")) return true;
+  if (labelSet.has("spec/approved")) return true;
   if (isDispatchableCandidate(labelSet)) return true;
   return false;
 }
@@ -662,34 +798,46 @@ function parseJsonList<T>(stdout: string): T[] | null {
   }
 }
 
+export type TeaxRunner = (args: string[]) => Promise<{ code: number; stdout: string; stderr: string }>;
+
 /**
  * Default IO: `teax` as the Forgejo transport and `~/.cache` for board state —
  * the same plumbing the Python original used, minus the Python interpreter.
  * Unlike the original, a failing issues query is an error, not an empty board:
  * that conflation was the silent degradation #733 removes.
  */
-export function createDefaultIssuesCheckIo(): IssuesCheckIo {
+export function createDefaultIssuesCheckIo(runner: TeaxRunner = teaxRun): IssuesCheckIo {
   return {
     async getOpenIssues(hostname, repo) {
-      const res = await teaxRun([
-        "api",
-        `repos/${repo}/issues?state=open&sort=updated&order=desc`,
-        "--hostname",
-        hostname,
-      ]);
-      if (res.code !== 0) {
-        return {
-          ok: false,
-          error: `teax issues query failed (rc=${res.code}): ${res.stderr.trim() || "no output"}`,
-        };
+      const allIssues: ForgejoIssue[] = [];
+      const limit = 50;
+      const maxPages = 20;
+
+      for (let page = 1; page <= maxPages; page++) {
+        const res = await runner([
+          "api",
+          `repos/${repo}/issues?state=open&sort=updated&order=desc&limit=${limit}&page=${page}`,
+          "--hostname",
+          hostname,
+        ]);
+        if (res.code !== 0) {
+          return {
+            ok: false,
+            error: `teax issues query failed on page ${page} (rc=${res.code}): ${res.stderr.trim() || "no output"}`,
+          };
+        }
+        const out = res.stdout.trim();
+        if (!out) break;
+        const pageIssues = parseJsonList<ForgejoIssue>(out);
+        if (!pageIssues) {
+          return { ok: false, error: `teax issues query returned non-list output on page ${page}` };
+        }
+        if (pageIssues.length === 0) break;
+        allIssues.push(...pageIssues);
+        if (pageIssues.length < limit) break;
       }
-      const out = res.stdout.trim();
-      if (!out) return { ok: true, issues: [] };
-      const issues = parseJsonList<ForgejoIssue>(out);
-      if (!issues) {
-        return { ok: false, error: "teax issues query returned non-list output" };
-      }
-      return { ok: true, issues };
+
+      return { ok: true, issues: allIssues };
     },
 
     // Comment reads stay best-effort ([] on failure), as in the original:
@@ -750,6 +898,11 @@ export interface IssuesCheckOptions {
    * Defaults to true.
    */
   sweepStaleWip?: boolean;
+  /**
+   * Whether to file open issues with no `state/*` label under `state/triage`.
+   * Board hygiene runs on every check; defaults to true.
+   */
+  normalizeState?: boolean;
   dryRun?: boolean;
   /** Injectable clock; defaults to the real current time. */
   now?: number;
@@ -807,6 +960,7 @@ export async function runIssuesCheck(options: IssuesCheckOptions = {}): Promise<
   const role = options.role ?? "orchestrator";
   const staleWipHours = options.staleWipHours ?? ISSUES_CHECK_DEFAULT_STALE_WIP_HOURS;
   const sweepStaleWip = options.sweepStaleWip ?? true;
+  const normalizeState = options.normalizeState ?? true;
   const dryRun = options.dryRun ?? false;
   const io = options.io ?? createDefaultIssuesCheckIo();
 
@@ -820,7 +974,7 @@ export async function runIssuesCheck(options: IssuesCheckOptions = {}): Promise<
   }
   const issues = fetched.issues;
   if (issues.length === 0) {
-    return { exitCode: 0, rankedCandidates: [], staleWipRecovery: [], savedState: {} };
+    return { exitCode: 0, rankedCandidates: [], staleWipRecovery: [], stateTriage: [], savedState: {} };
   }
 
   const staleWipResults = sweepStaleWip
@@ -828,6 +982,10 @@ export async function runIssuesCheck(options: IssuesCheckOptions = {}): Promise<
         now: options.now,
         dryRun,
       })
+    : [];
+
+  const stateTriageResults = normalizeState
+    ? await sweepStatelessIssues(io, hostname, repo, issues, { dryRun })
     : [];
 
   const cache = await io.loadCache(repo);
@@ -858,8 +1016,8 @@ export async function runIssuesCheck(options: IssuesCheckOptions = {}): Promise<
     const isChanged = force ? true : !signaturesEqual(cachedSig, issueSig);
 
     if (
-      setIntersects(labelsSet, ["attention/3-ignore", "attention/2-ignore"]) &&
-      !labelsSet.has("priority/0-SOS")
+      setIntersects(labelsSet, ["attention/ignore"]) &&
+      !labelsSet.has("priority/sos")
     ) {
       continue;
     }
@@ -940,7 +1098,13 @@ export async function runIssuesCheck(options: IssuesCheckOptions = {}): Promise<
   await io.saveCache(newState, repo);
 
   if (candidates.length === 0) {
-    return { exitCode: 0, rankedCandidates: [], staleWipRecovery: staleWipResults, savedState: newState };
+    return {
+      exitCode: 0,
+      rankedCandidates: [],
+      staleWipRecovery: staleWipResults,
+      stateTriage: stateTriageResults,
+      savedState: newState,
+    };
   }
 
   // Sort candidates deterministically by priority tuple (stable, like Python).
@@ -950,6 +1114,7 @@ export async function runIssuesCheck(options: IssuesCheckOptions = {}): Promise<
     exitCode: 1,
     rankedCandidates: candidates,
     staleWipRecovery: staleWipResults,
+    stateTriage: stateTriageResults,
     savedState: newState,
   };
 }
@@ -1043,15 +1208,22 @@ export function renderIssuesCheckMarkdown(
   const byCategory = (category: string) =>
     candidates.map((c, i) => ({ c, i })).filter(({ c }) => c.category === category).map(({ i }) => i);
   const verificationIdx = byCategory("verification");
+  const operatorVerifyIdx = byCategory("operator_verify");
   const shapingIdx = byCategory("shaping");
   const gatedSpecIdx = byCategory("gated_spec");
   const verificationSet = new Set(verificationIdx);
+  const operatorVerifySet = new Set(operatorVerifyIdx);
   const shapingSet = new Set(shapingIdx);
   const gatedSpecSet = new Set(gatedSpecIdx);
   const othersIdx = candidates
     .map((_, i) => i)
     .filter(
-      (i) => !inGroup(i) && !verificationSet.has(i) && !shapingSet.has(i) && !gatedSpecSet.has(i),
+      (i) =>
+        !inGroup(i) &&
+        !verificationSet.has(i) &&
+        !operatorVerifySet.has(i) &&
+        !shapingSet.has(i) &&
+        !gatedSpecSet.has(i),
     );
 
   const printSection = (title: string, idxs: number[]) => {
@@ -1083,6 +1255,7 @@ export function renderIssuesCheckMarkdown(
   printSection("USER ATTENTION REQUIRED (AWAITING OPERATOR INPUT)", [...userAttentionIdx]);
   printSection("DISPATCHABLE TASKS - AUTONOMOUS EXECUTION (NO APPROVAL NEEDED)", [...dispatchableIdx]);
   printSection("DELIVERABLE VERIFICATION - READY FOR PRE-FLIGHT AUDIT", verificationIdx);
+  printSection("OPERATOR ACCEPTANCE - AWAITING LIVE VERIFICATION", operatorVerifyIdx);
   printSection("PRE-CODE SHAPING - ORCHESTRATOR SPECIFICATION REQUIRED", shapingIdx);
   printSection("HOLDING FOR OPERATOR APPROVAL (SPEC CHECKLIST)", gatedSpecIdx);
   printSection("ORCHESTRATOR REASONING & TRIAGE", othersIdx);

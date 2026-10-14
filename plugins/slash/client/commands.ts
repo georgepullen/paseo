@@ -1,5 +1,5 @@
 import type { PluginClientContext } from "@getpaseo/plugin/client";
-import { getOptionalClientHost } from "paseo-plugin-helper/core";
+import { getOptionalClientHost } from "./vendor/paseo-plugin-helper/core";
 import {
   interpolateTemplate,
   listCommandsRpc,
@@ -21,6 +21,9 @@ function showFeedback(message: string, isError = false): void {
         toast.show(message, isError ? { variant: "error" } : undefined);
         return;
       }
+    }
+    if (!toast) {
+      console.error(`[slash.commands] show-feedback: no toast available, message="${message}"`);
     }
   } catch {}
 }
@@ -83,8 +86,16 @@ export function registerSlashCommands(client: PluginClientContext): () => void {
             argumentHint: "{args}",
             context: "agent",
             async onSubmit(ctx) {
-              const prompt = interpolateTemplate(command.action.verb === "send" ? command.action.template : "", ctx.args);
-              await ctx.paseo.agents.ref(ctx.agent.id).send(prompt);
+              try {
+                await (client.rpc as unknown as (c: unknown, i: unknown) => Promise<unknown>)(
+                  runCommandRpc as unknown,
+                  { name: command.name, args: ctx.args, agentId: ctx.agent.id },
+                );
+              } catch (err) {
+                const message = err instanceof Error ? err.message : String(err);
+                report(`send:${command.name}`, err);
+                showFeedback(`/${command.name} send failed: ${message}`, true);
+              }
             },
           }),
         );
@@ -109,51 +120,16 @@ export function registerSlashCommands(client: PluginClientContext): () => void {
             argumentHint: "[args]",
             context: "agent",
             async onSubmit(ctx) {
-              const agentRef = ctx.paseo.agents.ref(ctx.agent.id);
               try {
-                const out = await (client.rpc as unknown as (c: unknown, i: unknown) => Promise<{ result?: unknown }>)(
+                await (client.rpc as unknown as (c: unknown, i: unknown) => Promise<{ result?: unknown }>)(
                   runCommandRpc as unknown,
                   { name: command.name, args: ctx.args, agentId: ctx.agent.id },
                 );
                 showFeedback(`/${command.name} executed`);
-                if (agentRef.timeline && typeof agentRef.timeline.append === "function") {
-                  try {
-                    await agentRef.timeline.append({
-                      type: "plugin",
-                      id: `slash-${command.name}-${Date.now()}`,
-                      kind: "slash-command-result",
-                      version: 1,
-                      data: {
-                        command: command.name,
-                        status: "ok",
-                        body: out.result !== undefined ? JSON.stringify(out.result, null, 2) : "Success",
-                      },
-                    });
-                  } catch (tlErr) {
-                    report(`timeline.append:${command.name}`, tlErr);
-                  }
-                }
               } catch (e) {
                 const errMessage = e instanceof Error ? e.message : String(e);
                 report(`run-command:${command.name}`, errMessage);
                 showFeedback(`/${command.name} failed: ${errMessage}`, true);
-                if (agentRef.timeline && typeof agentRef.timeline.append === "function") {
-                  try {
-                    await agentRef.timeline.append({
-                      type: "plugin",
-                      id: `slash-${command.name}-${Date.now()}`,
-                      kind: "slash-command-result",
-                      version: 1,
-                      data: {
-                        command: command.name,
-                        status: "error",
-                        body: errMessage,
-                      },
-                    });
-                  } catch (tlErr) {
-                    report(`timeline.append:${command.name}`, tlErr);
-                  }
-                }
               }
             },
           }),

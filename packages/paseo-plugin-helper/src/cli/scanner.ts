@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { AUDIT_RULES } from "./rules.js";
+import { AUDIT_RULES, RAW_COLOR_APPEARANCE_MODULES } from "./rules.js";
 import type { AuditExemption, AuditIssue, AuditOptions, AuditReport } from "./types.js";
 import { readPluginConformanceExemptions } from "./conformance-exemptions.js";
 
@@ -65,6 +65,61 @@ function isGeneratedOrBundledFile(filePath: string): boolean {
   );
 }
 
+// --- no-raw-color-literal ------------------------------------------------
+
+/** A quoted color literal: `"#rgb"`, `"#rrggbbaa"`, `"rgba(...)"`, … */
+const QUOTED_COLOR_LITERAL = /["'](?:#[0-9a-fA-F]{3,8}|(?:rgb|rgba|hsl|hsla)\s*\([^"']*\))["']/;
+/** A quoted CSS named color, flagged only next to a color style property. */
+const QUOTED_NAMED_COLOR = /["'](?:white|black|red|green|blue|yellow|orange|purple|pink|gray|grey|cyan|magenta)["']/i;
+/** Style properties whose value is a color. */
+const COLOR_STYLE_PROPERTY = /\b(?:color|backgroundColor|border(?:Top|Bottom|Left|Right|Start|End)?Color|borderColor|tintColor|shadowColor|outlineColor|textDecorationColor)\b/;
+
+/** Removes a trailing `//` comment, ignoring `//` inside quotes. */
+function stripLineComment(line: string): string {
+  let quote: string | undefined;
+  for (let i = 0; i < line.length; i += 1) {
+    const ch = line[i];
+    if (quote) {
+      if (ch === "\\") i += 1;
+      else if (ch === quote) quote = undefined;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") quote = ch;
+    else if (ch === "/" && line[i + 1] === "/") return line.slice(0, i);
+  }
+  return line;
+}
+
+/**
+ * Line ranges covered by an `addTheme({ colors: { … } })` contribution. Raw hex
+ * is correct inside a contributed host theme, so those lines are skipped. The
+ * span is found by balancing parentheses from the call site; a string literal
+ * containing a paren inside a theme descriptor is not a shape the SDK accepts.
+ */
+function addThemeLineSpans(content: string): Array<readonly [number, number]> {
+  const spans: Array<readonly [number, number]> = [];
+  const re = /\.?addTheme\s*\(/g;
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(content)) !== null) {
+    let depth = 1;
+    let i = re.lastIndex;
+    for (; i < content.length && depth > 0; i += 1) {
+      const ch = content[i];
+      if (ch === "(") depth += 1;
+      else if (ch === ")") depth -= 1;
+    }
+    const startLine = content.slice(0, match.index).split("\n").length;
+    const endLine = content.slice(0, i).split("\n").length;
+    spans.push([startLine, endLine]);
+  }
+  return spans;
+}
+
+function isRawColorLiteral(trimmed: string): boolean {
+  if (QUOTED_COLOR_LITERAL.test(trimmed)) return true;
+  return COLOR_STYLE_PROPERTY.test(trimmed) && QUOTED_NAMED_COLOR.test(trimmed);
+}
+
 function findFiles(dir: string, ignoredCustom: Set<string>): string[] {
   const results: string[] = [];
 
@@ -108,8 +163,69 @@ export function auditProject(targetDir: string, options: AuditOptions = {}): Aud
   // Per-rule opt-outs declared by the plugin itself, resolved before the file
   // loop so every rule check can consult them.
   const { exemptions, unknownExemptions } = readPluginConformanceExemptions(resolvedTarget);
-  const isExempt = (ruleId: string): boolean => exemptions.has(ruleId);
+
+  // xpufx-org/paseo#1221: Plugins that adopt `@xpufx/paseo-plugin-ui` cannot
+  // exempt interaction rules (`no-bespoke-react-native-interactions`). Adopting
+  // the shared UI library guarantees the surface delegates interactive controls
+  // and templates to the host-integrated package instead of monkey-patching local primitives.
+  let adoptsPluginUi = false;
+  try {
+    const pkgPath = path.join(resolvedTarget, "package.json");
+    if (fs.existsSync(pkgPath)) {
+      const pkg = JSON.parse(fs.readFileSync(pkgPath, "utf-8"));
+      const deps = { ...pkg.dependencies, ...pkg.devDependencies };
+      if (deps["@xpufx/paseo-plugin-ui"]) {
+        adoptsPluginUi = true;
+      }
+    }
+  } catch {}
+
+  const isExempt = (ruleId: string): boolean => {
+    if (adoptsPluginUi && ruleId === "no-bespoke-react-native-interactions") {
+      return false;
+    }
+    return exemptions.has(ruleId);
+  };
   const exemptReason = (ruleId: string): string | undefined => exemptions.get(ruleId);
+
+  // The appearance module may legitimately hold a local palette. The rule is
+  // deliberately not exemptible through `conformance.json` (that would restore
+  // the blind theme seam the rule exists to close), so a manifest exemption is
+  // reported as an error and ignored.
+  const appearanceModules =
+    RAW_COLOR_APPEARANCE_MODULES[path.basename(resolvedTarget)] ?? [];
+  if (exemptions.has("no-raw-color-literal")) {
+    const rule = AUDIT_RULES["no-raw-color-literal"];
+    issues.push({
+      ruleId: rule.id,
+      severity: "error",
+      file: "conformance.json",
+      line: 1,
+      column: 0,
+      message:
+        "no-raw-color-literal cannot be exempted through conformance.json; put the literals in the plugin's appearance module or an addTheme contribution",
+      codeSnippet: "no-raw-color-literal",
+      replacement: rule.replacement,
+      docUrl: rule.docUrl,
+    });
+  }
+
+  if (adoptsPluginUi && exemptions.has("no-bespoke-react-native-interactions")) {
+    const rule = AUDIT_RULES["no-bespoke-react-native-interactions"];
+    issues.push({
+      ruleId: rule.id,
+      severity: "error",
+      file: "conformance.json",
+      line: 1,
+      column: 0,
+      message:
+        "no-bespoke-react-native-interactions cannot be exempted by plugins adopting @xpufx/paseo-plugin-ui; compose interactions through @xpufx/paseo-plugin-ui instead",
+      codeSnippet: "no-bespoke-react-native-interactions",
+      replacement: rule.replacement,
+      docUrl: rule.docUrl,
+    });
+  }
+
 
   const pushIssue = (
     ruleId: keyof typeof AUDIT_RULES,
@@ -554,6 +670,94 @@ export function auditProject(targetDir: string, options: AuditOptions = {}): Aud
           column: line.indexOf(line.trim()),
           message: rule.description,
           codeSnippet: line.trim(),
+          replacement: rule.replacement,
+          docUrl: rule.docUrl,
+        });
+      }
+    }
+
+    // Rule: no-class-in-client-bundle (#1066, #510). Shared code is bundled
+    // into the client too, so both dirs are covered; server-only code is free.
+    const isSharedFile = relPath.split(path.sep).includes("shared");
+    if ((isClientFile || isSharedFile) && !inTest && !inBuildOrTool) {
+      const classRegex = /(?:^|[\s=(,:;{}])class\s+[A-Za-z_$][\w$]*(?:\s+extends\b|\s*\{)|=\s*class\b|\bclass\s+extends\b/;
+      lines.forEach((ln, idx) => {
+        const t = ln.trim();
+        if (t.startsWith("//") || t.startsWith("*") || t.startsWith("/*")) return;
+        if (!classRegex.test(ln)) return;
+        const rule = AUDIT_RULES["no-class-in-client-bundle"];
+        issues.push({
+          ruleId: rule.id,
+          severity: rule.severity,
+          file: relPath,
+          line: idx + 1,
+          column: Math.max(0, ln.indexOf(t)),
+          message: rule.description,
+          codeSnippet: t,
+          replacement: rule.replacement,
+          docUrl: rule.docUrl,
+        });
+      });
+    }
+
+    // Rule: no-modal-scroll-pinning (#1054, #1254).
+    // Modal bodies must stay fluid (width: '100%') without pinning flex: 1 or
+    // minHeight: 0, which collapses inside BottomSheetScrollView on mobile.
+    if (isClientFile && !inTest && !inBuildOrTool) {
+      const modalPinRegex = /modal(?:Column|Body|Section|Container|Content)\s*:\s*\{[^}]{0,120}?(?:flex\s*:\s*1|minHeight\s*:\s*0)/gs;
+      let match: RegExpExecArray | null;
+      while ((match = modalPinRegex.exec(content)) !== null) {
+        const matchIndex = match.index;
+        const lineNum = content.slice(0, matchIndex).split("\n").length;
+        const snippetLine = lines[lineNum - 1] ?? "";
+        if (snippetLine.trim().startsWith("//") || snippetLine.trim().startsWith("*")) continue;
+        const rule = AUDIT_RULES["no-modal-scroll-pinning"];
+        issues.push({
+          ruleId: rule.id,
+          severity: rule.severity,
+          file: relPath,
+          line: lineNum,
+          column: Math.max(0, snippetLine.indexOf(snippetLine.trim())),
+          message: rule.description,
+          codeSnippet: snippetLine.trim(),
+          replacement: rule.replacement,
+          docUrl: rule.docUrl,
+        });
+      }
+    }
+
+    // Rule: no-raw-color-literal. Host-theme-driven code reads `theme.colors.*`;
+    // a quoted hex/rgb/hsl literal is a static color the host cannot retheme.
+    // The plugin's declared appearance module and any `addTheme` contribution
+    // are the two deliberate exceptions (see rules.ts).
+    const relPosix = relPath.split(path.sep).join("/");
+    if (
+      isClientFile &&
+      !inTest &&
+      !inBuildOrTool &&
+      !appearanceModules.includes(relPosix)
+    ) {
+      const addThemeSpans = addThemeLineSpans(content);
+      const inAddTheme = (lineNumber: number): boolean =>
+        addThemeSpans.some(([start, end]) => lineNumber >= start && lineNumber <= end);
+      for (let i = 0; i < lines.length; i++) {
+        const lineNumber = i + 1;
+        const raw = stripLineComment(lines[i]);
+        const trimmed = raw.trim();
+        if (!trimmed || trimmed.startsWith("*") || trimmed.startsWith("/*") || trimmed.startsWith("{/*")) {
+          continue;
+        }
+        if (!isRawColorLiteral(trimmed)) continue;
+        if (inAddTheme(lineNumber)) continue;
+        const rule = AUDIT_RULES["no-raw-color-literal"];
+        issues.push({
+          ruleId: rule.id,
+          severity: rule.severity,
+          file: relPath,
+          line: lineNumber,
+          column: raw.indexOf(trimmed),
+          message: rule.description,
+          codeSnippet: trimmed,
           replacement: rule.replacement,
           docUrl: rule.docUrl,
         });

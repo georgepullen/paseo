@@ -20,6 +20,13 @@ This skill defines the operational workflow, tool usage, issue conventions, and 
 > **Plugin Storage Isolation**:
 > When implementing, modifying, or refactoring Paseo plugins, persistent data, configuration, queues, and state must **NEVER** be stored in arbitrary locations under `~/.paseo/` (e.g. `~/.paseo/logs`, `~/.paseo/queues`) or under `~/.config/<plugin>`. All plugin persistent state must be scoped strictly under `~/.paseo/plugin-data/<namespace>/<pluginId>/` via `PluginStorage`.
 
+> [!IMPORTANT]
+> **Workspace Scratch Isolation (`.tmp/`)**:
+> Never write temporary files, test scripts, downloaded keys, or scratch artifacts to global `/tmp` or paths outside your assigned workspace directory. Always use the workspace-scoped `<workspace>/.tmp/` directory (which is gitignored). Touching global `/tmp` violates workspace containment and triggers interactive permission stalls.
+
+> [!NOTE]
+> **Prefer `teax ... -F <file>` over inline heredocs**: Compose comment/PR bodies into `<workspace>/.tmp/<file>` and pass them with `teax issue comment ... -F <workspace>/.tmp/<file>`. The inline `-b "$(cat <<'EOF' ...)"` shape is the command that `pi` most often flags as dangerous. When clearing scratch, delete only inside `<workspace>/.tmp/` (for example `rm -rf <workspace>/.tmp/dist`). Never `rm -rf` a global path, a workspace root, or a path containing `..`: those shapes are destructive, are not auto-approved, and will stall the turn.
+
 ---
 
 ## 1. Primary Tool: `teax`
@@ -49,7 +56,7 @@ teax api repos/owner/repo/issues/<NUMBER> --hostname forge.example.com
 ```
 
 > [!IMPORTANT]
-> **Clean Markdown & Backticks**: When posting comments via shell or heredocs, do NOT double-escape backticks with backslashes (e.g. avoid `\`\`\`` or `\`code\``). Backslashes display literally on the Forgejo web UI. Use unescaped single quotes, heredocs (`cat << 'EOF'`), or raw file input (`-F file` or python) to preserve clean triple backticks (` ``` `).
+> **Clean Markdown & Backticks**: Prefer composing the body into a scoped scratch file and passing it with `-F <workspace>/.tmp/<file>` — the inline-heredoc command shape is what `pi` flags. When you do compose in-shell, do NOT double-escape backticks with backslashes (e.g. avoid `\`\`\`` or `\`code\``). Backslashes display literally on the Forgejo web UI. Use unescaped single quotes, quoted heredocs (`cat << 'EOF'`), or raw file input (`-F file` or python) to preserve clean triple backticks (` ``` `).
 
 > [!NOTE]
 > Forgejo (`forge.example.com`) is the **primary git remote (`origin`) and issues tracker**. All agent code pushes go to `origin` on Forgejo. Pushes to public GitHub are strictly manual and gated by human review.
@@ -141,6 +148,21 @@ Actual comment text comes first. The agent envelope is appended as a clean, sing
 ---
 
 ## 5. Steering Labels & Operational Directives
+
+> [!IMPORTANT]
+> **Taxonomy migration (dual-read, platform#247 / paseo#1007)**: the board is moving to the
+> numberless label taxonomy. Both spellings mean the same thing during the transition —
+> accept either when reading, and prefer the numberless form when writing.
+> `state/0-triage`=`state/triage`, `state/1-wip`=`state/wip`, `state/2-review`=`state/review`,
+> `state/3-verify`=`state/verify`, `state/4-done`=`state/done`,
+> `attention/0-orchestrator`=`attention/orchestrator`, `attention/1-agent`=`attention/agent`,
+> `attention/2-user`=`attention/user`, `priority/0-SOS`=`priority/sos`,
+> `priority/1-high`=`priority/high`, `priority/2-normal`=`priority/normal`,
+> `priority/3-low`=`priority/low`, `priority/4-backburner`=`priority/backburner`,
+> `spec/0-needed`=`spec/needed`, `spec/1-checklist`=`spec/checklist`,
+> `spec/2-approved`=`spec/approved`, `review/0-needed`=`review/needed`,
+> `review/1-changes-requested`=`review/changes-requested`, `review/2-approved`=`review/approved`.
+> Never delete a numeric label that is still referenced by an in-flight ticket.
 
 Labels are how the Orchestrator communicates the **state, bounds, and steering signals** of **your assigned ticket**. They are not a queue for a worker to browse or self-dispatch from — read them only to understand the work you were handed.
 
@@ -255,9 +277,9 @@ When code is implemented and verified locally in your worktree:
 6. **Do NOT close the issue, merge the PR, or archive the workspace**: Leaf workers do not merge PRs, close issues, or perform workspace/branch cleanup. The PR is merged and the issue is closed by the Repo Orchestrator after pre-flight audit, and the Paseo workspace is archived by the Orchestrator afterward. A done ticket is a closed ticket. Operator escalation is strictly via `attention/1-user`.
 7. **Notify the parent Orchestrator (MANDATORY)**: The board handoff above is the durable record; this callback is the immediate signal so the Orchestrator does not sit polling a ticket. On completion **or** on any blocker, message the parent explicitly:
    ```bash
-   paseo send --steer --no-wait <parentAgentId> "Worker #<issue#> completed: PR <url>, tests pass."
+   paseo send --no-wait <parentAgentId> "Worker #<issue#> completed: PR <url>, tests pass."
    ```
-   - `--steer` is **mandatory**: without it the default `activeTurnBehavior` is `interrupt`, which clobbers the parent's active turn mid-work (see `skills/orchestrator/SKILL.md` §13 for the same footgun on the Front Desk escalation path).
+   - `--no-wait` is **required** so the send returns immediately instead of waiting for the parent turn to complete (see `skills/orchestrator/SKILL.md` §13 for the same footgun on the Front Desk escalation path).
    - `<parentAgentId>` comes from the Orchestrator's launch contract; if it was not supplied, treat that as a contract gap and escalate on the ticket instead of staying silent.
    - **This supplements the board handoff, it never replaces it**: still post the envelope comment, still apply `state/2-review` + `review/0-needed`. The callback is a ping, the board is the record.
    - Keep it to one line. Do not paste diffs, logs, or per-step narration into the parent message.

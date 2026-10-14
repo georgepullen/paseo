@@ -120,6 +120,21 @@ describe("Issue #893: Desktop Agent Switcher Dropdown", () => {
       assert.equal(res.orchestratorsByRepo[0]!.repo, "xpufx-org/attr-repo");
       assert.equal(res.orchestratorsByRepo[1]!.repo, "xpufx-org/label-repo");
     });
+
+    it("prefers the registry repo key over display-derived project and labels (#1078)", () => {
+      const orch = makeAgent({
+        id: "orch-registry",
+        category: "orchestrator",
+        name: "Orchestrator · paseo",
+        project: "stale/display-project",
+        labels: { repo: "stale/label-repo" },
+        registryRepoKey: "forge.example.com/xpufx-org/paseo",
+      });
+
+      const res = mapAgentSwitcherData({ frontDesk: [], orchestrators: [orch] });
+      assert.equal(res.orchestratorsByRepo.length, 1);
+      assert.equal(res.orchestratorsByRepo[0]!.repo, "forge.example.com/xpufx-org/paseo");
+    });
   });
 
   describe("AgentSwitcherDropdown UI rendering", () => {
@@ -201,14 +216,13 @@ describe("Issue #893: Desktop Agent Switcher Dropdown", () => {
     });
   });
 
-
-  describe("AgentSwitcherPopover and header icon integration", () => {
-    it("renders AgentSwitcherHeaderIcon with RadioTower icon", async () => {
+  describe("AgentSwitcherSidebarItem and in-client navigation", () => {
+    it("renders the sidebar icon with the RadioTower glyph", async () => {
       const harness = await getFleetHarness();
-      const { AgentSwitcherHeaderIcon } = await import("./agent-switcher.js");
+      const { AgentSwitcherSidebarIcon } = await import("./agent-switcher.js");
 
       const { renderer } = await harness.renderWithRoot(
-        React.createElement(AgentSwitcherHeaderIcon, {
+        React.createElement(AgentSwitcherSidebarIcon, {
           size: 18,
           color: "#fff",
         } as any),
@@ -219,9 +233,41 @@ describe("Issue #893: Desktop Agent Switcher Dropdown", () => {
       assert.equal(json?.props?.name, "RadioTower");
     });
 
-    it("queries uppidiAgentsContract and passes navigation.openAgent on row press", async () => {
+    it("opens the switcher popover from the host SidebarRow", async () => {
       const harness = await getFleetHarness();
-      const { AgentSwitcherPopover } = await import("./agent-switcher.js");
+      const { AgentSwitcherSidebarItem } = await import("./agent-switcher.js");
+
+      let opened: unknown;
+      const { root } = await harness.renderWithRoot(
+        React.createElement(AgentSwitcherSidebarItem, {
+          theme: {},
+          host: { id: "srv-test", label: "Test" },
+          layout: { compact: false, platform: "web" },
+          currentScreen: null,
+          openScreen: () => {},
+          openPopover: (Content: unknown) => {
+            opened = Content;
+          },
+        } as any),
+      );
+
+      const row = root.find((n: any) => n.type === "SidebarRow");
+      assert.ok(row, "sidebar item must render a host SidebarRow");
+      await harness.TestRenderer.act(async () => {
+        row.props.onPress();
+      });
+      assert.equal(
+        typeof opened,
+        "function",
+        "openPopover must receive the switcher content component",
+      );
+    });
+
+    it("hands the selected agent to the jump screen through openScreen", async () => {
+      const harness = await getFleetHarness();
+      const { AgentSwitcherPopover, AGENT_SWITCHER_JUMP_SCREEN_ID } = await import(
+        "./agent-switcher.js"
+      );
 
       const fd = makeAgent({
         id: "fd-pop-id",
@@ -238,31 +284,27 @@ describe("Issue #893: Desktop Agent Switcher Dropdown", () => {
         deterministicState: "working",
       });
 
-      harness.payloads["uppidi-fleet.agents"] = {
+      harness.payloads["fleet.roster"] = {
         ok: true,
         frontDesk: [fd],
         orchestrators: [orch],
         workers: [],
         tree: [],
         enrolledRepos: ["xpufx-org/paseo"],
-        mutedRepos: [],
+        pausedRepos: [],
         repoQueuedHooks: {},
       };
 
-      const openedAgents: string[] = [];
-      const navigation = {
-        openAgent: (input: { agentId: string }) => {
-          openedAgents.push(input.agentId);
-        },
-        openWorkspace: () => {},
-      };
-
+      const opened: Array<{ screenId: string; params?: Record<string, string> }> = [];
       const { root, renderer } = await harness.renderWithRoot(
         React.createElement(AgentSwitcherPopover, {
+          theme: {},
+          host: { id: "srv-test", label: "Test Host" },
+          layout: { compact: false, platform: "web" },
           close: () => {},
-          navigation,
-          workspaceId: "ws-test",
-          context: "workspace",
+          openScreen: (input: { screenId: string; params?: Record<string, string> }) => {
+            opened.push(input);
+          },
         } as any),
       );
 
@@ -279,39 +321,85 @@ describe("Issue #893: Desktop Agent Switcher Dropdown", () => {
       assert.ok(fdRow, "must find Front Desk row in popover");
       assert.ok(orchRow, "must find Orchestrator row in popover");
 
-      // Press frontdesk row
       await harness.TestRenderer.act(async () => {
         fdRow.props.onPress();
       });
-      assert.equal(openedAgents[0], "fd-pop-id");
-
-      // Press orchestrator row
       await harness.TestRenderer.act(async () => {
         orchRow.props.onPress();
       });
-      assert.equal(openedAgents[1], "orch-pop-id");
+
+      assert.deepEqual(opened, [
+        {
+          screenId: AGENT_SWITCHER_JUMP_SCREEN_ID,
+          params: { agentId: "fd-pop-id", serverId: "srv-test" },
+        },
+        {
+          screenId: AGENT_SWITCHER_JUMP_SCREEN_ID,
+          params: { agentId: "orch-pop-id", serverId: "srv-test" },
+        },
+      ]);
+    });
+
+    it("jump screen forwards the selection to navigation.openAgent on mount", async () => {
+      const harness = await getFleetHarness();
+      const { AgentSwitcherJumpScreen } = await import("./agent-switcher.js");
+
+      const navigations: Array<{ agentId: string; serverId?: string }> = [];
+      await harness.renderWithRoot(
+        React.createElement(AgentSwitcherJumpScreen, {
+          theme: {},
+          host: { id: "srv-host", label: "Test" },
+          layout: { compact: false, platform: "web" },
+          params: { agentId: "agent-9", serverId: "srv-param" },
+          navigation: {
+            openAgent: (input: { agentId: string; serverId?: string }) =>
+              navigations.push(input),
+          },
+        } as any),
+      );
+
+      assert.deepEqual(navigations, [{ agentId: "agent-9", serverId: "srv-param" }]);
+    });
+
+    it("jump screen degrades when the host exposes no navigation", async () => {
+      const harness = await getFleetHarness();
+      const { AgentSwitcherJumpScreen } = await import("./agent-switcher.js");
+
+      const { renderer } = await harness.renderWithRoot(
+        React.createElement(AgentSwitcherJumpScreen, {
+          theme: {},
+          host: { id: "srv-host", label: "Test" },
+          layout: { compact: false, platform: "ios" },
+          params: { agentId: "agent-9" },
+          navigation: undefined,
+        } as any),
+      );
+
+      assert.match(renderedText(renderer.toJSON()), /navigation is unavailable/i);
     });
 
     it("keeps exactly one scroll owner (no nested ScrollView inside popover content)", async () => {
       const harness = await getFleetHarness();
       const { AgentSwitcherPopover } = await import("./agent-switcher.js");
 
-      harness.payloads["uppidi-fleet.agents"] = {
+      harness.payloads["fleet.roster"] = {
         ok: true,
         frontDesk: [makeAgent({ id: "fd-1", category: "front-desk" })],
         orchestrators: [makeAgent({ id: "orch-1", category: "orchestrator", project: "xpufx-org/paseo" })],
         workers: [],
         tree: [],
         enrolledRepos: ["xpufx-org/paseo"],
-        mutedRepos: [],
+        pausedRepos: [],
         repoQueuedHooks: {},
       };
 
       const { root } = await harness.renderWithRoot(
         React.createElement(AgentSwitcherPopover, {
+          theme: {},
+          host: { id: "srv-test", label: "Test" },
+          layout: { compact: false, platform: "web" },
           close: () => {},
-          workspaceId: "ws-test",
-          context: "workspace",
+          openScreen: () => {},
         } as any),
       );
 
@@ -328,50 +416,5 @@ describe("Issue #893: Desktop Agent Switcher Dropdown", () => {
         "AgentSwitcherPopover must not contain a nested ScrollView; host popover owns scroll",
       );
     });
-
-    it("falls back to client.navigation or client.paseo.agents navigation when props.navigation is absent", async () => {
-      const harness = await getFleetHarness();
-      const { AgentSwitcherPopover } = await import("./agent-switcher.js");
-
-      harness.payloads["uppidi-fleet.agents"] = {
-        ok: true,
-        frontDesk: [makeAgent({ id: "fd-fallback-id", category: "front-desk" })],
-        orchestrators: [],
-        workers: [],
-        tree: [],
-        enrolledRepos: [],
-        mutedRepos: [],
-        repoQueuedHooks: {},
-      };
-
-      const openedViaClientNav: string[] = [];
-      const clientWithNav = {
-        navigation: {
-          openAgent: (input: { agentId: string }) => openedViaClientNav.push(input.agentId),
-        },
-      };
-
-      const { root } = await harness.renderWithRoot(
-        React.createElement(AgentSwitcherPopover, {
-          close: () => {},
-          client: clientWithNav,
-          workspaceId: "ws-test",
-          context: "workspace",
-        } as any),
-      );
-
-      await harness.TestRenderer.act(async () => {
-        await new Promise((resolve) => setTimeout(resolve, 60));
-      });
-
-      const fdRow = root.find((n: any) => n.props?.testID === "agent-row-fd-fallback-id");
-      assert.ok(fdRow, "must find Front Desk row");
-
-      await harness.TestRenderer.act(async () => {
-        fdRow.props.onPress();
-      });
-      assert.equal(openedViaClientNav[0], "fd-fallback-id");
-    });
   });
 });
-

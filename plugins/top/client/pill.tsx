@@ -37,7 +37,6 @@ import {
   HostModalSection,
   HostProgressBar,
   HostRow,
-  HostScroll,
   HostStack,
   HostTabs,
   HostThemeProvider,
@@ -53,7 +52,7 @@ import {
   type MetricThresholds,
   type ThemeColors,
 } from "paseo-plugin-helper/shared";
-import { PermissionAuditView } from "permission-audit/client";
+import { PermissionAuditView } from "./vendor/permission-audit";
 import {
   getSystemResourcesRpc,
   topSettingsContract,
@@ -61,13 +60,12 @@ import {
   listCustomPillsRpc,
   runCustomPillModalCommandRpc,
   isPillEnabled,
-  isProviderDependent,
+  isTimelineEnabled,
   legacyFlagView,
   isMcpSurfaceEnabled,
   customPillEffectiveEnabled,
   METRIC_DEFINITIONS,
   DEFAULT_METRIC_SURFACES,
-  checkboxesFromTarget,
   targetFromCheckboxes,
   CPU_THRESHOLDS,
   MEM_THRESHOLDS,
@@ -84,7 +82,7 @@ import { PLUGIN_VERSION } from "../shared/version";
 import { TopDashboardSurface } from "./surface";
 import { addSettingsListener, removeSettingsListener, notifySettingsChanged } from "./settings-events";
 import { useTopResourceQuery, useCustomPillsQuery } from "./resources-query";
-import { ChoiceChips } from "./settings-ui";
+import { ChoiceChips, MultiChoiceChips } from "./settings-ui";
 import {
   buildAllLabel,
   describeSegment,
@@ -190,6 +188,7 @@ export function getItemTab(item: PillItemType): "system" | "context" {
     case "tokens":
     case "tools":
     case "turns":
+    case "velocity":
       return "system";
     case "branch":
     case "worktree":
@@ -359,6 +358,10 @@ function registerTopPill(
 ) {
   return registerComposerPill<ModalTab>(client as ComposerPillRegistrar, {
     popoverWidth: 360,
+    // The host `<Modal.Content scrollable>` is the one scroll owner (#219,
+    // #975, #1054); the plugin body renders fluid content with no nested
+    // scroller so the host owns the mobile gesture.
+    hostScroll: true,
     ...options,
     presentation: options.presentation ?? "centered",
     onError:
@@ -809,6 +812,9 @@ function PillViewBody({ isOpen, open, workspaceId, agentId }: PillBodyProps) {
   if (settings.metricSurfaces && isPillEnabled(settings.metricSurfaces.turns)) {
     items.push("turns");
   }
+  if (settings.metricSurfaces && isPillEnabled(settings.metricSurfaces.velocity)) {
+    items.push("velocity");
+  }
 
   // Legacy render fallback only. On the supported 0.8 host the pill is
   // host-rendered from `resolveLabel`, which advances the cycle on the shared
@@ -864,12 +870,11 @@ interface ResourceModalProps extends RenderModalProps<ModalTab> {
   initialTab?: ModalTab;
 }
 
-function MetricSurfaceMatrix({
+function MetricPillSelector({
   settings,
   updateSettings,
   notifySettingsChanged,
   mcpInstalled,
-  mcpRunning,
   customPills,
   customOverrides,
   onCustomToggle,
@@ -878,141 +883,98 @@ function MetricSurfaceMatrix({
   updateSettings: (updates: Partial<TopSettings>) => void;
   notifySettingsChanged: (s: TopSettings) => void;
   mcpInstalled: boolean;
-  mcpRunning?: boolean | null;
   customPills: Array<{ id: string; title: string; sourceFile?: string; enabled: boolean }>;
   customOverrides: Record<string, boolean> | undefined;
   onCustomToggle: (id: string, val: boolean) => void;
 }) {
   const { colors } = useHostTheme();
-  const { compact: isCompact } = useHostLayout();
   const surfaces = settings.metricSurfaces ?? DEFAULT_METRIC_SURFACES;
-  const provisioned = new Set(settings.provisionedMetrics ?? []);
-  const matrixRowMinHeight = isCompact ? 44 : 32;
-  const setTarget = (id: MetricId, target: SurfaceTarget) => {
-    const next = { ...surfaces, [id]: target };
-    const s = { ...settings, metricSurfaces: next };
+  const masterOn = settings.showCustomPills ?? true;
+
+  const builtInOptions = METRIC_DEFINITIONS.map((def) => ({
+    id: def.id,
+    label: def.title,
+    icon: def.icon,
+    disabled: def.id === "mcp" && !mcpInstalled,
+  }));
+
+  const selectedBuiltIns = METRIC_DEFINITIONS
+    .filter((def) => isPillEnabled(surfaces[def.id]))
+    .map((def) => def.id);
+
+  const toggleMetric = (metricId: MetricId) => {
+    triggerHaptic("light");
+    const currentPill = isPillEnabled(surfaces[metricId]);
+    const currentTimeline = isTimelineEnabled(surfaces[metricId]);
+    const next = {
+      ...surfaces,
+      [metricId]: targetFromCheckboxes(!currentPill, currentTimeline),
+    };
+    const nextSettings = { ...settings, metricSurfaces: next };
     updateSettings({ metricSurfaces: next });
-    notifySettingsChanged(s);
+    notifySettingsChanged(nextSettings);
   };
+
+  const selectAll = () => {
+    triggerHaptic("medium");
+    const next = { ...surfaces };
+    for (const def of METRIC_DEFINITIONS) {
+      if (def.id === "mcp" && !mcpInstalled) continue;
+      const currentTimeline = isTimelineEnabled(surfaces[def.id]);
+      next[def.id] = targetFromCheckboxes(true, currentTimeline);
+    }
+    const nextSettings = { ...settings, metricSurfaces: next };
+    updateSettings({ metricSurfaces: next });
+    notifySettingsChanged(nextSettings);
+  };
+
+  const clearAll = () => {
+    triggerHaptic("medium");
+    const next = { ...surfaces };
+    for (const def of METRIC_DEFINITIONS) {
+      const currentTimeline = isTimelineEnabled(surfaces[def.id]);
+      next[def.id] = targetFromCheckboxes(false, currentTimeline);
+    }
+    const nextSettings = { ...settings, metricSurfaces: next };
+    updateSettings({ metricSurfaces: next });
+    notifySettingsChanged(nextSettings);
+  };
+
   return (
-    <View style={[styles.metricMatrix, isCompact && styles.metricMatrixCompact]}>
-      <View style={[styles.metricMatrixHeader, isCompact && styles.metricMatrixHeaderCompact]}>
-        <Text style={[styles.metricMatrixHeaderText, { color: colors.foregroundMuted }]}>
-          Metric
-        </Text>
-        <View style={[styles.metricMatrixTargetHeader, isCompact && styles.metricMatrixTargetHeaderCompact]}>
-          <Text style={[styles.metricMatrixHeaderText, { color: colors.foregroundMuted }]}>
-            Pill
+    <HostStack gap={10}>
+      <MultiChoiceChips
+        options={builtInOptions}
+        selected={selectedBuiltIns}
+        onToggle={toggleMetric}
+        onSelectAll={selectAll}
+        onClearAll={clearAll}
+      />
+      {customPills.length > 0 && (
+        <HostStack gap={6}>
+          <Text style={{ fontSize: 10, fontWeight: "600", color: colors.foregroundMuted }}>
+            Custom Metric Pills
           </Text>
-          <Text style={[styles.metricMatrixHeaderText, { color: colors.foregroundMuted }]}>
-            Timeline
-          </Text>
-        </View>
-      </View>
-      {METRIC_DEFINITIONS.map((def, index) => {
-        const boxes = checkboxesFromTarget(surfaces[def.id]);
-        const unprovisioned =
-          isProviderDependent(def.id) && !provisioned.has(def.id);
-        const timelineDisabled = !!def.pillOnly;
-        const disabled = def.id === "mcp" && !mcpInstalled;
-        const note =
-          def.pillOnly
-            ? "live only"
-            : def.id === "mcp" && !mcpInstalled
-              ? "mcp-tools not installed"
-              : def.id === "mcp" && mcpRunning === false
-                ? "mcp-tools disabled"
-                : unprovisioned
-                  ? "waiting for provider"
-                  : null;
-        const setBox = (which: "pill" | "timeline", val: boolean) => {
-          const nextBoxes = { ...boxes, [which]: val };
-          if (def.pillOnly) nextBoxes.timeline = false;
-          setTarget(
-            def.id,
-            targetFromCheckboxes(nextBoxes.pill, nextBoxes.timeline),
-          );
-        };
-        return (
-          <HostRow
-            key={def.id}
-            justify="between"
-            align="center"
-            style={[
-              styles.metricMatrixRow,
-              isCompact && styles.metricMatrixRowCompact,
-              { minHeight: matrixRowMinHeight },
-              index < METRIC_DEFINITIONS.length - 1
-                ? {
-                    borderBottomWidth: 1,
-                    borderBottomColor: colors.border,
-                  }
-                : undefined,
-            ]}
-          >
-            <View style={styles.metricMatrixLabel}>
-              <Text style={[styles.metricMatrixTitle, { color: colors.foreground }]}>
-                {def.title}
-              </Text>
-              {note ? (
-                <Text style={[styles.metricMatrixNote, { color: colors.foregroundMuted }]}>
-                  {note}
-                </Text>
-              ) : null}
-            </View>
-            <View style={[styles.metricMatrixTargets, isCompact && styles.metricMatrixTargetsCompact]}>
-              <HostToggle
-                value={boxes.pill}
-                disabled={disabled}
-                onValueChange={(val) => setBox("pill", val)}
-                style={styles.matrixToggle}
-              />
-              <HostToggle
-                value={boxes.timeline && !def.pillOnly}
-                disabled={disabled || timelineDisabled}
-                onValueChange={(val) => setBox("timeline", val)}
-                style={styles.matrixToggle}
-              />
-            </View>
-          </HostRow>
-        );
-      })}
-      {customPills.map((pill) => {
-        const masterOn = settings.showCustomPills ?? true;
-        const enabled = customPillEffectiveEnabled(masterOn, customOverrides, pill);
-        return (
-          <HostRow
-            key={`custom-${pill.id}`}
-            justify="between"
-            align="center"
-            style={styles.metricMatrixRow}
-          >
-            <View style={styles.metricMatrixLabel}>
-              <Text style={[styles.metricMatrixTitle, { color: colors.foreground }]}>
-                {pill.title}
-              </Text>
-              <Text style={[styles.metricMatrixNote, { color: colors.foregroundMuted }]}>
-                custom pill
-              </Text>
-            </View>
-            <View style={[styles.metricMatrixTargets, isCompact && styles.metricMatrixTargetsCompact]}>
-              <HostToggle
-                value={enabled}
-                disabled={!masterOn}
-                onValueChange={(val) => onCustomToggle(pill.id, val)}
-                style={styles.matrixToggle}
-              />
-              <HostToggle
-                value={false}
-                disabled={true}
-                onValueChange={() => {}}
-                style={styles.matrixToggle}
-              />
-            </View>
-          </HostRow>
-        );
-      })}
-    </View>
+          <MultiChoiceChips
+            options={customPills.map((pill) => ({
+              id: pill.id,
+              label: pill.title,
+              icon: "Sliders",
+              disabled: !masterOn,
+            }))}
+            selected={customPills
+              .filter((pill) => customPillEffectiveEnabled(masterOn, customOverrides, pill))
+              .map((pill) => pill.id)}
+            onToggle={(pillId) => {
+              triggerHaptic("light");
+              const pill = customPills.find((p) => p.id === pillId);
+              if (!pill) return;
+              const current = customPillEffectiveEnabled(masterOn, customOverrides, pill);
+              onCustomToggle(pillId, !current);
+            }}
+          />
+        </HostStack>
+      )}
+    </HostStack>
   );
 }
 
@@ -1026,7 +988,7 @@ function ResourceModal(props: ResourceModalProps) {
   );
 }
 
-function ResourceModalBody({ workspaceId, agentId, initialTab, payload }: ResourceModalProps) {
+function ResourceModalBody({ workspaceId, agentId, initialTab, payload, theme, layout }: ResourceModalProps) {
   const { colors } = useHostTheme();
   const { compact } = useHostLayout();
   // Host-density padding rhythm (the helper's "comfortable" scale): the host
@@ -1134,14 +1096,17 @@ function ResourceModalBody({ workspaceId, agentId, initialTab, payload }: Resour
     paddingHorizontal: padding.horizontal,
     paddingTop: padding.vertical,
     paddingBottom: Math.round(padding.gap / 2),
-  };
+    position: "sticky" as const,
+    top: 0,
+    zIndex: 10,
+  } as any;
 
   if (isError && !data) {
     return (
       <HostModalSection>
         <View style={styles.modalColumn}>
           <View style={navbarStyle}>{navbar}</View>
-          <HostScroll style={styles.modalScroll} contentContainerStyle={styles.modalScrollContent}>
+          <View style={styles.modalContent}>
             <HostCard variant="elevated">
               <View style={styles.errorBox}>
                 <Icon name="Ghost" size={24} color={colors.statusDanger} />
@@ -1150,7 +1115,7 @@ function ResourceModalBody({ workspaceId, agentId, initialTab, payload }: Resour
                 </Text>
               </View>
             </HostCard>
-          </HostScroll>
+          </View>
         </View>
       </HostModalSection>
     );
@@ -1162,7 +1127,7 @@ function ResourceModalBody({ workspaceId, agentId, initialTab, payload }: Resour
     <HostModalSection>
       <View style={styles.modalColumn}>
         <View style={navbarStyle}>{navbar}</View>
-        <HostScroll style={styles.modalScroll} contentContainerStyle={styles.modalScrollContent}>
+        <View style={styles.modalContent}>
           {activeTab === "system" && (
             <>
               {/* Dual Metric Gauges Hero */}
@@ -1501,25 +1466,25 @@ function ResourceModalBody({ workspaceId, agentId, initialTab, payload }: Resour
           ) : tokenMetrics?.contextUsedTokens != null ? (
             <HostKeyValue {...compactKvProps}
               label="Context Used"
-              value={`${tokenMetrics.contextUsedTokens.toLocaleString()} (${formatCompactTokens(tokenMetrics.contextUsedTokens)})`}
+              value={`${tokenMetrics.contextUsedTokens.toLocaleString('en-US')} (${formatCompactTokens(tokenMetrics.contextUsedTokens)})`}
             />
           ) : null}
 
           <HostStack gap={12}>
             <HostKeyValue {...compactKvProps}
               label="Input Tokens"
-              value={tokenMetrics?.inputTokens != null ? tokenMetrics.inputTokens.toLocaleString() : "--"}
+              value={tokenMetrics?.inputTokens != null ? tokenMetrics.inputTokens.toLocaleString('en-US') : "--"}
               subValue={tokenMetrics?.inputTokens != null ? formatCompactTokens(tokenMetrics.inputTokens) : undefined}
             />
             <HostKeyValue {...compactKvProps}
               label="Output Tokens"
-              value={tokenMetrics?.outputTokens != null ? tokenMetrics.outputTokens.toLocaleString() : "--"}
+              value={tokenMetrics?.outputTokens != null ? tokenMetrics.outputTokens.toLocaleString('en-US') : "--"}
               subValue={tokenMetrics?.outputTokens != null ? formatCompactTokens(tokenMetrics.outputTokens) : undefined}
             />
             {tokenMetrics?.cachedTokens != null && (
               <HostKeyValue {...compactKvProps}
                 label="Cached Tokens"
-                value={tokenMetrics.cachedTokens.toLocaleString()}
+                value={tokenMetrics.cachedTokens.toLocaleString('en-US')}
                 subValue={formatCompactTokens(tokenMetrics.cachedTokens)}
               />
             )}
@@ -1582,6 +1547,11 @@ function ResourceModalBody({ workspaceId, agentId, initialTab, payload }: Resour
           <HostCardHeader {...compactCardTitleProp}
             title="Active Pill Items"
             icon="Sliders"
+            value={
+              <Text style={[styles.accentValueText, { color: colors.accent }]}>
+                {`${METRIC_DEFINITIONS.filter((d) => isPillEnabled((settings.metricSurfaces ?? DEFAULT_METRIC_SURFACES)[d.id])).length} active`}
+              </Text>
+            }
             subtitle={
               !hasAnyPillEnabled
                 ? "None selected -- automatically showing CPU & RAM"
@@ -1593,12 +1563,11 @@ function ResourceModalBody({ workspaceId, agentId, initialTab, payload }: Resour
             }
           />
           <View style={styles.settingsToggles}>
-            <MetricSurfaceMatrix
+            <MetricPillSelector
               settings={settings}
               updateSettings={updateSettings}
               notifySettingsChanged={notifySettingsChanged}
               mcpInstalled={Boolean(data?.mcpInstalled)}
-              mcpRunning={data?.mcpRunning ?? null}
               customPills={(customPillList?.pills ?? []).map((pill) => ({
                 id: pill.id,
                 title: pill.title,
@@ -1693,6 +1662,68 @@ function ResourceModalBody({ workspaceId, agentId, initialTab, payload }: Resour
           </Text>
         </HostCard>
 
+        {/* Timeline Card Metrics Setting */}
+        {(settings.timelineCadence ?? 1) > 0 && (
+          <HostCard variant="elevated">
+            <HostCardHeader {...compactCardTitleProp}
+              title="Timeline Card Metrics"
+              icon="GitCommitHorizontal"
+              value={
+                <Text style={[styles.accentValueText, { color: colors.accent }]}>
+                  {`${METRIC_DEFINITIONS.filter((d) => !d.pillOnly && isTimelineEnabled((settings.metricSurfaces ?? DEFAULT_METRIC_SURFACES)[d.id])).length} active`}
+                </Text>
+              }
+              subtitle="Choose which metrics appear on turn summary cards"
+            />
+            <MultiChoiceChips
+              options={METRIC_DEFINITIONS.filter((d) => !d.pillOnly).map((def) => ({
+                id: def.id,
+                label: def.title,
+                icon: def.icon,
+                disabled: def.id === "mcp" && !data?.mcpInstalled,
+              }))}
+              selected={METRIC_DEFINITIONS.filter((d) => !d.pillOnly && isTimelineEnabled((settings.metricSurfaces ?? DEFAULT_METRIC_SURFACES)[d.id])).map((d) => d.id)}
+              onToggle={(metricId) => {
+                triggerHaptic("light");
+                const surfaces = settings.metricSurfaces ?? DEFAULT_METRIC_SURFACES;
+                const currentPill = isPillEnabled(surfaces[metricId]);
+                const currentTimeline = isTimelineEnabled(surfaces[metricId]);
+                const next = {
+                  ...surfaces,
+                  [metricId]: targetFromCheckboxes(currentPill, !currentTimeline),
+                };
+                updateSettings({ metricSurfaces: next });
+                notifySettingsChanged({ ...settings, metricSurfaces: next });
+              }}
+              onSelectAll={() => {
+                triggerHaptic("medium");
+                const surfaces = settings.metricSurfaces ?? DEFAULT_METRIC_SURFACES;
+                const next = { ...surfaces };
+                for (const def of METRIC_DEFINITIONS) {
+                  if (def.pillOnly) continue;
+                  if (def.id === "mcp" && !data?.mcpInstalled) continue;
+                  const currentPill = isPillEnabled(surfaces[def.id]);
+                  next[def.id] = targetFromCheckboxes(currentPill, true);
+                }
+                updateSettings({ metricSurfaces: next });
+                notifySettingsChanged({ ...settings, metricSurfaces: next });
+              }}
+              onClearAll={() => {
+                triggerHaptic("medium");
+                const surfaces = settings.metricSurfaces ?? DEFAULT_METRIC_SURFACES;
+                const next = { ...surfaces };
+                for (const def of METRIC_DEFINITIONS) {
+                  if (def.pillOnly) continue;
+                  const currentPill = isPillEnabled(surfaces[def.id]);
+                  next[def.id] = targetFromCheckboxes(currentPill, false);
+                }
+                updateSettings({ metricSurfaces: next });
+                notifySettingsChanged({ ...settings, metricSurfaces: next });
+              }}
+            />
+          </HostCard>
+        )}
+
         {/* Default Modal Tab Setting */}
         <HostCard variant="elevated">
           <HostCardHeader {...compactCardTitleProp}
@@ -1729,7 +1760,7 @@ function ResourceModalBody({ workspaceId, agentId, initialTab, payload }: Resour
     )}
 
     {activeTab === "permissions" && (
-      <PermissionAuditView variant="compact" />
+      <PermissionAuditView variant="compact" theme={theme} layout={layout} />
     )}
 
     {activeTab === "about" && (
@@ -1753,7 +1784,7 @@ function ResourceModalBody({ workspaceId, agentId, initialTab, payload }: Resour
         </Text>
       </View>
     )}
-        </HostScroll>
+        </View>
       </View>
     </HostModalSection>
   );
@@ -2124,6 +2155,16 @@ export function contributeClient(client: ComposerPillRegistrar | PluginClientCon
           defaultTab: "system",
         });
       }
+      if (settings.metricSurfaces && isPillEnabled(settings.metricSurfaces.velocity)) {
+        desiredPills.push({
+          id: "paseo-top-velocity",
+          item: "velocity",
+          icon: "Zap",
+          title: "Generation Velocity",
+          modalTitle: "Host System Resources",
+          defaultTab: "system",
+        });
+      }
 
       const desiredIds = new Set(desiredPills.map((p) => p.id));
 
@@ -2238,8 +2279,12 @@ export function contributeClient(client: ComposerPillRegistrar | PluginClientCon
               );
             },
             refreshIntervalMs: 5000,
-            renderModal: () => (
-              <LiveCustomPillModal pillId={pill.id} initial={pill} />
+            renderModal: (props) => (
+              <HostThemeProvider theme={props.theme}>
+                <HostLayoutProvider layout={props.layout}>
+                  <LiveCustomPillModal pillId={pill.id} initial={pill} />
+                </HostLayoutProvider>
+              </HostThemeProvider>
             ),
           });
           activeCustomPills.set(pill.id, cleanup);
@@ -2293,8 +2338,6 @@ export function contributeClient(client: ComposerPillRegistrar | PluginClientCon
 // primitive covers.
 const styles = {
   modalRoot: {
-    flex: 1,
-    minHeight: 0,
     width: "100%",
   },
   pillContainer: {
@@ -2393,80 +2436,6 @@ const styles = {
   accentValueText: {
     fontWeight: "600",
   },
-  metricMatrix: {
-    gap: 0,
-    width: "100%",
-  },
-  metricMatrixCompact: {
-    minWidth: 0,
-  },
-  metricMatrixHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingLeft: 4,
-    paddingRight: 4,
-    paddingBottom: 2,
-  },
-  metricMatrixHeaderCompact: {
-    paddingLeft: 2,
-    paddingRight: 2,
-  },
-  metricMatrixHeaderText: {
-    fontSize: 9,
-    fontWeight: "700",
-    textTransform: "uppercase",
-    letterSpacing: 0.5,
-  },
-  metricMatrixTargetHeader: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 28,
-    paddingRight: 10,
-  },
-  metricMatrixTargetHeaderCompact: {
-    gap: 16,
-    paddingRight: 8,
-  },
-  metricMatrixRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    paddingLeft: 4,
-    paddingRight: 4,
-  },
-  metricMatrixRowCompact: {
-    paddingLeft: 2,
-    paddingRight: 2,
-  },
-  metricMatrixLabel: {
-    flex: 1,
-    minWidth: 0,
-    paddingVertical: 2,
-  },
-  metricMatrixTitle: {
-    fontSize: 11,
-    fontWeight: "600",
-  },
-  metricMatrixNote: {
-    fontSize: 9,
-    lineHeight: 12,
-    marginTop: 1,
-  },
-  metricMatrixTargets: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 16,
-    paddingLeft: 8,
-  },
-  metricMatrixTargetsCompact: {
-    gap: 8,
-    paddingLeft: 4,
-  },
-  matrixToggle: {
-    width: 38,
-    minHeight: 44,
-  },
   allInOneContainer: {
     flexDirection: "row",
     alignItems: "center",
@@ -2520,19 +2489,13 @@ const styles = {
     paddingVertical: 4,
   },
   modalColumn: {
-    flex: 1,
-    minHeight: 0,
+    width: "100%",
   },
-  modalScroll: {
-    flex: 1,
-    minHeight: 0,
-  },
-  modalScrollContent: {
+  modalContent: {
+    width: "100%",
     paddingTop: 6,
   },
   customPillModal: {
-    flex: 1,
-    minHeight: 0,
     width: "100%",
     padding: 12,
   },

@@ -1,10 +1,54 @@
 import React from "react";
 import { View, Text } from "react-native";
-import type {
-  PluginButtonContentProps,
-  PluginButtonIconProps,
-  PluginSurfaceProps,
-} from "@getpaseo/plugin/client";
+export interface PluginSidebarItemProps {
+  theme?: any;
+  openPopover: (Component: React.ComponentType<any>) => void;
+}
+
+export interface PluginPopoverProps {
+  theme?: any;
+  host: { id: string; label?: string };
+  layout: { platform: "ios" | "android" | "web"; compact: boolean };
+  openScreen: (input: { screenId: string; params?: any }) => void;
+  close?: () => void;
+}
+
+export interface PluginScreenProps {
+  theme?: any;
+  host: { id: string; label?: string };
+  params: { agentId?: string; serverId?: string };
+  navigation?: {
+    openAgent?: (input: { agentId: string; serverId?: string }) => void;
+  };
+}
+
+import * as PaseoClientUI from "@getpaseo/plugin/client/ui";
+
+const DefaultSidebarRow: React.ComponentType<{
+  icon: React.ComponentType<{ size: number; color: string }>;
+  label: string;
+  onPress: () => void;
+}> = ({ icon: IconComp, label, onPress }) => {
+  const { colors } = useFleetTheme();
+  return (
+    <InteractiveRow
+      onPress={onPress}
+      style={{
+        paddingVertical: 8,
+        paddingHorizontal: 12,
+        flexDirection: "row",
+        alignItems: "center",
+        gap: 8,
+      }}
+    >
+      <IconComp size={16} color={colors.foregroundMuted} />
+      <Text style={{ color: colors.foreground, fontSize: 13, fontWeight: "600" }}>{label}</Text>
+    </InteractiveRow>
+  );
+};
+
+const SidebarRow = (PaseoClientUI as any).SidebarRow ?? DefaultSidebarRow;
+
 
 import { Icon } from "@getpaseo/plugin/client/react-native";
 import {
@@ -13,15 +57,18 @@ import {
   Responsive,
 } from "./host-ui.js";
 import { useRpcQuery } from "paseo-plugin-helper/core";
-import { useFleetTheme } from "./theme.js";
+import { HostThemeProvider, useFleetTheme } from "./theme.js";
+import { fleetRosterContract, type FleetOutput } from "@xpufx/backend-fleet/shared";
 import {
-  uppidiAgentsContract,
   getDeterministicStateConfig,
   type UppidiAgent,
 } from "../shared/contracts.js";
 import { mapAgentSwitcherData } from "./agent-switcher-data.js";
 
-export function AgentSwitcherHeaderIcon({ size, color }: PluginButtonIconProps) {
+/** Screen the switcher opens to hand a selection to `navigation.openAgent`. */
+export const AGENT_SWITCHER_JUMP_SCREEN_ID = "uppidi-fleet-agent-switcher-jump";
+
+export function AgentSwitcherSidebarIcon({ size, color }: { size: number; color: string }) {
   return <Icon name="RadioTower" size={size} color={color} />;
 }
 
@@ -217,14 +264,37 @@ export function AgentSwitcherDropdown({
   );
 }
 
-export function AgentSwitcherPopover(
-  props: PluginButtonContentProps & {
-    navigation?: PluginSurfaceProps["navigation"];
-    client?: { paseo?: { agents?: { openAgent?: (input: { agentId: string }) => void } }; navigation?: PluginSurfaceProps["navigation"] };
-  },
-) {
-  const { data: agentsData } = useRpcQuery(
-    uppidiAgentsContract,
+/**
+ * Sidebar-header entry for the switcher.
+ *
+ * `addHeaderButton` popovers receive `PluginButtonContentProps`, which carries
+ * no `navigation`; the SDK hands `navigation` only to navigable registrations
+ * (`PluginSurfaceProps`, `PluginScreenProps`, panels). This item opens the
+ * dropdown through `openPopover`, and each row hands its selection to a
+ * registered screen through `openScreen` — the screen is what carries
+ * `navigation.openAgent`.
+ */
+export function AgentSwitcherSidebarItem(props: PluginSidebarItemProps) {
+  return (
+    <SidebarRow
+      icon={AgentSwitcherSidebarIcon}
+      label="Agent Switcher"
+      onPress={() => props.openPopover(AgentSwitcherPopoverHost)}
+    />
+  );
+}
+
+function AgentSwitcherPopoverHost(props: PluginPopoverProps) {
+  return (
+    <HostThemeProvider theme={props.theme}>
+      <AgentSwitcherPopover {...props} />
+    </HostThemeProvider>
+  );
+}
+
+export function AgentSwitcherPopover(props: PluginPopoverProps) {
+  const { data: agentsData } = useRpcQuery<any, any, FleetOutput>(
+    fleetRosterContract,
     {},
     { refetchInterval: 5000 },
   );
@@ -232,18 +302,10 @@ export function AgentSwitcherPopover(
   const { frontDesk, orchestratorsByRepo } = mapAgentSwitcherData(agentsData);
 
   const handleSelectAgent = (agentId: string) => {
-    if (props.navigation?.openAgent) {
-      props.navigation.openAgent({ agentId });
-      return;
-    }
-    if (props.client?.navigation?.openAgent) {
-      props.client.navigation.openAgent({ agentId });
-      return;
-    }
-    if (props.client?.paseo?.agents?.openAgent) {
-      props.client.paseo.agents.openAgent({ agentId });
-      return;
-    }
+    props.openScreen({
+      screenId: AGENT_SWITCHER_JUMP_SCREEN_ID,
+      params: { agentId, serverId: props.host.id },
+    });
   };
 
   const content = (
@@ -277,5 +339,35 @@ export function AgentSwitcherPopover(
         {content}
       </View>
     </Responsive>
+  );
+}
+
+/**
+ * In-client hand-off. The popover itself cannot navigate (no `navigation`), so
+ * it opens this registered screen, which receives `navigation` and forwards the
+ * selection to `openAgent` on mount. The host replaces this route with the agent
+ * timeline; nothing reloads the client or leaves the app.
+ */
+export function AgentSwitcherJumpScreen(props: PluginScreenProps) {
+  const { colors } = useFleetTheme();
+  const agentId = props.params.agentId;
+  const openAgent = props.navigation?.openAgent;
+  const didNavigate = React.useRef(false);
+
+  React.useLayoutEffect(() => {
+    if (didNavigate.current || !agentId || !openAgent) return;
+    didNavigate.current = true;
+    openAgent({ agentId, serverId: props.params.serverId || props.host.id });
+  }, [agentId, openAgent, props.params.serverId, props.host.id]);
+
+  return (
+    <View
+      testID="agent-switcher-jump"
+      style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: 24 }}
+    >
+      <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>
+        {openAgent ? "Opening agent…" : "In-client navigation is unavailable on this host."}
+      </Text>
+    </View>
   );
 }

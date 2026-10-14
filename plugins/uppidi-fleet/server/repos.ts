@@ -79,7 +79,8 @@ export async function handleUppidiRepos(
     const isPrivate = Boolean(raw.private);
 
     const isEnrolled = roster.enrolledRepos.some((r) => isRepoMatching(r, key));
-    const isMuted = roster.mutedRepos.some((m) => isRepoMatching(m, key));
+    const isPaused = roster.pausedRepos.some((m) => isRepoMatching(m, key));
+    const isKanbanOnly = roster.kanbanOnlyRepos.some((m) => isRepoMatching(m, key));
 
     let queueDepth = 0;
     for (const [qKey, depth] of Object.entries(roster.repoQueuedHooks)) {
@@ -103,7 +104,8 @@ export async function handleUppidiRepos(
       url,
       private: isPrivate,
       enrolled: isEnrolled,
-      muted: isMuted,
+      paused: isPaused,
+      automationTier: isKanbanOnly ? "kanban-only" : isPaused ? "paused" : "full-active",
       hasOrchestrator,
       queueDepth,
     };

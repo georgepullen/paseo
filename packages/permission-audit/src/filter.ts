@@ -1,6 +1,7 @@
-import type { PermissionAuditEntry, PermissionDecision } from "./shared.js";
+import { isToolCallEntry, type AuditRecord, type PermissionDecision } from "./shared.js";
 
 export type DecisionFilter = "all" | PermissionDecision;
+export type AuditTypeFilter = "all" | "permission" | "tool_call";
 
 export function formatAuditTime(iso: string): string {
   const ms = Date.parse(iso);
@@ -8,28 +9,53 @@ export function formatAuditTime(iso: string): string {
   return new Date(ms).toLocaleString();
 }
 
+/**
+ * Middle-ellipsis for long values, keeping the leading key and the trailing
+ * identifier. `maxLength` is the content budget; the returned string can be one
+ * character longer once the ellipsis is inserted.
+ */
+function truncateMiddle(text: string, maxLength = 120): string {
+  if (text.length <= maxLength) return text;
+  const head = Math.ceil(maxLength / 2);
+  const tail = Math.floor(maxLength / 2);
+  return `${text.slice(0, head)}…${text.slice(text.length - tail)}`;
+}
+
 export function summarizeAuditInput(input: unknown): string {
   if (input === null || input === undefined) return "—";
-  if (typeof input === "string") return input.length > 120 ? `${input.slice(0, 120)}…` : input;
+  if (typeof input === "string") return truncateMiddle(input);
   try {
-    const text = JSON.stringify(input);
-    return text.length > 120 ? `${text.slice(0, 120)}…` : text;
+    return truncateMiddle(JSON.stringify(input));
   } catch {
     return "—";
   }
 }
 
 export function filterAuditEntries(
-  entries: PermissionAuditEntry[],
+  records: AuditRecord[],
   decision: DecisionFilter,
   search: string,
-): PermissionAuditEntry[] {
+  type: AuditTypeFilter = "all",
+): AuditRecord[] {
   const needle = search.trim().toLowerCase();
-  return entries.filter((entry) => {
-    if (decision !== "all" && entry.decision !== decision) return false;
+  return records.filter((record) => {
+    const toolCall = isToolCallEntry(record);
+    if (type === "permission" && toolCall) return false;
+    if (type === "tool_call" && !toolCall) return false;
+    // Decisions only exist on permission records; a decision filter excludes tool calls.
+    if (decision !== "all" && (toolCall || record.decision !== decision)) return false;
     if (!needle) return true;
-    const haystack =
-      `${entry.name} ${entry.kind} ${entry.agentId} ${entry.agentModel ?? ""} ${summarizeAuditInput(entry.input)}`.toLowerCase();
+    const haystack = [
+      record.name,
+      record.kind,
+      record.agentId,
+      record.agentModel ?? "",
+      summarizeAuditInput(record.input),
+      toolCall ? record.outcome : record.decision,
+      toolCall ? record.turnId ?? "" : "",
+    ]
+      .join(" ")
+      .toLowerCase();
     return haystack.includes(needle);
   });
 }

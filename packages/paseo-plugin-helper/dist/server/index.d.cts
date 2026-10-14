@@ -1,15 +1,15 @@
-import { ZodType } from 'zod';
+import { ZodType, z } from 'zod';
 import { S as SettingsContract } from '../settings-BNRcFeSP.cjs';
 import { SpawnOptions } from 'node:child_process';
-import { n as CustomPillDefinition, r as CustomPillState, D as ForgeIssue, G as ForgeLabel, a4 as OpenIssuesInput, a6 as OpenIssuesOutput, ag as SearchIssuesInput, ai as SearchIssuesOutput, w as ForgeContextInput, y as ForgeContextOutput, W as IssueDetailInput, Y as IssueDetailOutput, ak as SetLabelInput, am as SetLabelOutput, a as AddCommentInput, c as AddCommentOutput, j as CreateIssueInput, l as CreateIssueOutput, P as InstallLabelsInput, R as InstallLabelsOutput } from '../tickets-43n7zSNn.cjs';
-import '../rpc-D27pph91.cjs';
+import { n as CustomPillDefinition, r as CustomPillState, v as FeatureModule, H as ForgeIssue, J as ForgeLabel, ac as OpenIssuesInput, ae as OpenIssuesOutput, ao as SearchIssuesInput, aq as SearchIssuesOutput, z as ForgeContextInput, E as ForgeContextOutput, Z as IssueDetailInput, $ as IssueDetailOutput, as as SetLabelInput, au as SetLabelOutput, a as AddCommentInput, c as AddCommentOutput, j as CreateIssueInput, l as CreateIssueOutput, S as InstallLabelsInput, U as InstallLabelsOutput, u as FeatureDisposer } from '../tickets-DiTpkDUG.cjs';
+import { P as PluginRpcContract } from '../rpc-D27pph91.cjs';
 import '../types-4TBN5lgi.cjs';
 
 interface PluginStorageOptions<T> {
     defaultData?: T;
     /**
      * Base directory override. When provided, storage is located at path.join(baseDir, pluginId).
-     * When omitted, defaults to path.join(os.homedir(), ".paseo", namespace ?? "plugin-data/xpufx", pluginId).
+     * When omitted, defaults to path.join(resolvePaseoHome(), namespace ?? "plugin-data/xpufx", pluginId).
      */
     baseDir?: string;
     /**
@@ -27,6 +27,20 @@ interface StorageStats {
     totalBytes: number;
     lastModified: Date | null;
 }
+/**
+ * Resolve the real user home even when `HOME` points into an agent-mux profile.
+ * A profile session has `HOME=~/.agent-mux/profiles/<provider>/<profile>` while
+ * the live Paseo state stays on the host home. agent-mux exports `REAL_HOME` for
+ * every profile session, so prefer it; otherwise strip the profile prefix so
+ * paths under `~/.paseo` still resolve to the host (#1158, #973).
+ */
+declare function resolveHostHome(env?: NodeJS.ProcessEnv): string;
+/**
+ * Resolve the canonical `~/.paseo` directory. `PASEO_HOME` is the daemon's own
+ * declaration of that root, so prefer it; otherwise anchor to the host home
+ * rather than an agent-mux profile (#1158).
+ */
+declare function resolvePaseoHome(env?: NodeJS.ProcessEnv): string;
 declare const DEFAULT_NAMESPACE_README = "# Paseo Plugins Storage (xpufx)\n\nThis directory is managed by `paseo-plugin-helper` to store persistent settings, cached metrics, and state for plugins.\n- Safe to inspect or backup.\n- Avoid editing files manually while the Paseo daemon is active.\n";
 /**
  * Scoped, atomic filesystem-backed document storage for Paseo daemon plugins.
@@ -269,18 +283,11 @@ declare function resolveMinLevelFromEnv(env?: NodeJS.ProcessEnv): LogLevel | und
  */
 declare function isProductionEnv(env?: NodeJS.ProcessEnv): boolean;
 /**
- * True only when `NODE_ENV` is explicitly a development value
- * (`development`/`dev`). Unset, empty, `production`, and anything else
- * (e.g. `test`) all count as quiet, so a shipped plugin defaults to info
- * without any env var set.
- */
-declare function isDevelopmentEnv(env?: NodeJS.ProcessEnv): boolean;
-/**
  * Default rule (documented for operators):
  * explicit `PASEO_PLUGIN_LOG_LEVEL`/`PASEO_LOG_LEVEL`/`PASEO_DEBUG` always wins;
- * otherwise quiet (`info`) — including when no env var is set at all, so a
- * shipped plugin never emits debug logs by default. Debug only when `NODE_ENV`
- * is explicitly a development value (`development`/`dev`).
+ * otherwise `info` in every environment — including `NODE_ENV=development`/`dev`
+ * and when no env var is set at all. Debug requires an explicit level; the
+ * environment name alone never lifts the floor.
  */
 declare function resolveDefaultMinLevel(env?: NodeJS.ProcessEnv): LogLevel;
 interface PluginLoggerOptions {
@@ -300,7 +307,7 @@ interface PluginLoggerOptions {
     subsystem?: string;
     /**
      * Minimum log level to print. Defaults to resolveDefaultMinLevel():
-     * info unless NODE_ENV is explicitly development (or an explicit level is set).
+     * info unless an explicit level is set via the environment.
      */
     minLevel?: LogLevel;
     /**
@@ -763,6 +770,28 @@ declare class CustomPillPoller {
     private schedulePill;
     private notifyUpdate;
 }
+interface CustomPillsFeatureOptions {
+    id?: string;
+    configDir?: string;
+    logger?: PluginLogger;
+    poller?: CustomPillPoller;
+    contracts?: {
+        get?: PluginRpcContract;
+        list?: PluginRpcContract;
+        run?: PluginRpcContract;
+    };
+    handlers?: {
+        get?: (input?: any) => Promise<any> | any;
+        list?: (input?: any) => Promise<any> | any;
+        run?: (input: any) => Promise<any> | any;
+    };
+    onMount?: (poller: CustomPillPoller) => void;
+    startPoller?: boolean;
+}
+/**
+ * Creates a reusable FeatureModule for declarative custom metric pills (#933).
+ */
+declare function createCustomPillsFeature<TServerContext = any, TClientContext = any>(options?: CustomPillsFeatureOptions): FeatureModule<TServerContext, TClientContext>;
 
 interface RpcGuardOptions<T> {
     timeoutMs?: number;
@@ -1171,4 +1200,200 @@ declare const handleInstallLabels: (input: InstallLabelsInput) => Promise<{
  */
 declare function registerTicketHandlers(server: HandleableServerContext, options?: TicketHandlerOptions): TicketHandlers;
 
-export { type AgentCreateInjectionConfig, type AgentCreateInjectionRequest, type AgentIdentity, type AgentIdentityOptions, BEACON_COLORS, type BeaconBlinkHandle, type BeaconBlinkOptions, type BeaconClearOptions, type BeaconClearResult, type BeaconColor, type BeaconDaemonClient, type BeaconLabelState, type BeaconSetOptions, type BeaconSetResult, type CpuCoreMetrics, CpuSampler, CustomPillPoller, type CustomPillPollerOptions, DEFAULT_BEACON_LABEL_PREFIX, DEFAULT_NAMESPACE_README, ForgeClient, type ForgeClientOptions, ForgeGuard, type ForgejoComment, type ForgejoIssueDetail, type ForgejoLabel, type GuardLogLevel, type GuardedRpcHandler, type HandleableServerContext, type ListPluginsOptions, type LogLevel, type LoopWatchdogOptions, McpConfigPaths, type McpConfigTarget, type McpHttpInjectionConfig, type McpInjectionConfig, type McpInjectionFilter, type McpInjectionHookHandler, type McpInjectionServer, type McpMutationResult, type McpServerConfig, type McpSseInjectionConfig, type McpStdioInjectionConfig, NEGATIVE_PROBE_TTL_MS, type PaseoPluginInfo, type PaseoPluginsSurface, type PeriodicTaskHandle, type PeriodicTaskOptions, type PingHostOptions, type PluginLogger, type PluginLoggerOptions, type PluginPresence, type PluginQueryOptions, type PluginRegistryContext, type PluginStatusFilter, PluginStorage, type PluginStorageOptions, type RedactOptions, type RegisterMcpInjectionOptions, type RegisterSettingsRpcOptions, type RemoveMcpServerOptions, type ResolveVersionOptions, type RpcGuardOptions, type SafeSpawnOptions, type SafeSpawnResult, type SharedPluginSettings, type SharedPluginSettingsOptions, type SharedSettingsListener, type StampVersionOptions, type StorageStats, type SystemMetrics, type TicketHandlerOptions, type TicketHandlers, type UpsertMcpServerOptions, WorkspaceBeacon, type WorkspaceBeaconOptions, type WorkspaceTitleHandle, clearPluginCache, createLoopWatchdog, createPeriodicTask, createPluginLogger, createSettingsHandlers, createSharedPluginSettings, createTicketHandlers, createWorkspaceBeacon, discoverCustomPillConfigs, expandPath, findAvailablePort, getAgentIdentity, getMcpServer, getPluginInfo, getSystemMetrics, gitOriginForDirectory, guardRpcHandler, handleAddComment, handleCreateIssue, handleForgeContext, handleInstallLabels, handleIssueDetail, handleOpenIssues, handleSearchIssues, handleSetLabel, isDevelopmentEnv, isPluginEnabled, isPluginInstalled, isPluginRunning, isPortOpen, isProductionEnv, listPlugins, normalizeBeaconColor, parseGitDirPointer, parseJsonc, parseOriginUrl, pingHost, redactSecrets, registerMcpInjection, registerSettingsRpc, registerTicketHandlers, removeMcpServer, resolveBeaconLabelName, resolveDefaultForgeHost, resolveDefaultMinLevel, resolveForgeToken, resolveMinLevelFromEnv, resolvePluginVersion, safeExec, safeSpawn, stampVersion, storedForgeSelection, stripJsonComments, tryParseJsonc, upsertMcpServer };
+declare class ScopedStorageViolationError extends Error {
+    readonly code = "ERR_SCOPED_STORAGE_VIOLATION";
+    readonly attemptedPath: string;
+    readonly allowedRoots: string[];
+    constructor(message: string, attemptedPath: string, allowedRoots: string[]);
+}
+interface InstallStorageGuardOptions {
+    pluginId: string;
+    namespace?: string;
+    baseDir?: string;
+    allowTmp?: boolean;
+    mode?: "enforce" | "warn";
+    onViolation?: (violation: {
+        path: string;
+        operation: string;
+        allowedRoots: string[];
+    }) => void;
+}
+declare function installStorageGuard(options: InstallStorageGuardOptions): () => void;
+
+/**
+ * Raw usage structure as emitted by various Paseo agent engines and providers.
+ */
+interface RawTurnUsage {
+    inputTokens?: number;
+    outputTokens?: number;
+    cachedTokens?: number;
+    cachedInputTokens?: number;
+    reasoningTokens?: number;
+    contextWindowUsedTokens?: number;
+    contextWindowMaxTokens?: number;
+    totalCostUsd?: number;
+    /** Claude Code SDK nested iterations array */
+    iterations?: Array<{
+        input_tokens?: number;
+        cache_creation_input_tokens?: number;
+        cache_read_input_tokens?: number;
+        output_tokens?: number;
+    }>;
+    /** OpenCode / ACP tokens object */
+    tokens?: {
+        input?: number;
+        output?: number;
+        reasoning?: number;
+        cache_read?: number;
+    };
+    [key: string]: unknown;
+}
+interface RawTurnOutcome {
+    kind: "completed" | "failed" | "canceled" | string;
+    error?: {
+        message: string;
+        code?: string;
+    };
+    reason?: string;
+    stopReason?: string;
+}
+interface RawTurnData {
+    turnId?: string | null;
+    agentId: string;
+    repo?: string | null;
+    role?: string | null;
+    model?: string | null;
+    provider?: string | null;
+    outcome?: RawTurnOutcome;
+    durationMs?: number;
+    timeline?: readonly unknown[];
+    liveUsage?: RawTurnUsage | null;
+    gitBefore?: {
+        insertions: number;
+        deletions: number;
+        filesChanged: number;
+    } | null;
+    gitAfter?: {
+        insertions: number;
+        deletions: number;
+        filesChanged: number;
+    } | null;
+}
+declare const NormalizedTurnTelemetrySchema: z.ZodObject<{
+    turnId: z.ZodNullable<z.ZodString>;
+    agentId: z.ZodString;
+    repo: z.ZodNullable<z.ZodString>;
+    role: z.ZodNullable<z.ZodString>;
+    model: z.ZodNullable<z.ZodString>;
+    provider: z.ZodNullable<z.ZodString>;
+    timestamp: z.ZodString;
+    durationMs: z.ZodNumber;
+    inputTokens: z.ZodNumber;
+    outputTokens: z.ZodNumber;
+    cachedTokens: z.ZodNumber;
+    reasoningTokens: z.ZodNumber;
+    totalTokens: z.ZodNumber;
+    tokensPerSecond: z.ZodNumber;
+    contextUsedTokens: z.ZodNumber;
+    contextMaxTokens: z.ZodNumber;
+    contextUtilizationPct: z.ZodNumber;
+    costUsd: z.ZodNumber;
+    toolCallsCount: z.ZodNumber;
+    toolErrorsCount: z.ZodNumber;
+    finishReason: z.ZodString;
+    stopReason: z.ZodOptional<z.ZodString>;
+    errorMessage: z.ZodOptional<z.ZodString>;
+    gitInsertions: z.ZodNumber;
+    gitDeletions: z.ZodNumber;
+    gitFilesChanged: z.ZodNumber;
+    isInterrupted: z.ZodBoolean;
+    isSubscriptionZeroCost: z.ZodOptional<z.ZodBoolean>;
+}, z.core.$strip>;
+type NormalizedTurnTelemetry = z.infer<typeof NormalizedTurnTelemetrySchema>;
+/**
+ * Normalizes vendor/provider quirks into a canonical TurnTelemetry record:
+ * - Claude nested iterations array accumulation
+ * - OpenCode isolated reasoning tokens
+ * - ACP asynchronous context meter readings
+ * - Interrupted / canceled turn normalization (prevents division by zero)
+ * - Subscription $0 cost normalization
+ */
+declare function normalizeTurnTelemetry(raw: RawTurnData, now?: number): NormalizedTurnTelemetry;
+/**
+ * 1. Front Desk Suitability Index (FDSI)
+ * FDSI = Conversational Conciseness / (TTFT Latency * (Turn Locks + 1) * Token Burn Ratio)
+ */
+interface FDSIInput {
+    conciseness: number;
+    ttftLatencyMs: number;
+    turnLocks: number;
+    tokenBurnRatio: number;
+}
+declare function calculateFDSI(input: FDSIInput): number;
+/**
+ * 2. Worker Implementation ROI (Cost & Churn per Merged PR)
+ * Worker ROI = (Net Deliverable Value / (Total Tokens * Wall Clock Time * (Rework Rounds + 1))) / ChurnRatio
+ */
+interface WorkerROIInput {
+    netDeliverableValue: number;
+    totalTokens: number;
+    wallClockTimeMs: number;
+    reworkRounds: number;
+    linesAdded: number;
+    linesDeleted: number;
+    netChanges: number;
+}
+declare function calculateWorkerROI(input: WorkerROIInput): number;
+/**
+ * 3. Orchestrator Audit Vigilance Score
+ * Vigilance = (Flaws Caught in Pre-Flight + False-Positive Claims Debunked) / Total PRs Audited
+ */
+interface OrchestratorVigilanceInput {
+    flawsCaught: number;
+    falsePositiveClaimsDebunked: number;
+    totalPRsAudited: number;
+}
+declare function calculateOrchestratorVigilance(input: OrchestratorVigilanceInput): number;
+/**
+ * 4. Tool Thrashing / Loop Index
+ * Frequency of non-zero exit codes (rc != 0) followed immediately by another command
+ * without intervening file inspections or edits.
+ */
+interface ToolCallTrace {
+    command?: string;
+    exitCode?: number;
+    isInspectionOrEdit?: boolean;
+}
+declare function calculateToolThrashingIndex(traces: readonly ToolCallTrace[]): number;
+/**
+ * 5. Context Decay & Amnesia Risk
+ * Correlation between context utilization (> 75%) and subsequent turn failures, tool loops, or repetitive questions.
+ */
+interface ContextTurnTrace {
+    contextUtilizationPct: number;
+    failed: boolean;
+    hasToolLoop?: boolean;
+}
+declare function calculateContextDecayRisk(turns: readonly ContextTurnTrace[]): number;
+interface TurnTelemetryTapOptions {
+    onRecord?: (record: NormalizedTurnTelemetry) => void | Promise<void>;
+    onTurnStarted?: (event: any, context: any) => void;
+    onTurnEnded?: (event: any, context: any) => void | Promise<void>;
+    context?: any;
+}
+/**
+ * Sets up in-process turn telemetry listeners on the Paseo plugin server (#933).
+ */
+declare function setupTurnTelemetryTap(server: any, options?: TurnTelemetryTapOptions): FeatureDisposer;
+interface TimelineTelemetryFeatureOptions<TServerContext = any, TClientContext = any> extends TurnTelemetryTapOptions {
+    id?: string;
+    contracts?: Record<string, PluginRpcContract>;
+    serverTap?: (server: TServerContext) => FeatureDisposer | void;
+    clientRenderer?: (client: TClientContext) => FeatureDisposer | void;
+}
+/**
+ * Creates a reusable FeatureModule for timeline telemetry (#933).
+ */
+declare function createTimelineTelemetryFeature<TServerContext = any, TClientContext = any>(options?: TimelineTelemetryFeatureOptions<TServerContext, TClientContext>): FeatureModule<TServerContext, TClientContext>;
+
+export { type AgentCreateInjectionConfig, type AgentCreateInjectionRequest, type AgentIdentity, type AgentIdentityOptions, BEACON_COLORS, type BeaconBlinkHandle, type BeaconBlinkOptions, type BeaconClearOptions, type BeaconClearResult, type BeaconColor, type BeaconDaemonClient, type BeaconLabelState, type BeaconSetOptions, type BeaconSetResult, type ContextTurnTrace, type CpuCoreMetrics, CpuSampler, CustomPillPoller, type CustomPillPollerOptions, type CustomPillsFeatureOptions, DEFAULT_BEACON_LABEL_PREFIX, DEFAULT_NAMESPACE_README, type FDSIInput, ForgeClient, type ForgeClientOptions, ForgeGuard, type ForgejoComment, type ForgejoIssueDetail, type ForgejoLabel, type GuardLogLevel, type GuardedRpcHandler, type HandleableServerContext, type InstallStorageGuardOptions, type ListPluginsOptions, type LogLevel, type LoopWatchdogOptions, McpConfigPaths, type McpConfigTarget, type McpHttpInjectionConfig, type McpInjectionConfig, type McpInjectionFilter, type McpInjectionHookHandler, type McpInjectionServer, type McpMutationResult, type McpServerConfig, type McpSseInjectionConfig, type McpStdioInjectionConfig, NEGATIVE_PROBE_TTL_MS, type NormalizedTurnTelemetry, NormalizedTurnTelemetrySchema, type OrchestratorVigilanceInput, type PaseoPluginInfo, type PaseoPluginsSurface, type PeriodicTaskHandle, type PeriodicTaskOptions, type PingHostOptions, type PluginLogger, type PluginLoggerOptions, type PluginPresence, type PluginQueryOptions, type PluginRegistryContext, type PluginStatusFilter, PluginStorage, type PluginStorageOptions, type RawTurnData, type RawTurnOutcome, type RawTurnUsage, type RedactOptions, type RegisterMcpInjectionOptions, type RegisterSettingsRpcOptions, type RemoveMcpServerOptions, type ResolveVersionOptions, type RpcGuardOptions, type SafeSpawnOptions, type SafeSpawnResult, ScopedStorageViolationError, type SharedPluginSettings, type SharedPluginSettingsOptions, type SharedSettingsListener, type StampVersionOptions, type StorageStats, type SystemMetrics, type TicketHandlerOptions, type TicketHandlers, type TimelineTelemetryFeatureOptions, type ToolCallTrace, type TurnTelemetryTapOptions, type UpsertMcpServerOptions, type WorkerROIInput, WorkspaceBeacon, type WorkspaceBeaconOptions, type WorkspaceTitleHandle, calculateContextDecayRisk, calculateFDSI, calculateOrchestratorVigilance, calculateToolThrashingIndex, calculateWorkerROI, clearPluginCache, createCustomPillsFeature, createLoopWatchdog, createPeriodicTask, createPluginLogger, createSettingsHandlers, createSharedPluginSettings, createTicketHandlers, createTimelineTelemetryFeature, createWorkspaceBeacon, discoverCustomPillConfigs, expandPath, findAvailablePort, getAgentIdentity, getMcpServer, getPluginInfo, getSystemMetrics, gitOriginForDirectory, guardRpcHandler, handleAddComment, handleCreateIssue, handleForgeContext, handleInstallLabels, handleIssueDetail, handleOpenIssues, handleSearchIssues, handleSetLabel, installStorageGuard, isPluginEnabled, isPluginInstalled, isPluginRunning, isPortOpen, isProductionEnv, listPlugins, normalizeBeaconColor, normalizeTurnTelemetry, parseGitDirPointer, parseJsonc, parseOriginUrl, pingHost, redactSecrets, registerMcpInjection, registerSettingsRpc, registerTicketHandlers, removeMcpServer, resolveBeaconLabelName, resolveDefaultForgeHost, resolveDefaultMinLevel, resolveForgeToken, resolveHostHome, resolveMinLevelFromEnv, resolvePaseoHome, resolvePluginVersion, safeExec, safeSpawn, setupTurnTelemetryTap, stampVersion, storedForgeSelection, stripJsonComments, tryParseJsonc, upsertMcpServer };

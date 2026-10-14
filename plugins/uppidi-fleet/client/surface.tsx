@@ -11,6 +11,7 @@ import {
   CardHeader,
   CodeBlock,
   Collapsible,
+  HostToggle,
   CommandBox,
   DataTable,
   EmptyState,
@@ -36,8 +37,11 @@ import { ModalBodyScrollOwnerContext } from "paseo-plugin-helper/lifecycle";
 import { useRpcQuery, useRpcMutation, usePluginSettings } from "paseo-plugin-helper/core";
 import { useFleetTheme } from "./theme.js";
 import { MetricsBar } from "./metrics-bar.js";
+import { fleetRosterContract, type FleetOutput, type UppidiAgentsOutput } from "@xpufx/backend-fleet/shared";
 import {
   uppidiFleetSettingsContract,
+  SERENA_MCP_PROFILE,
+  type McpInjectionProfile,
   uppidiIssuesContract,
   uppidiHookStatusContract,
   uppidiHookQueuesContract,
@@ -48,9 +52,9 @@ import {
   uppidiHookServiceActionContract,
   uppidiHookConfigureContract,
   uppidiHookLogTailContract,
-  uppidiAgentsContract,
   uppidiRoleModelsContract,
   uppidiSetRoleModelContract,
+  uppidiFleetAlertsContract,
   uppidiSkillsContract,
   uppidiSetSkillContract,
   uppidiRunnersContract,
@@ -59,7 +63,10 @@ import {
   uppidiArchiveInactiveAgentsContract,
   uppidiFleetTeardownContract,
   uppidiFleetResetStateContract,
+  uppidiFleetHaltContract,
+  uppidiFleetResumeContract,
   uppidiTransitionIssueContract,
+  uppidiToggleRepoAutomationTierContract,
   uppidiReposContract,
   uppidiEnrollRepoContract,
   uppidiUnenrollRepoContract,
@@ -67,8 +74,10 @@ import {
   type UppidiAgent,
   type UppidiIssue,
   type KanbanColumnId,
+  type AutomationTierValue,
   type AttentionLabel,
   type RoleModelConfig,
+  type FleetModelAlert,
   type FleetSkill,
   type UppidiRunner,
   type UppidiFleetStatus,
@@ -112,9 +121,12 @@ import { UppidiFleetToolingView } from "./tooling.js";
 import { UppidiFleetKanbanBoard } from "./kanban-board.js";
 import { ForgeIssuesView } from "./forges-tab.js";
 import { canonicalForgeUrl, resolveForgeSelection } from "./forges-tab.js";
+import { ActionsTabView } from "./actions-tab.js";
+import { RunnersTab } from "./runners-tab.js";
 import { canonicalRepoName, resolveCanonicalRepo } from "../shared/repo-identity.js";
+import { defaultAgentLink } from "../shared/agent-links.js";
 
-export type SurfaceTab = "tree" | "dashboard" | "tooling" | "settings" | "board" | "forges";
+export type SurfaceTab = "tree" | "dashboard" | "tooling" | "settings" | "board" | "forges" | "actions" | "runners";
 
 /**
  * Narrows a possibly-partial RPC collection to an array. A truncated or legacy
@@ -129,6 +141,9 @@ function toList<T>(value: T[] | null | undefined): T[] {
 function toRepoList(value: string[] | null | undefined): string[] {
   return Array.isArray(value) ? value.filter((r): r is string => typeof r === "string" && r.length > 0) : [];
 }
+
+/** #1020: MCP injection profiles available in the settings surface. */
+const mcpProfiles: McpInjectionProfile[] = [SERENA_MCP_PROFILE];
 
 const issuePresetFilters: Array<{ id: IssuePreset; label: string }> = [
   { id: "all", label: "All work" },
@@ -162,9 +177,14 @@ const tabs = [
   { id: "settings", label: "Settings", shortLabel: "Settings", icon: "Sliders" },
   { id: "board", label: "Board", shortLabel: "Board", icon: "Kanban" },
   { id: "forges", label: "Forge Issues", shortLabel: "Forges", icon: "GitPullRequest" },
+  { id: "actions", label: "Action Runs", shortLabel: "Actions", icon: "PlayCircle" },
+  { id: "runners", label: "Runners & Fleet", shortLabel: "Runners", icon: "Server" },
 ];
 
 const attentionMap: Record<AttentionLabel, string> = {
+  "attention/orchestrator": "Orchestrator",
+  "attention/agent": "Agent",
+  "attention/user": "You",
   "attention/0-orchestrator": "Orchestrator",
   "attention/1-agent": "Agent",
   "attention/2-user": "You",
@@ -335,6 +355,10 @@ export interface UppidiTopHeaderBarProps {
   onTeardown?: () => void;
   onResetState?: () => void;
   isResetting?: boolean;
+  /** Engage the canonical ALL HALT (#1013). */
+  onHalt?: () => void;
+  /** True once the canonical ALL HALT is engaged; disables the HALT action. */
+  isHalted?: boolean;
   /** Number of agents blocked on a pending permission prompt (#534). */
   permissionAttentionCount?: number;
   /** Number of agents awaiting operator input (#534). */
@@ -357,6 +381,8 @@ export function UppidiTopHeaderBar({
   onTeardown,
   onResetState,
   isResetting = false,
+  onHalt,
+  isHalted = false,
   permissionAttentionCount = 0,
   inputAttentionCount = 0,
 }: UppidiTopHeaderBarProps) {
@@ -445,6 +471,21 @@ export function UppidiTopHeaderBar({
               minHeight: 22,
             }}
             onPress={onResetState}
+          />
+        )}
+        {onHalt && (
+          <Button
+            label={isHalted ? "Halted" : "HALT"}
+            icon="Ban"
+            size="sm"
+            variant="danger"
+            disabled={isHalted}
+            style={{
+              paddingHorizontal: 8,
+              paddingVertical: 2,
+              minHeight: 22,
+            }}
+            onPress={onHalt}
           />
         )}
         {onTeardown && (
@@ -758,6 +799,185 @@ export function ResetStateModal({ visible, onClose, onConfirm, isProcessing = fa
   );
 }
 
+// --- Fleet HALT / RESUME (#1013) ---
+
+export interface HaltedBannerProps {
+  isHalted: boolean;
+  teardownInProgress?: boolean;
+  isResuming?: boolean;
+  onResume?: () => void;
+}
+
+/**
+ * Persistent halted-state indicator (#1013). Rendered inside the pinned header
+ * so it stays visible on every surface tab while the canonical ALL HALT is
+ * engaged. RESUME is disabled while a teardown is mid-flight because the halt
+ * must remain in force until archiving completes (#994).
+ */
+export function HaltedBanner({
+  isHalted,
+  teardownInProgress = false,
+  isResuming = false,
+  onResume,
+}: HaltedBannerProps) {
+  const { colors, typography } = useFleetTheme();
+  if (!isHalted) return null;
+
+  return (
+    <View testID="fleet-halted-banner">
+      <Card variant="flat" style={{ borderColor: colors.statusDanger, borderWidth: 1 }}>
+        <Row justify="space-between" align="center" wrap gap="xs">
+          <Row align="center" gap="xs" wrap>
+            <Icon name="Ban" size={16} color={colors.statusDanger} />
+            <Badge label="HALTED" variant="danger" size="sm" />
+            <Text style={{ color: colors.foreground, ...typography.body, fontWeight: "600" }}>
+              Canonical ALL HALT engaged
+            </Text>
+            <Text style={{ color: colors.foregroundMuted, ...typography.caption }}>
+              {teardownInProgress
+                ? "Teardown in progress — RESUME unlocks when it completes."
+                : "Ingress paused, background loops stopped, auto-provisioning disabled."}
+            </Text>
+          </Row>
+          {onResume && (
+            <Button
+              label={isResuming ? "Resuming..." : "Resume"}
+              icon="Play"
+              size="sm"
+              variant="primary"
+              disabled={teardownInProgress || isResuming}
+              accessibilityLabel="Resume fleet from halt"
+              onPress={onResume}
+            />
+          )}
+        </Row>
+      </Card>
+    </View>
+  );
+}
+
+// --- Fleet model-resolution alerts (#1011) ---
+
+export interface ModelAlertBannerProps {
+  alerts: FleetModelAlert[];
+}
+
+/**
+ * Persistent banner shown while any repository's configured orchestrator model
+ * chain is fully exhausted (#1011). It names the configured chain, the dead
+ * entries and the live provider set so the operator can see why a spawn failed
+ * loudly instead of a hidden hardcoded model taking over. The banner clears
+ * automatically the next time that repo resolves a satisfiable model.
+ */
+export function ModelAlertBanner({ alerts }: ModelAlertBannerProps) {
+  const { colors, typography } = useFleetTheme();
+  if (!alerts || alerts.length === 0) return null;
+
+  return (
+    <View testID="fleet-model-alert-banner">
+      <Card variant="flat" style={{ borderColor: colors.statusDanger, borderWidth: 1 }}>
+        <Stack gap="xxs">
+          <Row align="center" gap="xs" wrap>
+            <Icon name="AlertTriangle" size={16} color={colors.statusDanger} />
+            <Badge label="MODEL CHAIN EXHAUSTED" variant="danger" size="sm" />
+            <Text style={{ color: colors.foreground, ...typography.body, fontWeight: "600" }}>
+              {alerts.length} repo{alerts.length === 1 ? "" : "s"} cannot provision an orchestrator
+            </Text>
+            <Text style={{ color: colors.foregroundMuted, ...typography.caption }}>
+              No hidden default will be substituted; fix the provider set or the fallback group.
+            </Text>
+          </Row>
+          {alerts.map((alert) => (
+            <Text
+              key={alert.repo}
+              style={{ color: colors.foregroundMuted, ...typography.caption, fontFamily: "monospace" }}
+            >
+              {alert.repo}: chain [{alert.configuredChain.join(", ")}]; dead [
+              {alert.dropped.map((d) => `${d.key} (${d.reason})`).join(", ") || "none"}]; live [
+              {(alert.availableProviders ?? []).join(", ") || "unknown"}]
+            </Text>
+          ))}
+        </Stack>
+      </Card>
+    </View>
+  );
+}
+
+export interface HaltConfirmModalProps {
+  visible: boolean;
+  onClose: () => void;
+  onConfirm: () => void;
+  isProcessing?: boolean;
+  /** True when the router already reports halted; the confirm action is inert. */
+  isHalted?: boolean;
+}
+
+/**
+ * Confirmation for engaging the canonical ALL HALT (#1013). HALT is reversible
+ * enough that a single explicit confirm is used rather than the type-to-arm
+ * teardown flow, but it still requires a deliberate second action.
+ */
+export function HaltConfirmModal({
+  visible,
+  onClose,
+  onConfirm,
+  isProcessing = false,
+  isHalted = false,
+}: HaltConfirmModalProps) {
+  const { colors, typography } = useFleetTheme();
+  const dangerColor = colors.statusDanger;
+
+  return (
+    <Modal
+      open={visible}
+      onOpenChange={(open) => {
+        if (!open && !isProcessing) onClose();
+      }}
+      title="Engage Fleet HALT"
+    >
+      <ModalContent>
+        <Stack gap="sm">
+          <Card variant="flat" style={{ borderColor: dangerColor, borderWidth: 1 }}>
+            <Stack gap="xs">
+              <Row align="center" gap="xs">
+                <Icon name="Ban" size={16} color={dangerColor} />
+                <Text style={{ color: dangerColor, ...typography.heading }}>
+                  Canonical ALL HALT
+                </Text>
+              </Row>
+              <Text style={{ color: colors.foregroundMuted, ...typography.caption }}>
+                Engages the same halt used by fleet teardown: webhook ingress and queue
+                processing pause, background watchdog/board loops stop, and auto-provisioning
+                is suppressed. Already-running agents keep running. Reversible with RESUME.
+              </Text>
+            </Stack>
+          </Card>
+
+          <Row justify="flex-end" gap="xs">
+            <Button
+              label="Cancel"
+              size="sm"
+              variant="secondary"
+              onPress={onClose}
+              disabled={isProcessing}
+            />
+            <Button
+              label={isProcessing ? "Halting..." : "Engage HALT"}
+              icon="Ban"
+              size="sm"
+              variant="danger"
+              disabled={isProcessing || isHalted}
+              loading={isProcessing}
+              accessibilityLabel="Confirm HALT"
+              onPress={onConfirm}
+            />
+          </Row>
+        </Stack>
+      </ModalContent>
+    </Modal>
+  );
+}
+
 export function UppidiFleetSurface(props: PluginSurfaceProps) {
   const { colors, typography } = useFleetTheme();
   const toast = useToast();
@@ -793,6 +1013,7 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
   const [runnerSortDir, setRunnerSortDir] = useState<SortDirection>("asc");
 
   // Section 5: Fleet Capability & Benchmark Matrix sort & filter state
+  const [mcpInjectionExpanded, setMcpInjectionExpanded] = useState(false);
   const [metricsExpanded, setMetricsExpanded] = useState(false);
   const [metricPreset, setMetricPreset] = useState<MetricPreset>("all");
   const [metricQuery, setMetricQuery] = useState("");
@@ -840,12 +1061,18 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
     data: agentsData,
     isLoading: agentsLoading,
     refetch: refetchAgents,
-  } = useRpcQuery(uppidiAgentsContract, {}, { refetchInterval: 5000 });
+  } = useRpcQuery<any, any, FleetOutput>(fleetRosterContract, {}, { refetchInterval: 5000 });
 
   const {
     data: roleModelsData,
     refetch: refetchRoleModels,
   } = useRpcQuery(uppidiRoleModelsContract, {}, { refetchInterval: 10000 });
+
+  // Persistent model-chain exhaustion banners (#1011).
+  const {
+    data: fleetAlertsData,
+    refetch: refetchFleetAlerts,
+  } = useRpcQuery(uppidiFleetAlertsContract, {}, { refetchInterval: 10000 });
 
   const {
     data: skillsData,
@@ -900,8 +1127,19 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
   const [isResetStateModalOpen, setIsResetStateModalOpen] = useState(false);
   const [isResettingState, setIsResettingState] = useState(false);
 
+  // Fleet HALT / RESUME (#1013)
+  const haltMutation = useRpcMutation(uppidiFleetHaltContract);
+  const resumeHaltMutation = useRpcMutation(uppidiFleetResumeContract);
+  const [isHaltModalOpen, setIsHaltModalOpen] = useState(false);
+  const [isHalting, setIsHalting] = useState(false);
+  const [isResumingHalt, setIsResumingHalt] = useState(false);
+  const isHalted = hookStatus?.halted ?? false;
+  const isTeardownInProgress = hookStatus?.teardownInProgress ?? false;
+
   // Issue Kanban state transition (#755)
   const transitionIssueMutation = useRpcMutation(uppidiTransitionIssueContract);
+  // 3-tier automation posture (#1282)
+  const toggleAutomationTierMutation = useRpcMutation(uppidiToggleRepoAutomationTierContract);
 
   // Fleet Skills editor (#883)
   const [skillDrafts, setSkillDrafts] = useState<Record<string, string>>({});
@@ -953,11 +1191,27 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
     }
   };
 
+  const handleToggleRepoAutomationTier = async (repo: string, tier: AutomationTierValue) => {
+    try {
+      const res = await toggleAutomationTierMutation.mutateAsync({ repo, tier });
+      if (res.ok) {
+        toast.show(res.message || `Set ${repo} automation tier to ${tier}`);
+        void refetchAgents();
+      } else {
+        toast.error(res.error || `Failed to set tier for ${repo}`);
+      }
+    } catch (err: any) {
+      toast.error(err?.message || `Failed to set tier for ${repo}`);
+    }
+  };
+
   // Hook service listen address configuration (#427)
   const [hostSelection, setHostSelection] = useState<string>("127.0.0.1");
   const [customHost, setCustomHost] = useState<string>("");
   const [isCustomHost, setIsCustomHost] = useState<boolean>(false);
   const [configuredPortInput, setConfiguredPortInput] = useState<string>("8099");
+  /** Provider concurrency limit: new provider input for the add form (#1198). */
+  const [newProviderInput, setNewProviderInput] = useState<string>("");
   const [isConfiguring, setIsConfiguring] = useState<boolean>(false);
   const configInitializedRef = React.useRef(false);
 
@@ -1027,6 +1281,7 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
     void refetchLogTail();
     void refetchAgents();
     void refetchRoleModels();
+    void refetchFleetAlerts();
     void refetchSkills();
     void refetchRunners();
     void refetchMetrics();
@@ -1071,12 +1326,13 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
   };
 
 
-  const handleRoleModelChange = async (role: string, primaryModel: string) => {
+  const handleRoleModelChange = async (role: string, primaryModel: string, fallbackGroup?: string[]) => {
     try {
-      const res = await setRoleModelMutation.mutateAsync({ role, primaryModel });
+      const res = await setRoleModelMutation.mutateAsync({ role, primaryModel, fallbackGroup });
       if (res.ok) {
         toast.show(res.message || `Updated model for ${role}`);
         void refetchRoleModels();
+        void refetchFleetAlerts();
       } else {
         toast.error(res.error || "Failed to update role model");
       }
@@ -1209,7 +1465,11 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
 
   const repoOptions = useMemo<SelectOption[]>(() => [
     { label: "All Repositories", value: "all" },
-    ...availableRepos.map((r) => ({ label: r, value: r })),
+    ...availableRepos.map((r) => ({
+      label: r,
+      value: r,
+      display: resolveForgeSelection(r, availableRepos)?.compact ?? r,
+    })),
   ], [availableRepos]);
 
   const rawIssues = useMemo(() => {
@@ -1217,6 +1477,21 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
     if (selectedRepo === "all") return all;
     return all.filter((i) => isRepoMatching(i?.repo, selectedRepo) || String(i?.repo ?? "").toLowerCase() === selectedRepo.toLowerCase());
   }, [issuesData?.issues, selectedRepo]);
+
+  // Repo -> automation tier, keyed by the repo labels the board renders (#1282).
+  const automationTiers = useMemo<Record<string, AutomationTierValue>>(() => {
+    const map: Record<string, AutomationTierValue> = {};
+    for (const issue of rawIssues) if (issue.repo) map[issue.repo] = "full-active";
+    const apply = (repos: readonly string[] | undefined, tier: AutomationTierValue) => {
+      for (const repo of repos ?? []) {
+        const key = Object.keys(map).find((candidate) => isRepoMatching(candidate, repo)) ?? repo;
+        map[key] = tier;
+      }
+    };
+    apply(agentsData?.pausedRepos, "paused");
+    apply(agentsData?.kanbanOnlyRepos, "kanban-only");
+    return map;
+  }, [rawIssues, agentsData?.pausedRepos, agentsData?.kanbanOnlyRepos]);
 
   const visible = useMemo(() => {
     const filtered = filterIssues(rawIssues, filter, query);
@@ -1339,7 +1614,7 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
       props.navigation.openAgent({ agentId });
       return;
     }
-    Linking.openURL(`paseo://agent/${agentId}`).catch(() => {});
+    Linking.openURL(defaultAgentLink(agentId)).catch(() => {});
   };
 
   const handleArchiveAgent = async (agentId: string) => {
@@ -1396,6 +1671,41 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
     }
   };
 
+  const handleHalt = async () => {
+    try {
+      setIsHalting(true);
+      const res = await haltMutation.mutateAsync({ confirm: true });
+      if (res.ok) {
+        toast.show(res.message || (res.alreadyHalted ? "Fleet already halted" : "Canonical ALL HALT engaged"));
+        setIsHaltModalOpen(false);
+      } else {
+        toast.error(res.error || "Failed to engage halt");
+      }
+      void refetchHookStatus();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setIsHalting(false);
+    }
+  };
+
+  const handleResumeHalt = async () => {
+    try {
+      setIsResumingHalt(true);
+      const res = await resumeHaltMutation.mutateAsync({ confirm: true });
+      if (res.ok) {
+        toast.show(res.message || "Fleet resumed");
+      } else {
+        toast.error(res.error || "Failed to resume fleet");
+      }
+      void refetchHookStatus();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    } finally {
+      setIsResumingHalt(false);
+    }
+  };
+
   const handleResetState = async () => {
     try {
       setIsResettingState(true);
@@ -1442,9 +1752,18 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
             onResetState={() => setIsResetStateModalOpen(true)}
             isResetting={isResettingState}
             onTeardown={() => setIsTeardownModalOpen(true)}
+            onHalt={() => setIsHaltModalOpen(true)}
+            isHalted={isHalted}
             permissionAttentionCount={permissionAgentCount}
             inputAttentionCount={attentionAgents.length - permissionAgentCount}
           />
+          <HaltedBanner
+            isHalted={isHalted}
+            teardownInProgress={isTeardownInProgress}
+            isResuming={isResumingHalt}
+            onResume={handleResumeHalt}
+          />
+          <ModelAlertBanner alerts={fleetAlertsData?.alerts ?? []} />
           <Tabs tabs={tabs} activeTab={activeTab} onTabChange={(id) => setActiveTab(id as SurfaceTab)} />
         </Stack>
       }
@@ -1834,7 +2153,7 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
                                           {r.key}
                                         </Text>
                                         {r.private && <Badge label="Private" variant="neutral" size="sm" />}
-                                        {r.muted && <Badge label="Muted" variant="warning" size="sm" />}
+                                        {r.paused && <Badge label="Paused" variant="warning" size="sm" />}
                                         {r.hasOrchestrator && <Badge label="Orchestrator" variant="info" size="sm" />}
                                         {(r.queueDepth ?? 0) > 0 && (
                                           <Badge label={`${r.queueDepth} queued`} variant="info" size="sm" />
@@ -1968,8 +2287,18 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
                   // it rather than dereferencing undefined fields (#510).
                   if (!cfg || typeof cfg !== "object") return null;
                   const fallbackGroup = Array.isArray(cfg.fallbackGroup) ? cfg.fallbackGroup : [];
+                  // Keep an off-list saved model selectable so a dead entry stays
+                  // visible and removable rather than silently blanking out.
+                  const optionsFor = (current?: string): SelectOption[] => {
+                    if (current && !roleModelOptions.some((o) => o.value === current)) {
+                      return [{ label: current, value: current }, ...roleModelOptions];
+                    }
+                    return roleModelOptions;
+                  };
+                  const removableOptions = optionsFor();
                   return (
                   <Card key={roleKey} variant="elevated">
+                    <Stack gap="xs">
                     <Row justify="space-between" align="center" wrap gap="xs">
                       <Stack gap="xxs" style={{ flex: 1 }}>
                         <Row align="center" gap="xs">
@@ -1981,11 +2310,6 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
                         <Text style={{ color: colors.foregroundMuted, ...typography.caption }}>
                           Primary: <Text style={{ color: colors.foreground, fontFamily: "monospace" }}>{cfg.primaryModel}</Text>
                         </Text>
-                        {fallbackGroup.length > 1 && (
-                          <Text style={{ color: colors.foregroundMuted, ...typography.caption, fontSize: 11 }}>
-                            Fallbacks: {fallbackGroup.join(" → ")}
-                          </Text>
-                        )}
                       </Stack>
                       {/* Explicit model selection (#635). This was a
                           "Switch model" button that computed
@@ -2002,15 +2326,89 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
                         options={roleModelOptions}
                         onValueChange={(model) => {
                           if (model !== cfg.primaryModel) {
-                            void handleRoleModelChange(roleKey, model);
+                            void handleRoleModelChange(roleKey, model, fallbackGroup);
                           }
                         }}
                         disabled={roleModelOptions.length < 2}
                         placeholder="Select a model"
                         size="sm"
+                        searchable
+                        searchPlaceholder="Filter models..."
                         style={{ minWidth: 180 }}
                       />
                     </Row>
+
+                    {/* Full fallback chain, editable in place (#1011). Before
+                        this the UI only wrote `primaryModel`; the saved
+                        `fallbackGroup` rotted invisibly. */}
+                    <Text style={{ color: colors.foregroundMuted, ...typography.caption, fontSize: 11 }}>
+                      Fallback chain (evaluated in order after the primary):
+                    </Text>
+                    {fallbackGroup.length === 0 ? (
+                      <Text style={{ color: colors.foregroundMuted, ...typography.caption, fontSize: 11 }}>
+                        No fallbacks configured.
+                      </Text>
+                    ) : (
+                      <Stack gap="xxs">
+                        {fallbackGroup.map((model, index) => (
+                          <Row
+                            key={`${roleKey}-fallback-${index}`}
+                            justify="space-between"
+                            align="center"
+                            gap="xs"
+                            wrap
+                          >
+                            <Text style={{ color: colors.foreground, fontFamily: "monospace", ...typography.caption }}>
+                              {index + 1}. {model}
+                            </Text>
+                            <Row gap="xs">
+                              <Button
+                                label="Make primary"
+                                size="sm"
+                                variant="ghost"
+                                onPress={() =>
+                                  void handleRoleModelChange(
+                                    roleKey,
+                                    model,
+                                    fallbackGroup.filter((_, i) => i !== index),
+                                  )
+                                }
+                              />
+                              <Button
+                                label="Remove"
+                                size="sm"
+                                variant="ghost"
+                                onPress={() =>
+                                  void handleRoleModelChange(
+                                    roleKey,
+                                    cfg.primaryModel,
+                                    fallbackGroup.filter((_, i) => i !== index),
+                                  )
+                                }
+                              />
+                            </Row>
+                          </Row>
+                        ))}
+                      </Stack>
+                    )}
+                    <Select
+                      value=""
+                      label={`Add ${roleKey} fallback`}
+                      options={removableOptions.filter(
+                        (o) => o.value !== cfg.primaryModel && !fallbackGroup.includes(o.value),
+                      )}
+                      onValueChange={(model) => {
+                        if (!model || model === cfg.primaryModel || fallbackGroup.includes(model)) return;
+                        void handleRoleModelChange(roleKey, cfg.primaryModel, [...fallbackGroup, model]);
+                      }}
+                      disabled={removableOptions.length === 0}
+                      placeholder="Add a fallback tier"
+                      size="sm"
+                      searchable
+                      searchPlaceholder="Filter models..."
+                      style={{ minWidth: 180 }}
+                    />
+                    </Stack>
                   </Card>
                   );
                 })}
@@ -2082,6 +2480,14 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
                     const isDirty = draft !== skill.content;
                     const isSaving = savingSkillId === skill.id;
                     const wasSaved = skillSaved[skill.id] === true && !isDirty;
+                    const originLabel =
+                      skill.origin === "override"
+                        ? "Override"
+                        : skill.origin === "canonical"
+                          ? "Canonical"
+                          : "Bundled";
+                    const originVariant =
+                      skill.origin === "override" ? "warning" : skill.origin === "canonical" ? "info" : "neutral";
                     return (
                       <Card key={skill.id} variant="elevated">
                         <Stack gap="xs">
@@ -2092,8 +2498,8 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
                                   {skill.title}
                                 </Text>
                                 <Badge
-                                  label={skill.origin === "override" ? "Override" : "Bundled"}
-                                  variant={skill.origin === "override" ? "warning" : "neutral"}
+                                  label={originLabel}
+                                  variant={originVariant}
                                   size="sm"
                                 />
                                 {isDirty && <Badge label="Unsaved" variant="info" size="sm" />}
@@ -2124,7 +2530,7 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
                                 label="Reset"
                                 size="sm"
                                 variant="secondary"
-                                disabled={isSaving || skill.origin === "bundled"}
+                                disabled={isSaving || skill.origin !== "override"}
                                 onPress={() => void handleResetSkill(skill)}
                               />
                             </Row>
@@ -2418,6 +2824,207 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
             </Card>
           </Collapsible>
 
+          {/* Collapsible Section: MCP Injection (#1020) */}
+          <Collapsible
+            title="MCP Injection"
+            icon="Cpu"
+            isExpanded={mcpInjectionExpanded}
+            onToggle={(exp) => setMcpInjectionExpanded(exp)}
+          >
+            <Card variant="flat">
+              <Stack gap="sm">
+                <Text style={{ color: colors.foregroundMuted, ...typography.caption }}>
+                  Inject MCP servers into spawned agent sessions. Toggle the global switch to enable,
+                  then select which profiles to inject.
+                </Text>
+
+                {/* Global toggle */}
+                <Row justify="space-between" align="center" wrap gap="xs">
+                  <Stack gap="xxs">
+                    <Text style={{ color: colors.foreground, ...typography.heading }}>
+                      Enable MCP Injection
+                    </Text>
+                    <Text style={{ color: colors.foregroundMuted, ...typography.caption }}>
+                      When enabled, selected MCP servers are injected into every spawned agent session.
+                    </Text>
+                  </Stack>
+                  <HostToggle
+                    value={settings.mcpInjection?.enabled ?? false}
+                    onValueChange={(next) => updateSettings({ mcpInjection: { ...(settings.mcpInjection ?? {}), enabled: next } })}
+                    disabled={isUpdatingSettings}
+                  />
+                </Row>
+
+                {/* Profile list */}
+                {(settings.mcpInjection?.enabled ?? false) && (
+                  <Stack gap="xs">
+                    <Text style={{ color: colors.foreground, ...typography.caption, fontWeight: "600" }}>
+                      Injection Profiles
+                    </Text>
+                    {mcpProfiles.map((profile) => (
+                      <Card key={profile.id} variant="elevated">
+                        <Row justify="space-between" align="center" wrap gap="xs">
+                          <Stack gap="xxs" style={{ flex: 1 }}>
+                            <Row align="center" gap="xs">
+                              <Text style={{ color: colors.foreground, ...typography.heading }}>
+                                {profile.label}
+                              </Text>
+                              <Badge label="stdio" variant="info" size="sm" />
+                            </Row>
+                            <Text style={{ color: colors.foregroundMuted, ...typography.caption }}>
+                              {profile.description}
+                            </Text>
+                            <CodeBlock
+                              code={`${profile.command}`}
+                              language="bash"
+                            />
+                          </Stack>
+                          <HostToggle
+                            value={settings.mcpInjection?.profiles?.[profile.id] ?? profile.enabled}
+                            onValueChange={(next) => {
+                              const currentProfiles = settings.mcpInjection?.profiles ?? {};
+                              updateSettings({
+                                mcpInjection: {
+                                  ...(settings.mcpInjection ?? {}),
+                                  profiles: { ...currentProfiles, [profile.id]: next },
+                                },
+                              });
+                            }}
+                            disabled={isUpdatingSettings}
+                          />
+                        </Row>
+                      </Card>
+                    ))}
+                  </Stack>
+                )}
+              </Stack>
+            </Card>
+          </Collapsible>
+
+          {/* Collapsible Section: Provider Concurrency Limits (#1198) */}
+          <Collapsible
+            title="Provider Concurrency Limits"
+            icon="Gauge"
+            isExpanded={false}
+            onToggle={() => {}}
+          >
+            <Card variant="flat">
+              <Stack gap="sm">
+                <Text style={{ color: colors.foregroundMuted, ...typography.caption }}>
+                  Set maximum concurrent running agents per LLM provider. When a provider reaches its
+                  configured limit, new agent spawns fail fast with a clear error instead of hitting
+                  API rate limits (429s). Leave blank or set to 0 to disable.
+                </Text>
+
+                {/* Limit entries */}
+                <Stack gap="xs">
+                  {Object.entries(settings.providerConcurrencyLimits ?? {}).map(([provider, limit]) => (
+                    <Row key={provider} align="center" gap="xs">
+                      <View style={{ flex: 1, minWidth: 120 }}>
+                        <Text style={{ color: colors.foreground, ...typography.body, fontFamily: "monospace", fontSize: 13 }}>
+                          {provider}
+                        </Text>
+                      </View>
+                      <View style={{ width: 80 }}>
+                        <TextInput
+                          value={String(limit)}
+                          onChangeText={(val) => {
+                            const num = parseInt(val, 10);
+                            if (!isNaN(num) && num >= 0) {
+                              const next = { ...(settings.providerConcurrencyLimits ?? {}) };
+                              if (num <= 0) delete next[provider];
+                              else next[provider] = num;
+                              updateSettings({ providerConcurrencyLimits: next });
+                            }
+                          }}
+                          keyboardType="number-pad"
+                          placeholder="∞"
+                        />
+                      </View>
+                      <Button
+                        label="✕"
+                        size="sm"
+                        variant="ghost"
+                        onPress={() => {
+                          const next = { ...(settings.providerConcurrencyLimits ?? {}) };
+                          delete next[provider];
+                          updateSettings({ providerConcurrencyLimits: next });
+                        }}
+                      />
+                    </Row>
+                  ))}
+                </Stack>
+
+                {/* Add new limit */}
+                <Row justify="space-between" align="center" wrap gap="xs">
+                  <View style={{ flex: 1, flexDirection: "row", gap: "xs", alignItems: "center" }}>
+                    <TextInput
+                      placeholder="Provider id (e.g. openai)"
+                      value={newProviderInput}
+                      onChangeText={setNewProviderInput}
+                      style={{ flex: 1 }}
+                    />
+                    <Button
+                      label="Add"
+                      size="sm"
+                      variant="primary"
+                      onPress={() => {
+                        const trimmed = newProviderInput.trim();
+                        if (trimmed) {
+                          const next = { ...(settings.providerConcurrencyLimits ?? {}) };
+                          if (!next[trimmed]) {
+                            next[trimmed] = 4;
+                            updateSettings({ providerConcurrencyLimits: next });
+                          }
+                          setNewProviderInput("");
+                        }
+                      }}
+                    />
+                  </View>
+                </Row>
+              </Stack>
+            </Card>
+          </Collapsible>
+
+          {/* Collapsible Section: Daemon Boot Mode (#1112) */}
+          <Collapsible
+            title="Daemon Boot Mode"
+            icon="Power"
+            isExpanded={false}
+            onToggle={() => {}}
+          >
+            <Card variant="flat">
+              <Stack gap="sm">
+                <Text style={{ color: colors.foregroundMuted, ...typography.caption }}>
+                  Control how the fleet daemon starts after a restart. Choose to keep the previous state,
+                  always start halted (suspended), or always start running.
+                </Text>
+                <Row justify="space-between" align="center" wrap gap="xs">
+                  <Stack gap="xxs">
+                    <Text style={{ color: colors.foreground, ...typography.heading }}>
+                      Start Mode on Boot
+                    </Text>
+                    <Text style={{ color: colors.foregroundMuted, ...typography.caption }}>
+                      Determines the initial fleet mode when the daemon boots.
+                    </Text>
+                  </Stack>
+                  <Select
+                    options={[
+                      { label: "Keep previous state", value: "previous-state" },
+                      { label: "Always start halted", value: "halt" },
+                      { label: "Always start running", value: "run" },
+                    ]}
+                    value={settings.startModeOnBoot ?? "previous-state"}
+                    onValueChange={(next) => {
+                      updateSettings({ startModeOnBoot: next as "previous-state" | "halt" | "run" });
+                    }}
+                    placeholder="Select boot mode..."
+                  />
+                </Row>
+              </Stack>
+            </Card>
+          </Collapsible>
+
         </Stack>
       ) : activeTab === "tooling" ? (
         <UppidiFleetToolingView />
@@ -2457,6 +3064,8 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
             onSelectIssue={(num) => setSelectedNumber(num)}
             onTransitionIssue={handleTransitionIssue}
             isLoading={issuesLoading}
+            automationTiers={automationTiers}
+            onToggleAutomationTier={handleToggleRepoAutomationTier}
           />
         </Card>
       ) : activeTab === "forges" ? (
@@ -2468,6 +3077,33 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
             onSelectRepo={setSelectedRepo}
             enrolledRepos={availableRepos}
             activeRepo={issuesData?.repo ?? undefined}
+          />
+        </ModalBodyScrollOwnerContext.Provider>
+      ) : activeTab === "actions" ? (
+        <ModalBodyScrollOwnerContext.Provider value="host">
+          <ActionsTabView
+            workspaceId={activeWorkspaceId}
+            selectedRepo={selectedRepo}
+            onSelectRepo={setSelectedRepo}
+            enrolledRepos={availableRepos}
+          />
+        </ModalBodyScrollOwnerContext.Provider>
+      ) : activeTab === "runners" ? (
+        <ModalBodyScrollOwnerContext.Provider value="host">
+          <RunnersTab
+            runnersData={{
+              ok: !!runnersData?.ok,
+              runners: toList(runnersData?.runners),
+              fleetStatus: runnersData?.fleetStatus,
+              error: runnersData?.error,
+              totalCount: runnersData?.totalCount,
+              onlineCount: runnersData?.onlineCount,
+            }}
+            scaleHostData={{ ok: false, cpuPct: 0, memoryPct: 0, runnerCount: 0, onlineCount: 0 }}
+            drainHostData={{ ok: false, dinDRunning: false, dinDHealthy: false, error: "not-loaded" }}
+            repoOptions={repoOptions}
+            selectedRepo={selectedRepo}
+            onRepoChange={setSelectedRepo}
           />
         </ModalBodyScrollOwnerContext.Provider>
       ) : (
@@ -2607,6 +3243,8 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
                 filterQuery={query}
                 onFilterQueryChange={setQuery}
                 isLoading={issuesLoading}
+                automationTiers={automationTiers}
+                onToggleAutomationTier={handleToggleRepoAutomationTier}
               />
             ) : (
               <>
@@ -2839,6 +3477,13 @@ export function UppidiFleetSurface(props: PluginSurfaceProps) {
         onClose={() => setIsResetStateModalOpen(false)}
         onConfirm={handleResetState}
         isProcessing={isResettingState}
+      />
+      <HaltConfirmModal
+        visible={isHaltModalOpen}
+        onClose={() => setIsHaltModalOpen(false)}
+        onConfirm={handleHalt}
+        isProcessing={isHalting}
+        isHalted={isHalted}
       />
     </ModalBody>
   );

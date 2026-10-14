@@ -467,4 +467,91 @@ describe("conformance exemptions", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "paseo-exempt-none-"));
     expect(readPluginConformanceExemptions(root).exemptions.size).toBe(0);
   });
+
+  it("forbids no-bespoke-react-native-interactions exemption when adopting @xpufx/paseo-plugin-ui", () => {
+    const dir = scaffold(BASE, SCROLLVIEW_CLIENT, {
+      "no-bespoke-react-native-interactions": "trying to bypass shared UI",
+    });
+    fs.writeFileSync(
+      path.join(dir, "package.json"),
+      JSON.stringify({ dependencies: { "@xpufx/paseo-plugin-ui": "*" } }),
+    );
+
+    const report = auditProject(dir);
+    const issue = report.issues.find(
+      (i) => i.ruleId === "no-bespoke-react-native-interactions" && i.file === "conformance.json",
+    );
+    expect(issue).toBeDefined();
+    expect(issue?.severity).toBe("error");
+    expect(issue?.message).toContain("cannot be exempted by plugins adopting @xpufx/paseo-plugin-ui");
+
+    // The code violation also fires because the exemption is disabled
+    const codeIssue = report.issues.find(
+      (i) => i.ruleId === "no-bespoke-react-native-interactions" && i.file !== "conformance.json",
+    );
+    expect(codeIssue).toBeDefined();
+    expect(report.passed).toBe(false);
+  });
+
+  it("flags modal scroll pinning with flex: 1 and minHeight: 0 under no-modal-scroll-pinning", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "paseo-modal-pin-"));
+    try {
+      fs.mkdirSync(path.join(tmpDir, "client"), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpDir, "client", "pill.tsx"),
+        `
+        import { HostModalSection } from "@xpufx/paseo-plugin-ui";
+        const styles = {
+          modalColumn: { flex: 1, minHeight: 0 },
+        };
+        export const Modal = () => <HostModalSection style={styles.modalColumn}>content</HostModalSection>;
+        `,
+      );
+      const report = auditProject(tmpDir);
+      const issue = report.issues.find((i) => i.ruleId === "no-modal-scroll-pinning");
+      expect(issue).toBeDefined();
+      expect(issue?.message).toContain("Pinned flex: 1 or minHeight: 0");
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("passes modal containers using fluid width: 100% under no-modal-scroll-pinning", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "paseo-modal-fluid-"));
+    try {
+      fs.mkdirSync(path.join(tmpDir, "client"), { recursive: true });
+      fs.writeFileSync(
+        path.join(tmpDir, "client", "pill.tsx"),
+        `
+        import { HostModalSection } from "@xpufx/paseo-plugin-ui";
+        const styles = {
+          modalColumn: { width: "100%" },
+        };
+        export const Modal = () => <HostModalSection style={styles.modalColumn}>content</HostModalSection>;
+        `,
+      );
+      const report = auditProject(tmpDir);
+      const issue = report.issues.find((i) => i.ruleId === "no-modal-scroll-pinning");
+      expect(issue).toBeUndefined();
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it("flags class declarations in client and shared code under no-class-in-client-bundle", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "paseo-class-"));
+    try {
+      for (const d of ["client", "shared", "server"]) fs.mkdirSync(path.join(tmpDir, d), { recursive: true });
+      fs.writeFileSync(path.join(tmpDir, "client", "a.tsx"), "export class Boundary extends React.Component {}\n");
+      fs.writeFileSync(path.join(tmpDir, "shared", "b.ts"), "export class E extends Error {}\n");
+      fs.writeFileSync(path.join(tmpDir, "server", "c.ts"), "export class Srv {}\n");
+      const report = auditProject(tmpDir);
+      const hits = report.issues.filter((i) => i.ruleId === "no-class-in-client-bundle").map((i) => i.file);
+      expect(hits.some((f) => f.includes("a.tsx"))).toBe(true);
+      expect(hits.some((f) => f.includes("b.ts"))).toBe(true);
+      expect(hits.some((f) => f.includes("c.ts"))).toBe(false);
+    } finally {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
 });

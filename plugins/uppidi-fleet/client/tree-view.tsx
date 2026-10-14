@@ -17,7 +17,7 @@ import {
   StatusDot,
   TextInput,
 } from "./host-ui.js";
-import { copyToClipboard } from "paseo-plugin-helper/lifecycle";
+import { copyToClipboard, HOST_SHADOW_COLOR } from "paseo-plugin-helper/lifecycle";
 import { useRpcMutation, useRpcQuery } from "paseo-plugin-helper/core";
 import { useFleetTheme } from "./theme.js";
 import { MetricsBar } from "./metrics-bar.js";
@@ -41,10 +41,11 @@ import {
   uppidiReplaceFrontDeskContract,
   uppidiAddOrchestratorContract,
   uppidiReplaceOrchestratorContract,
-  uppidiToggleRepoMuteContract,
+  uppidiToggleRepoPauseContract,
   uppidiFrontDeskActivityContract,
   uppidiFrontDeskPromptContract,
   isSignalActivityItem,
+  isCodingAgentCategory,
   extractAgentWorktree,
   extractAgentProject,
 } from "../shared/contracts.js";
@@ -52,31 +53,26 @@ import {
   filterBulkArchiveCandidates,
   buildProjectGroups,
   filterAgentTree,
-  getStatusLightColor,
+  getStatusLightTone,
   deriveHealthGauge,
   DEFAULT_HEALTH_GAUGE_THRESHOLDS,
   type HealthGauge,
   type HealthGaugeSegment,
   type HealthGaugeTone,
-  STATUS_LIGHT_GREEN,
-  STATUS_LIGHT_ORANGE,
-  STATUS_LIGHT_RED,
-  STATUS_LIGHT_COLORS,
+  type StatusLightTone,
   isRepoMatching,
   type ProjectAgentGroup,
   type ProjectSortField,
   type SortDirection,
 } from "../shared/sort-filter.js";
+import { defaultAgentLink } from "../shared/agent-links.js";
 
 export {
   type DeterministicStateConfig,
   getAgentCategoryIcon,
   getDeterministicStateConfig,
-  getStatusLightColor,
-  STATUS_LIGHT_GREEN,
-  STATUS_LIGHT_ORANGE,
-  STATUS_LIGHT_RED,
-  STATUS_LIGHT_COLORS,
+  getStatusLightTone,
+  type StatusLightTone,
 };
 
 /**
@@ -101,7 +97,7 @@ export interface UppidiFleetTreeViewProps {
   onReplaceFrontDesk?: (existingAgentId?: string) => Promise<void> | void;
   onAddOrchestrator?: (repo: string) => Promise<void> | void;
   onReplaceOrchestrator?: (repo: string, existingAgentId?: string) => Promise<void> | void;
-  onToggleRepoMute?: (repo: string, muted?: boolean) => Promise<void> | void;
+  onToggleRepoPause?: (repo: string, paused?: boolean) => Promise<void> | void;
   selectedRepo?: string;
   /** Agent id currently registered as Front Desk with the hook daemon (#470). */
   registeredFrontDeskAgentId?: string | null;
@@ -134,8 +130,9 @@ export function AgentStatusLight({
 }: AgentStatusLightProps) {
   const [hovered, setHovered] = useState(false);
   const { colors } = useFleetTheme();
-  const color = getStatusLightColor(agent);
-  const isWorking = color === STATUS_LIGHT_GREEN;
+  const tone = getStatusLightTone(agent);
+  const color = statusLightColor(colors, tone);
+  const isWorking = tone === "success";
 
   const statusDetail =
     agent.stateDetail
@@ -159,7 +156,7 @@ export function AgentStatusLight({
         console.error(`[uppidi-fleet] agent status light: window.open failed for ${agent.id}:`, err);
       }
     }
-    const url = agent.url || `paseo://agent/${agent.id}`;
+    const url = agent.url || defaultAgentLink(agent.id, { workspaceId: agent.workspaceId });
     Linking.openURL(url).catch(() => {
       copyToClipboard(url).catch(() => {});
     });
@@ -196,13 +193,13 @@ export function AgentStatusLight({
             transform: [{ translateX: "-50%" as any }],
             zIndex: 100,
             pointerEvents: "none" as any,
-            backgroundColor: (colors as any).surfaceRaised || colors.surface2 || colors.surface1 || "#1e293b",
-            borderColor: colors.border || "#334155",
+            backgroundColor: colors.surface2,
+            borderColor: colors.border,
             borderWidth: 1,
             borderRadius: 9999,
             paddingHorizontal: 8,
             paddingVertical: 3,
-            shadowColor: "#000",
+            shadowColor: HOST_SHADOW_COLOR,
             shadowOffset: { width: 0, height: 2 },
             shadowOpacity: 0.35,
             shadowRadius: 4,
@@ -224,7 +221,7 @@ export function AgentStatusLight({
           <Text
             numberOfLines={1}
             style={{
-              color: colors.foreground || "#f8fafc",
+              color: colors.foreground,
               fontSize: 11,
               fontWeight: "600",
               whiteSpace: "nowrap" as any,
@@ -236,7 +233,7 @@ export function AgentStatusLight({
           <Text
             numberOfLines={1}
             style={{
-              color: colors.foregroundMuted || "#94a3b8",
+              color: colors.foregroundMuted,
               fontSize: 10,
               whiteSpace: "nowrap" as any,
               flexShrink: 1,
@@ -351,6 +348,8 @@ export interface AgentTitleLinkProps {
   typography: any;
   navigation?: PluginSurfaceProps["navigation"];
   size?: "sm" | "md";
+  fontWeight?: any;
+  style?: any;
 }
 
 /**
@@ -362,6 +361,8 @@ export function AgentTitleLink({
   typography,
   navigation,
   size = "md",
+  fontWeight = "600",
+  style,
 }: AgentTitleLinkProps) {
   const [hovered, setHovered] = useState(false);
   const handlePress = () => {
@@ -369,7 +370,7 @@ export function AgentTitleLink({
       navigation.openAgent({ agentId: agent.id });
       return;
     }
-    const url = agent.url || `paseo://agent/${agent.id}`;
+    const url = agent.url || defaultAgentLink(agent.id, { workspaceId: agent.workspaceId });
     Linking.openURL(url).catch(() => {
       copyToClipboard(url).catch(() => {});
     });
@@ -382,15 +383,17 @@ export function AgentTitleLink({
       onPress={handlePress}
       onHoverChange={setHovered}
       pressedOpacity={0.75}
-      style={{ flexShrink: 1 }}
+      style={{ flexShrink: 1, minWidth: 0, ...style }}
     >
       <Text
         style={{
           color: hovered ? colors.accent : colors.foreground,
           ...(size === "sm" ? typography.body : typography.heading),
           fontSize: size === "sm" ? 12 : 13,
-          fontWeight: "600",
+          fontWeight,
           textDecorationLine: hovered ? "underline" : "none",
+          flexShrink: 1,
+          minWidth: 0,
         }}
         numberOfLines={1}
       >
@@ -433,10 +436,20 @@ export function formatDurationMs(ms?: number | null): string {
   return remHours ? `${days}d ${remHours}h` : `${days}d`;
 }
 
-function healthToneColor(tone: HealthGaugeTone, colors: any): string {
-  if (tone === "critical") return colors.statusDanger ?? STATUS_LIGHT_RED;
-  if (tone === "warn") return colors.statusWarning ?? STATUS_LIGHT_ORANGE;
-  return colors.statusSuccess ?? STATUS_LIGHT_GREEN;
+function healthToneColor(tone: HealthGaugeTone, colors: { statusSuccess: string; statusWarning: string; statusDanger: string }): string {
+  if (tone === "critical") return colors.statusDanger;
+  if (tone === "warn") return colors.statusWarning;
+  return colors.statusSuccess;
+}
+
+/** Maps the #410 status-light tone onto the host theme's status tokens. */
+function statusLightColor(
+  colors: { statusSuccess: string; statusWarning: string; statusDanger: string },
+  tone: StatusLightTone,
+): string {
+  if (tone === "danger") return colors.statusDanger;
+  if (tone === "success") return colors.statusSuccess;
+  return colors.statusWarning;
 }
 
 /** Milliseconds since an ISO timestamp, or undefined when unparseable. */
@@ -470,16 +483,22 @@ export function AgentHealthGauge({
   expanded = false,
   now = Date.now(),
 }: AgentHealthGaugeProps) {
-  const { colors } = useFleetTheme();
+  const { colors, alpha } = useFleetTheme();
   const metrics = agent.metrics;
   // Absent gauge for legacy payloads: no metrics block, nothing rendered.
   if (!metrics) return null;
 
   const gauge: HealthGauge = deriveHealthGauge(agent, DEFAULT_HEALTH_GAUGE_THRESHOLDS, now);
   const toneColor = healthToneColor(gauge.overall, colors);
-  const trackColor = colors.surface2;
+  // Enhanced visibility (#1205): use a semi-opaque surface tone with a
+  // contrasting border so the track is always discernible on light and dark surfaces.
+  const trackColor = alpha(colors.foregroundMuted, 0.5);
   const width = compact ? 28 : 56;
   const height = 4;
+  // Three segments with 2px gaps. A non-zero fill below ~2px renders as a
+  // stray tick mark rather than a level, so partial fills floor at 2px (#1205).
+  const segmentWidth = (width - 4) / 3;
+  const minFillRatio = Math.min(2, segmentWidth) / segmentWidth;
 
   const isRunning =
     String(agent.status ?? "").toLowerCase() === "running" &&
@@ -504,8 +523,8 @@ export function AgentHealthGauge({
         width: compact ? 12 : 14,
         height: compact ? 12 : 14,
         borderRadius: compact ? 6 : 7,
-        borderWidth: 1.5,
-        borderColor: trackColor,
+        borderWidth: 1,
+        borderColor: colors.border,
         alignItems: "center",
         justifyContent: "center",
         position: "relative",
@@ -534,7 +553,7 @@ export function AgentHealthGauge({
     // Thin stacked micro-bar: three side-by-side segments (context / turn / error).
     <View
       testID={`agent-health-gauge-track-${agent.id}`}
-      style={{ width, height, flexDirection: "row", gap: 2 }}
+      style={{ width, height, flexDirection: "row", gap: 2, borderRadius: 4, borderWidth: 1, borderColor: colors.border }}
     >
       {gauge.segments.map((segment: HealthGaugeSegment) => (
         <View
@@ -550,9 +569,11 @@ export function AgentHealthGauge({
         >
           <View
             style={{
-              width: `${Math.round(segment.ratio * 100)}%`,
+              width: `${Math.round(
+                (segment.ratio > 0 ? Math.max(segment.ratio, minFillRatio) : 0) * 100,
+              )}%`,
               height: "100%",
-              borderRadius: 2,
+              borderRadius: 1,
               backgroundColor: healthToneColor(segment.tone, colors),
             }}
           />
@@ -755,7 +776,7 @@ export function FrontDeskHero({
       >
         <Stack gap={8} style={{ overflow: "visible" }}>
           <Row justify="space-between" align="center" wrap gap="sm" style={{ overflow: "visible" }}>
-            <Row align="center" gap="sm">
+            <Row align="center" gap="sm" wrap style={{ flexShrink: 1, minWidth: 0, overflow: "visible" }}>
               <Icon name="Inbox" size={18} color={colors.foregroundMuted} />
               <Stack gap={2}>
                 <Row align="center" gap="xs">
@@ -786,7 +807,7 @@ export function FrontDeskHero({
                 </Text>
               </Stack>
             </Row>
-            <Row align="center" gap="xs">
+            <Row align="center" gap="xs" wrap style={{ flexShrink: 1, minWidth: 0 }}>
               <Badge label="Standby" variant="neutral" size="sm" textStyle={{ fontSize: 10 }} />
               {onCreateFrontDesk && (
                 <Button
@@ -817,7 +838,7 @@ export function FrontDeskHero({
                 overflow: "visible",
               }}
             >
-              <Row align="center" gap="xs" style={{ overflow: "visible" }}>
+<Row align="center" gap="xs" wrap style={{ flexShrink: 1, minWidth: 0, overflow: "visible" }}>
                 <Icon name="Network" size={13} color={colors.foregroundMuted} />
                 <Text
                   numberOfLines={1}
@@ -867,14 +888,14 @@ export function FrontDeskHero({
       <Stack gap={10} style={{ overflow: "visible" }}>
         <Row justify="space-between" align="center" wrap gap="sm" style={{ overflow: "visible" }}>
           {/* Left: Status Light, Icon, Titles & Worktree */}
-          <Row align="center" gap="sm" style={{ flexShrink: 1, overflow: "visible" }}>
+          <Row align="center" gap="sm" wrap style={{ flexShrink: 1, minWidth: 0, overflow: "visible" }}>
             <AgentStatusLight
               agent={primaryAgent}
               navigation={navigation}
               size={10}
             />
             <Icon name="Inbox" size={18} color={primaryStateConfig.color} />
-            <Stack gap={2} style={{ flexShrink: 1 }}>
+            <Stack gap={2} style={{ flexShrink: 1, minWidth: 0 }}>
               <Row align="center" gap="xs" wrap>
                 <Text
                   numberOfLines={1}
@@ -891,7 +912,7 @@ export function FrontDeskHero({
                 </Text>
                 <Badge label="Liaison" variant="neutral" size="sm" textStyle={{ fontSize: 10 }} />
               </Row>
-              <Row align="center" gap="xs" wrap style={{ flexShrink: 1 }}>
+              <Row align="center" gap="xs" wrap style={{ flexShrink: 1, minWidth: 0 }}>
                 <AgentTitleLink
                   agent={primaryAgent}
                   colors={colors}
@@ -918,7 +939,7 @@ export function FrontDeskHero({
           </Row>
 
           {/* Right: State, Model, Timing, Archive */}
-          <Row align="center" wrap gap="xs">
+          <Row align="center" wrap gap="xs" style={{ flexShrink: 1, minWidth: 0 }}>
             <Badge
               label={`${primaryAgent.deterministicState}${
                 primaryAgent.stateDetail ? `: ${primaryAgent.stateDetail}` : ""
@@ -942,6 +963,7 @@ export function FrontDeskHero({
                   ...typography.caption,
                   fontSize: 11,
                   flexShrink: 1,
+                  minWidth: 0,
                 }}
               >
                 {formatRelativeTime(primaryAgent.lastActivityAt)}
@@ -1023,7 +1045,7 @@ export function FrontDeskHero({
               overflow: "visible",
             }}
           >
-            <Row align="center" gap="xs" style={{ overflow: "visible" }}>
+            <Row align="center" gap="xs" wrap style={{ flexShrink: 1, minWidth: 0, overflow: "visible" }}>
               <Icon name="Network" size={13} color={colors.foregroundMuted} />
               <Text
                 numberOfLines={1}
@@ -1568,6 +1590,95 @@ export function AgentLabelsRow({ agent, max = 5 }: { agent: UppidiAgent; max?: n
   );
 }
 
+/**
+ * Inventory drawer that groups secondary pill badges out of the main row.
+ * Shows shortId, role/category, model, worktree, parentage, and labels
+ * behind a collapsible chevron so the primary row stays compact (#1192).
+ */
+export function AgentInventoryDrawer({
+  agent,
+  navigation,
+  isOpen,
+  onToggle,
+  colors,
+  typography,
+}: {
+  agent: UppidiAgent;
+  navigation?: PluginSurfaceProps["navigation"];
+  isOpen: boolean;
+  onToggle: () => void;
+  colors: any;
+  typography: any;
+}) {
+  const stateConfig = getDeterministicStateConfig(agent.deterministicState, agent.category);
+  const worktree = agent.worktree || extractAgentWorktree(agent);
+  const categoryLabel = isCodingAgentCategory(agent.category)
+    ? null
+    : agent.category;
+
+  // Gather all secondary pills that should live in the drawer
+  const pills: Array<{ label: string; interactive?: boolean }> = [];
+
+  if (agent.shortId) {
+    pills.push({ label: agent.shortId });
+  }
+  if (categoryLabel) {
+    pills.push({ label: categoryLabel });
+  }
+  if (agent.model) {
+    pills.push({ label: agent.model });
+  }
+  if (worktree) {
+    pills.push({ label: worktree });
+  }
+
+  return (
+    <View style={{ overflow: "visible" }}>
+      {/* Drawer toggle — tiny chevron inline after the primary row */}
+      <InteractiveRow
+        onPress={onToggle}
+        pressedOpacity={0.6}
+        style={{
+          paddingVertical: 1,
+          paddingHorizontal: 2,
+          borderRadius: 3,
+        }}
+        accessibilityRole="button"
+        accessibilityLabel={isOpen ? "Collapse inventory details" : "Expand inventory details"}
+      >
+        <Icon name={isOpen ? "ChevronDown" : "ChevronRight"} size={10} color={colors.foregroundMuted} />
+      </InteractiveRow>
+
+      {isOpen && (
+        <View
+          style={{
+            marginTop: 2,
+            paddingLeft: 16,
+            flexDirection: "row",
+            flexWrap: "wrap",
+            gap: 4,
+            alignItems: "center",
+            overflow: "visible",
+          }}
+        >
+          {pills.map((pill) => (
+            <Badge
+              key={pill.label}
+              label={pill.label}
+              variant="neutral"
+              size="sm"
+              textStyle={{ fontFamily: "monospace", fontSize: 9 }}
+            />
+          ))}
+
+          <ParentAgentPill agent={agent} navigation={navigation} />
+          <AgentLabelsRow agent={agent} />
+        </View>
+      )}
+    </View>
+  );
+}
+
 export function getParentBadgeLabel(agent: UppidiAgent): string | null {
   if (!agent.parentId && !agent.parentName) return null;
   if (
@@ -1735,6 +1846,18 @@ export function AgentAttentionBanner({ agent, compact = false }: AgentAttentionB
   );
 }
 
+/**
+ * High-density worker agent row — compact primary line with collapsible
+ * inventory drawer for secondary pills (#1192).
+ *
+ * Primary row: `[Guide Connector + Expand Chevron + Status Light + Icon + AgentTitleLink]`
+ *           then `[#Issue Badge] [State Badge] [Archive Btn]`
+ * Collapsed by default, the drawer reveals: shortId, role/category, model,
+ * worktree, parentage (ParentAgentPill), and custom labels (AgentLabelsRow).
+ *
+ * CRITICAL (#403): Descendants/children MUST NOT use Card containers to avoid wasted space.
+ * Features 4px/8px rhythm, visual tree guide connector, and subtle row hover highlighting.
+ */
 export interface DenseAgentRowProps {
   node: UppidiAgentTreeNode;
   depth?: number;
@@ -1748,11 +1871,6 @@ export interface DenseAgentRowProps {
   onArchiveAgent: (id: string) => Promise<void> | void;
 }
 
-/**
- * High-density agent list row.
- * CRITICAL (#403): Descendants/children MUST NOT use Card containers to avoid wasted space.
- * Features 4px/8px rhythm, visual tree guide connector, and subtle row hover highlighting.
- */
 export function DenseAgentRow({
   node,
   depth = 1,
@@ -1767,6 +1885,7 @@ export function DenseAgentRow({
   const { alpha } = useFleetTheme();
   const [isHovered, setIsHovered] = useState(false);
   const [metricsOpen, setMetricsOpen] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const agent = node.agent;
   const stateConfig = getDeterministicStateConfig(agent.deterministicState, agent.category);
   const worktree = agent.worktree || extractAgentWorktree(agent);
@@ -1796,78 +1915,49 @@ export function DenseAgentRow({
           // only there to help the eye track across a wide row. Hover wins, and
           // alpha() over colors.surface1 keeps it correct in light and dark.
           backgroundColor: isHovered
-            ? (alpha?.(colors.accent, 0.05) || colors.surface1 || "rgba(255,255,255,0.04)")
+            ? alpha(colors.accent, 0.05)
             : siblingIndex % 2 === 1
-              ? (alpha?.(colors.surface1, 0.5) || "rgba(128,128,128,0.06)")
+              ? alpha(colors.surface1, 0.5)
               : "transparent",
           overflow: "visible",
         }}
       >
         <Row justify="space-between" align="center" wrap gap="xs" style={{ overflow: "visible" }}>
-          {/* Left side: Guide connector, status dot, icon, title, shortId */}
-          <Row align="center" gap="xs" style={{ flexShrink: 1, minWidth: 200, overflow: "visible" }}>
-            <View
-              style={{
-                width: 18,
-                alignItems: "center",
-                justifyContent: "center",
-                marginRight: 2,
-              }}
-            >
-              <Text
+          {/* Left side: Identity cluster (#1192) */}
+          <Row align="center" gap="xs" wrap style={{ flexShrink: 1, minWidth: 0, overflow: "visible" }}>
+            {/* Unbreakable identity anchor: Guide Connector + Expand Chevron + Status Light + Icon + Title Link */}
+            <Row align="center" gap="xs" wrap={false} style={{ flexShrink: 1, minWidth: 0 }}>
+              <View
                 style={{
-                  color: colors.foregroundMuted,
-                  fontFamily: "monospace",
-                  fontSize: 11,
-                  opacity: 0.65,
+                  width: 18,
+                  alignItems: "center",
+                  justifyContent: "center",
+                  marginRight: 2,
                 }}
               >
-                {isLast ? "└─" : "├─"}
-              </Text>
-            </View>
-            <AgentStatusLight agent={agent} navigation={navigation} size={7} />
-            <Icon name={stateConfig.categoryIcon} size={13} color={stateConfig.color} />
-            <AgentTitleLink
-              agent={agent}
-              colors={colors}
-              typography={typography}
-              navigation={navigation}
-              size="sm"
-            />
-            <Badge
-              label={agent.shortId}
-              variant="neutral"
-              size="sm"
-              textStyle={{ fontFamily: "monospace", fontSize: 10, letterSpacing: 0.2 }}
-            />
-            {agent.category !== "worker" && (
-              <Badge
-                label={agent.category}
-                variant="neutral"
+                <Text
+                  style={{
+                    color: colors.foregroundMuted,
+                    fontFamily: "monospace",
+                    fontSize: 11,
+                    opacity: 0.65,
+                  }}
+                >
+                  {isLast ? "└─" : "├─"}
+                </Text>
+              </View>
+              <AgentStatusLight agent={agent} navigation={navigation} size={7} />
+              <Icon name={stateConfig.categoryIcon} size={13} color={stateConfig.color} />
+              <AgentTitleLink
+                agent={agent}
+                colors={colors}
+                typography={typography}
+                navigation={navigation}
                 size="sm"
-                textStyle={{ fontSize: 10 }}
               />
-            )}
-            <ParentAgentPill agent={agent} navigation={navigation} />
-            <AgentLabelsRow agent={agent} />
+            </Row>
 
-          </Row>
-
-          {/* Right side: State badge, Model, Issue, Worktree, Time, Archive */}
-          <Row align="center" wrap gap="xs">
-            <Badge
-              label={`${agent.deterministicState}${agent.stateDetail ? `: ${agent.stateDetail}` : ""}`}
-              variant={stateConfig.badgeVariant}
-              size="sm"
-              dot
-              style={{ borderColor: stateConfig.color }}
-              textStyle={{ fontSize: 10 }}
-            />
-
-            {agent.model && (
-              <Badge label={agent.model} variant="neutral" size="sm" textStyle={{ fontSize: 10 }} />
-            )}
-
+            {/* #Issue badge — primary worker info (#1192) */}
             {agent.attributedWork?.issue && (
               <Badge
                 label={`#${agent.attributedWork.issue}`}
@@ -1877,30 +1967,19 @@ export function DenseAgentRow({
               />
             )}
 
-            {worktree && (
-              <Badge
-                label={worktree}
-                variant="neutral"
-                size="sm"
-                textStyle={{ fontFamily: "monospace", fontSize: 10 }}
-              />
-            )}
+            {/* State badge — primary worker info (#1192) */}
+            <Badge
+              label={`${agent.deterministicState}${agent.stateDetail ? `: ${agent.stateDetail}` : ""}`}
+              variant={stateConfig.badgeVariant}
+              size="sm"
+              dot
+              style={{ borderColor: stateConfig.color }}
+              textStyle={{ fontSize: 10 }}
+            />
+          </Row>
 
-            {agent.lastActivityAt && (
-              <Text
-                numberOfLines={1}
-                style={{
-                  color: colors.foregroundMuted,
-                  ...typography.caption,
-                  fontSize: 11,
-                  lineHeight: 14,
-                  flexShrink: 1,
-                }}
-              >
-                {formatRelativeTime(agent.lastActivityAt)}
-              </Text>
-            )}
-
+          {/* Right side: Archive + Health Gauge + Inventory Drawer toggle */}
+          <Row align="center" wrap gap="xs" style={{ flexShrink: 1, minWidth: 0 }}>
             <Button
               icon="Archive"
               variant="ghost"
@@ -1927,6 +2006,16 @@ export function DenseAgentRow({
               compact
               expanded={metricsOpen}
               onToggle={() => setMetricsOpen((open) => !open)}
+            />
+
+            {/* Inventory drawer toggle for secondary pills (#1192) */}
+            <AgentInventoryDrawer
+              agent={agent}
+              navigation={navigation}
+              isOpen={drawerOpen}
+              onToggle={() => setDrawerOpen((open) => !open)}
+              colors={colors}
+              typography={typography}
             />
           </Row>
         </Row>
@@ -1976,8 +2065,16 @@ export function DenseAgentRow({
 }
 
 /**
- * Orchestrator anchored row with interactive expand/collapse toggle for children.
- * Renders as a clean tree row (no card wrapper) with guide connector (#409).
+ * Orchestrator anchored row — compact primary line with collapsible
+ * inventory drawer for secondary pills (#1192).
+ *
+ * Primary row: `[Guide Connector + Expand Chevron + Status Light + Icon + Title Link]`
+ *           then `[State Badge] [Optional Main Dirty Warning] [Archive Btn]`
+ * Collapsed by default, the drawer reveals: shortId, role/category, model,
+ * worktree, parentage (ParentAgentPill), and custom labels (AgentLabelsRow).
+ *
+ * Orchestrator rows carry a subtle accent tint to distinguish trunk nodes
+ * from worker subagents without box bloat (#1192).
  */
 export function OrchestratorRow({
   node,
@@ -2007,6 +2104,7 @@ export function OrchestratorRow({
   const { alpha } = useFleetTheme();
   const [isHovered, setIsHovered] = useState(false);
   const [metricsOpen, setMetricsOpen] = useState(false);
+  const [drawerOpen, setDrawerOpen] = useState(false);
   const agent = node.agent;
   const stateConfig = getDeterministicStateConfig(agent.deterministicState, agent.category);
   const worktree = agent.worktree || extractAgentWorktree(agent);
@@ -2035,73 +2133,82 @@ export function OrchestratorRow({
         paddingHorizontal: 8,
         paddingVertical: 4,
         borderRadius: 4,
+        // Orchestrator visual distinctiveness without box bloat (#1192).
+        // Default subtle accent tint distinguishes trunk orchestrator nodes from worker subagents.
         backgroundColor: isHovered
-          ? (alpha?.(colors.accent, 0.05) || colors.surface1 || "rgba(255,255,255,0.04)")
-          : "transparent",
+          ? alpha(colors.accent, 0.08)
+          : alpha(colors.accent, 0.04),
         overflow: "visible",
       }}
     >
       <Row justify="space-between" align="center" wrap gap="xs" style={{ overflow: "visible" }}>
-        {/* Left: Guide connector, Expand toggle, Indicator, Icon, Title Link, Badges */}
-        <Row align="center" gap="xs" style={{ flexShrink: 1, minWidth: 200, overflow: "visible" }}>
-          <View
-            style={{
-              width: 18,
-              alignItems: "center",
-              justifyContent: "center",
-              marginRight: 2,
-            }}
-          >
-            <Text
+        {/* Left: Identity cluster + State + Dirty warning (#1192) */}
+        <Row align="center" gap="xs" wrap style={{ flexShrink: 1, minWidth: 0, overflow: "visible" }}>
+          {/* Unbreakable identity anchor: Guide Connector + Expand Chevron + Status Light + Icon + Title Link */}
+          <Row align="center" gap="xs" wrap={false} style={{ flexShrink: 1, minWidth: 0 }}>
+            <View
               style={{
-                color: colors.foregroundMuted,
-                fontFamily: "monospace",
-                fontSize: 11,
-                opacity: 0.65,
-              }}
-            >
-              {isLast ? "└──" : "├──"}
-            </Text>
-          </View>
-
-          {hasChildren && onToggleExpand ? (
-            <InteractiveRow
-              onPress={onToggleExpand}
-              pressedOpacity={0.6}
-              style={{
-                padding: 2,
+                width: 18,
+                alignItems: "center",
+                justifyContent: "center",
                 marginRight: 2,
               }}
-              accessibilityRole="button"
-              accessibilityLabel={`${isExpanded ? "Collapse" : "Expand"} subagents of ${agent.name}`}
             >
-              <Icon
-                name={isExpanded ? "ChevronDown" : "ChevronRight"}
-                size={14}
-                color={colors.foregroundMuted}
-              />
-            </InteractiveRow>
-          ) : (
-            <View style={{ width: 14 }} />
-          )}
+              <Text
+                style={{
+                  color: colors.foregroundMuted,
+                  fontFamily: "monospace",
+                  fontSize: 11,
+                  opacity: 0.65,
+                }}
+              >
+                {isLast ? "└──" : "├──"}
+              </Text>
+            </View>
 
-          <AgentStatusLight agent={agent} navigation={navigation} size={8} />
-          <Icon name="Network" size={15} color={stateConfig.color} />
-          <AgentTitleLink
-            agent={agent}
-            colors={colors}
-            typography={typography}
-            navigation={navigation}
-          />
+            {hasChildren && onToggleExpand ? (
+              <InteractiveRow
+                onPress={onToggleExpand}
+                pressedOpacity={0.6}
+                style={{
+                  padding: 2,
+                  marginRight: 2,
+                }}
+                accessibilityRole="button"
+                accessibilityLabel={`${isExpanded ? "Collapse" : "Expand"} subagents of ${agent.name}`}
+              >
+                <Icon
+                  name={isExpanded ? "ChevronDown" : "ChevronRight"}
+                  size={14}
+                  color={colors.foregroundMuted}
+                />
+              </InteractiveRow>
+            ) : (
+              <View style={{ width: 14 }} />
+            )}
+
+            <AgentStatusLight agent={agent} navigation={navigation} size={8} />
+            <Icon name="Network" size={15} color={stateConfig.color} />
+            <AgentTitleLink
+              agent={agent}
+              colors={colors}
+              typography={typography}
+              navigation={navigation}
+              fontWeight="700"
+            />
+          </Row>
+
+          {/* State badge — primary orch info (#1192) */}
           <Badge
-            label={agent.shortId}
-            variant="neutral"
+            label={`${agent.deterministicState}${agent.stateDetail ? `: ${agent.stateDetail}` : ""}`}
+            variant={stateConfig.badgeVariant}
             size="sm"
-            textStyle={{ fontFamily: "monospace", fontSize: 10, letterSpacing: 0.2 }}
+            dot
+            style={{ borderColor: stateConfig.color }}
+            textStyle={{ fontSize: 10 }}
           />
-          <Badge label="Orchestrator" variant="neutral" size="sm" textStyle={{ fontSize: 10 }} />
-          <ParentAgentPill agent={agent} navigation={navigation} />
-          <AgentLabelsRow agent={agent} />
+
+          {/* Optional main dirty warning — only shown when relevant (#1192) */}
           {agent.isMainDirty && (
             <InteractiveRow
               accessibilityRole="button"
@@ -2127,6 +2234,7 @@ export function OrchestratorRow({
               />
             </InteractiveRow>
           )}
+
           {agent.isRepoRootOffMain && (
             <InteractiveRow
               accessibilityRole="button"
@@ -2152,6 +2260,7 @@ export function OrchestratorRow({
               />
             </InteractiveRow>
           )}
+
           {!isExpanded && hasChildren && childCount > 0 && (
             <Badge
               label={`${childCount} subagent${childCount === 1 ? "" : "s"}`}
@@ -2163,7 +2272,7 @@ export function OrchestratorRow({
 
           {/* Child agent status lights side by side (#410) */}
           {childAgents.length > 0 && (
-            <Row align="center" gap="xs" style={{ marginLeft: 4, alignItems: "center", overflow: "visible" }}>
+            <Row align="center" gap="xs" wrap style={{ marginLeft: 4, flexShrink: 1, minWidth: 0, overflow: "visible" }}>
               <AgentStatusLightsRow
                 agents={childAgents}
                 navigation={navigation}
@@ -2173,44 +2282,8 @@ export function OrchestratorRow({
           )}
         </Row>
 
-        {/* Right: State, Model, Worktree, Activity, Archive */}
-        <Row align="center" wrap gap="xs">
-          <Badge
-            label={`${agent.deterministicState}${agent.stateDetail ? `: ${agent.stateDetail}` : ""}`}
-            variant={stateConfig.badgeVariant}
-            size="sm"
-            dot
-            style={{ borderColor: stateConfig.color }}
-            textStyle={{ fontSize: 10 }}
-          />
-
-          {agent.model && (
-            <Badge label={agent.model} variant="neutral" size="sm" textStyle={{ fontSize: 10 }} />
-          )}
-
-          {worktree && (
-            <Badge
-              label={worktree}
-              variant="neutral"
-              size="sm"
-              textStyle={{ fontFamily: "monospace", fontSize: 10 }}
-            />
-          )}
-
-          {agent.lastActivityAt && (
-            <Text
-              numberOfLines={1}
-              style={{
-                color: colors.foregroundMuted,
-                ...typography.caption,
-                fontSize: 11,
-                flexShrink: 1,
-              }}
-            >
-              {formatRelativeTime(agent.lastActivityAt)}
-            </Text>
-          )}
-
+        {/* Right: Archive + Health Gauge + Inventory Drawer toggle */}
+        <Row align="center" wrap gap="xs" style={{ flexShrink: 1, minWidth: 0 }}>
           <Button
             icon="Archive"
             variant="ghost"
@@ -2236,6 +2309,16 @@ export function OrchestratorRow({
             agent={agent}
             expanded={metricsOpen}
             onToggle={() => setMetricsOpen((open) => !open)}
+          />
+
+          {/* Inventory drawer toggle for secondary pills (#1192) */}
+          <AgentInventoryDrawer
+            agent={agent}
+            navigation={navigation}
+            isOpen={drawerOpen}
+            onToggle={() => setDrawerOpen((open) => !open)}
+            colors={colors}
+            typography={typography}
           />
         </Row>
       </Row>
@@ -2271,7 +2354,7 @@ export function ProjectGroupCard({
   onToggleOrchestrator,
   onAddOrchestrator,
   onReplaceOrchestrator,
-  onToggleMute,
+  onTogglePause,
   isActionLoading = false,
 }: {
   group: ProjectAgentGroup;
@@ -2286,19 +2369,28 @@ export function ProjectGroupCard({
   onToggleOrchestrator?: (orchId: string) => void;
   onAddOrchestrator?: (repo: string) => Promise<void> | void;
   onReplaceOrchestrator?: (repo: string, existingAgentId?: string) => Promise<void> | void;
-  onToggleMute?: (repo: string, currentlyMuted?: boolean) => Promise<void> | void;
+  onTogglePause?: (repo: string, currentlyPaused?: boolean) => Promise<void> | void;
   isActionLoading?: boolean;
 }) {
   const workerCount = group.totalCount - group.orchestrators.length;
+  const pausedBadge = (
+    <Badge
+      label="⏸ Paused"
+      variant="warning"
+      size="sm"
+      dot
+      textStyle={{ fontSize: 10, fontWeight: "700" }}
+    />
+  );
 
   return (
     <View
       style={{
         paddingVertical: 2,
-        opacity: group.isMuted ? 0.65 : 1,
-        borderLeftWidth: group.isMuted ? 2 : 0,
-        borderLeftColor: group.isMuted ? colors.warning || colors.accent : "transparent",
-        paddingLeft: group.isMuted ? 6 : 0,
+        opacity: group.isPaused ? 0.65 : 1,
+        borderLeftWidth: group.isPaused ? 2 : 0,
+        borderLeftColor: group.isPaused ? colors.warning || colors.accent : "transparent",
+        paddingLeft: group.isPaused ? 6 : 0,
         overflow: "visible",
       }}
     >
@@ -2318,7 +2410,7 @@ export function ProjectGroupCard({
           accessibilityLabel={`${isExpanded ? "Collapse" : "Expand"} project group ${group.projectName}`}
         >
           <Row justify="space-between" align="center" wrap gap="xs">
-            <Row align="center" gap="xs">
+            <Row align="center" gap="xs" wrap style={{ flexShrink: 1, minWidth: 0 }}>
               {onToggleExpand && (
                 <Icon
                   name={isExpanded ? "ChevronDown" : "ChevronRight"}
@@ -2335,6 +2427,7 @@ export function ProjectGroupCard({
                   fontWeight: "700",
                   fontSize: 14,
                   flexShrink: 1,
+                  minWidth: 0,
                 }}
               >
                 {group.projectName}
@@ -2355,15 +2448,21 @@ export function ProjectGroupCard({
               />
 
               {/* Fleet Roster Enrolled & Detached Badges (#426) */}
-              {group.isMuted && (
-                <Badge
-                  label="🔇 Muted"
-                  variant="warning"
-                  size="sm"
-                  dot
-                  textStyle={{ fontSize: 10, fontWeight: "700" }}
-                />
+              {group.isPaused && onTogglePause && (
+                <InteractiveRow
+                  testID={`paused-badge-${group.projectName}`}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Unpause ${group.projectName}`}
+                  accessibilityHint="Click to unpause this repository"
+                  title={`Click to unpause ${group.projectName}`}
+                  disabled={isActionLoading}
+                  onPress={() => onTogglePause(group.projectName, false)}
+                  hitSlop={4}
+                >
+                  {pausedBadge}
+                </InteractiveRow>
               )}
+              {group.isPaused && !onTogglePause && pausedBadge}
               {group.isEnrolled && (
                 <>
                   {!group.hasOrchestrator && (
@@ -2386,17 +2485,17 @@ export function ProjectGroupCard({
               )}
             </Row>
 
-            <Row align="center" gap="xs">
-              {/* Lifecycle & Muting Action Buttons (#426) */}
-              {group.isEnrolled && onToggleMute && (
+            <Row align="center" gap="xs" wrap style={{ flexShrink: 1, minWidth: 0 }}>
+              {/* Lifecycle & Pausing Action Buttons (#426) */}
+              {group.isEnrolled && onTogglePause && (
                 <Button
-                  label={group.isMuted ? "Unmute" : "Mute"}
-                  icon={group.isMuted ? "Volume2" : "VolumeX"}
+                  label={group.isPaused ? "Unpause" : "Pause"}
+                  icon={group.isPaused ? "Play" : "Pause"}
                   size="sm"
                   variant="ghost"
                   disabled={isActionLoading}
                   loading={isActionLoading}
-                  onPress={() => onToggleMute(group.projectName, !group.isMuted)}
+                  onPress={() => onTogglePause(group.projectName, !group.isPaused)}
                 />
               )}
 
@@ -2581,7 +2680,7 @@ export const UppidiFleetTreeView: React.FC<UppidiFleetTreeViewProps> = ({
   onReplaceFrontDesk,
   onAddOrchestrator,
   onReplaceOrchestrator,
-  onToggleRepoMute,
+  onToggleRepoPause,
   selectedRepo,
   registeredFrontDeskAgentId,
   repoSortField: propsRepoSortField,
@@ -2639,7 +2738,7 @@ export const UppidiFleetTreeView: React.FC<UppidiFleetTreeViewProps> = ({
   const replaceFrontDeskMutation = useRpcMutation(uppidiReplaceFrontDeskContract);
   const addOrchestratorMutation = useRpcMutation(uppidiAddOrchestratorContract);
   const replaceOrchestratorMutation = useRpcMutation(uppidiReplaceOrchestratorContract);
-  const toggleRepoMuteMutation = useRpcMutation(uppidiToggleRepoMuteContract);
+  const toggleRepoPauseMutation = useRpcMutation(uppidiToggleRepoPauseContract);
 
   const isBulkArchiving = isArchiving || localBulkArchiving;
   const archivingAgentId = localArchivingId;
@@ -2728,20 +2827,20 @@ export const UppidiFleetTreeView: React.FC<UppidiFleetTreeViewProps> = ({
     }
   };
 
-  const handleToggleRepoMute = async (repo: string, muted?: boolean) => {
+  const handleToggleRepoPause = async (repo: string, paused?: boolean) => {
     setActionLoadingRepo(repo);
     try {
-      if (onToggleRepoMute) {
-        await onToggleRepoMute(repo, muted);
+      if (onToggleRepoPause) {
+        await onToggleRepoPause(repo, paused);
       } else {
-        const res = await toggleRepoMuteMutation.mutateAsync({ repo, muted });
+        const res = await toggleRepoPauseMutation.mutateAsync({ repo, paused });
         if (res.ok) {
           toast.show(
-            res.message || `Repo ${repo} ${res.isMuted ? "muted" : "unmuted"}`,
+            res.message || `Repo ${repo} ${res.isPaused ? "paused" : "unpaused"}`,
           );
           onRefresh?.();
         } else {
-          toast.error(res.error || `Failed to toggle mute for ${repo}`);
+          toast.error(res.error || `Failed to toggle pause for ${repo}`);
         }
       }
     } catch (err: any) {
@@ -2896,9 +2995,10 @@ export const UppidiFleetTreeView: React.FC<UppidiFleetTreeViewProps> = ({
   const { frontDeskNodes, staleFrontDeskNodes: filteredStaleFrontDeskNodes, enrolledGroups, detachedGroups } = useMemo(() => {
     return buildProjectGroups(filteredTree, {
       enrolledRepos: agentsData?.enrolledRepos,
-      mutedRepos: agentsData?.mutedRepos,
+      pausedRepos: agentsData?.pausedRepos,
       repoQueuedHooks: agentsData?.repoQueuedHooks,
       registeredFrontDeskAgentId,
+      registryAuthoritative: agentsData?.registryAuthoritative ?? false,
       sortField: repoSortField,
       sortDirection: repoSortDir,
     });
@@ -2908,9 +3008,10 @@ export const UppidiFleetTreeView: React.FC<UppidiFleetTreeViewProps> = ({
   const { primaryFrontDeskNode, staleFrontDeskNodes } = useMemo(() => {
     const result = buildProjectGroups(baseTree, {
       enrolledRepos: agentsData?.enrolledRepos,
-      mutedRepos: agentsData?.mutedRepos,
+      pausedRepos: agentsData?.pausedRepos,
       repoQueuedHooks: agentsData?.repoQueuedHooks,
       registeredFrontDeskAgentId,
+      registryAuthoritative: agentsData?.registryAuthoritative ?? false,
       sortField: repoSortField,
       sortDirection: repoSortDir,
     });
@@ -3120,7 +3221,7 @@ export const UppidiFleetTreeView: React.FC<UppidiFleetTreeViewProps> = ({
        *
        * Deliberately the same container, chip anatomy and metrics as
        * surface.tsx's "Dense Metrics Bar" — same surface1 fill, 1px border,
-       * radius 6, and the same icon / muted-label / bold-count chip. The
+       * radius 6, and the same icon / paused-label / bold-count chip. The
        * operator rejected an earlier version of this row for not *looking* like
        * the Queue page, so these values are copied rather than approximated and
        * a test pins them so the two cannot drift apart again.
@@ -3245,7 +3346,7 @@ export const UppidiFleetTreeView: React.FC<UppidiFleetTreeViewProps> = ({
                 onToggleOrchestrator={handleToggleOrchestrator}
                 onAddOrchestrator={handleAddOrchestrator}
                 onReplaceOrchestrator={handleReplaceOrchestrator}
-                onToggleMute={handleToggleRepoMute}
+                onTogglePause={handleToggleRepoPause}
                 isActionLoading={actionLoadingRepo === group.projectName}
               />
             );
