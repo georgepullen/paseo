@@ -109,6 +109,43 @@ test("host records round-trip through the schema", () => {
   assert.equal(HostRecordSchema.safeParse({ ...record, wakeTransports: [] }).success, true, "a host may exist with no transports");
 });
 
+test("host records accept inferenceProxy, holdCommand, and agentModels", () => {
+  const now = Date.now();
+  const record = HostRecordSchema.parse({
+    id: "host-abcd1234",
+    name: "gpu-box",
+    wakeTransports: [],
+    inferenceProxy: { listenPort: 11434, upstreamPort: 11435 },
+    holdCommand: { command: "ssh", args: ["gpu-box", "touch", "/tmp/wake-hold"] },
+    agentModels: ["qwen3090champ/"],
+    createdAt: now,
+    updatedAt: now,
+  });
+  assert.deepEqual(record.inferenceProxy, { listenPort: 11434, upstreamPort: 11435 });
+  assert.equal(record.holdCommand?.command, "ssh");
+  assert.deepEqual(record.agentModels, ["qwen3090champ/"]);
+
+  const full = HostRecordSchema.parse({
+    ...record,
+    inferenceProxy: { listenPort: 1, upstreamPort: 65535, upstreamHost: "gpu.internal", wakeTimeoutSeconds: 30, pollSeconds: 2 },
+  });
+  assert.equal(full.inferenceProxy?.wakeTimeoutSeconds, 30);
+
+  for (const bad of [
+    { ...record, inferenceProxy: { listenPort: 0, upstreamPort: 11435 } },
+    { ...record, inferenceProxy: { listenPort: 11434, upstreamPort: 70000 } },
+    { ...record, inferenceProxy: { listenPort: 11434, upstreamPort: 11435, wakeTimeoutSeconds: 9 } },
+    { ...record, inferenceProxy: { listenPort: 11434, upstreamPort: 11435, wakeTimeoutSeconds: 301 } },
+    { ...record, inferenceProxy: { listenPort: 11434, upstreamPort: 11435, pollSeconds: 0 } },
+    { ...record, inferenceProxy: { listenPort: 11434, upstreamPort: 11435, pollSeconds: 31 } },
+    { ...record, holdCommand: { command: "" } },
+    { ...record, agentModels: [""] },
+    { ...record, agentModels: Array.from({ length: 17 }, (_, i) => `m${i}`) },
+  ]) {
+    assert.equal(HostRecordSchema.safeParse(bad).success, false, `${JSON.stringify(bad)} must not parse`);
+  }
+});
+
 test("host.status output vocabulary is up/down/unknown", () => {
   const output = hostStatusRpc.output.parse({ id: "host-abcd1234", state: "up", probedVia: "ssh", error: null, checkedAt: 1 });
   assert.equal(output.state, "up");

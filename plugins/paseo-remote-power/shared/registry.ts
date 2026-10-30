@@ -67,6 +67,21 @@ export const StatusCommandSchema = z.object({
   args: z.array(z.string().max(1024)).max(64).optional(),
 });
 
+/**
+ * Local inference proxy for a sleeping host. The plugin server listens on
+ * 127.0.0.1:listenPort and forwards to upstreamHost:upstreamPort (defaults
+ * applied at use sites, not stored). On a connect failure it wakes the host
+ * and retries every pollSeconds (default 5) up to wakeTimeoutSeconds
+ * (default 60) before answering 503 host_asleep.
+ */
+export const InferenceProxySchema = z.object({
+  listenPort: z.number().int().min(1).max(65535),
+  upstreamPort: z.number().int().min(1).max(65535),
+  upstreamHost: z.string().min(1).max(253).optional(),
+  wakeTimeoutSeconds: z.number().int().min(10).max(300).optional(),
+  pollSeconds: z.number().int().min(1).max(30).optional(),
+});
+
 export const HostRecordSchema = z.object({
   id: z.string().min(1).max(64),
   name: z.string().min(1).max(64),
@@ -75,6 +90,12 @@ export const HostRecordSchema = z.object({
   /** Per-host override of the settings default wake window. */
   wakeWindowSeconds: z.number().int().min(10).max(3600).optional(),
   wakeTransports: z.array(WakeTransportSchema).max(8),
+  /** Local inference proxy (plugin-server-only; see InferenceProxySchema). */
+  inferenceProxy: InferenceProxySchema.optional(),
+  /** Keep-awake hold command run while a matching agent is in a turn (e.g. ssh touch of a wake-hold file). */
+  holdCommand: StatusCommandSchema.optional(),
+  /** Model prefixes; a local agent whose model starts with any of these holds this host awake. */
+  agentModels: z.array(z.string().min(1).max(128)).max(16).optional(),
   createdAt: z.number().int().nonnegative(),
   updatedAt: z.number().int().nonnegative(),
 });
@@ -86,6 +107,7 @@ export type WolTransport = z.infer<typeof WolTransportSchema>;
 export type CommandTransport = z.infer<typeof CommandTransportSchema>;
 export type MicrolinkTransport = z.infer<typeof MicrolinkTransportSchema>;
 export type StatusCommand = z.infer<typeof StatusCommandSchema>;
+export type InferenceProxy = z.infer<typeof InferenceProxySchema>;
 
 /** Canonical failure modes, ported from the wake script this plugin generalizes. */
 export const FAILURE_MODES = ["no-transport", "never-reachable", "saturated", "unknown-host"] as const;
@@ -137,6 +159,9 @@ export const hostsAddRpc = defineRpc({
     statusCommand: StatusCommandSchema.optional(),
     wakeWindowSeconds: z.number().int().min(10).max(3600).optional(),
     wakeTransports: z.array(WakeTransportSchema).max(8),
+    inferenceProxy: InferenceProxySchema.optional(),
+    holdCommand: StatusCommandSchema.optional(),
+    agentModels: z.array(z.string().min(1).max(128)).max(16).optional(),
     /** Write-only secret stored under `tokenRef` (or a generated ref) in the plugin state dir; never persisted with the host. */
     token: z.string().min(1).max(512).optional(),
     tokenRef: z.string().min(1).max(128).optional(),
@@ -158,6 +183,9 @@ export const hostsUpdateRpc = defineRpc({
     statusCommand: StatusCommandSchema.nullable().optional(),
     wakeWindowSeconds: z.number().int().min(10).max(3600).nullable().optional(),
     wakeTransports: z.array(WakeTransportSchema).max(8).optional(),
+    inferenceProxy: InferenceProxySchema.nullable().optional(),
+    holdCommand: StatusCommandSchema.nullable().optional(),
+    agentModels: z.array(z.string().min(1).max(128)).max(16).nullable().optional(),
     token: z.string().min(1).max(512).optional(),
     tokenRef: z.string().min(1).max(128).optional(),
   }),

@@ -130,6 +130,38 @@ test("update merges, clears optional fields on explicit null, and re-wires fresh
   }
 });
 
+test("update preserves inferenceProxy, holdCommand, and agentModels when omitted", () => {
+  const baseDir = fixtureDir();
+  try {
+    const added = addHost(
+      hostInput({
+        inferenceProxy: { listenPort: 11434, upstreamPort: 11435, wakeTimeoutSeconds: 30 },
+        holdCommand: { command: "ssh", args: ["build-box", "touch", "/tmp/wake-hold"] },
+        agentModels: ["qwen3090champ/"],
+      }),
+      baseDir,
+    );
+    assert.equal(added.saved, true);
+    const host = added.host as HostRecord;
+    assert.deepEqual(host.inferenceProxy, { listenPort: 11434, upstreamPort: 11435, wakeTimeoutSeconds: 30 });
+
+    const renamed = updateHost({ id: host.id, name: "renamed-gpu" }, baseDir);
+    assert.equal(renamed.saved, true);
+    assert.deepEqual(renamed.host?.inferenceProxy, host.inferenceProxy);
+    assert.deepEqual(renamed.host?.holdCommand, host.holdCommand);
+    assert.deepEqual(renamed.host?.agentModels, host.agentModels);
+    assert.deepEqual(findHost(host.id, baseDir)?.agentModels, ["qwen3090champ/"]);
+
+    const cleared = updateHost({ id: host.id, inferenceProxy: null, holdCommand: null, agentModels: null }, baseDir);
+    assert.equal(cleared.saved, true);
+    assert.equal(cleared.host?.inferenceProxy, undefined);
+    assert.equal(cleared.host?.holdCommand, undefined);
+    assert.equal(cleared.host?.agentModels, undefined);
+  } finally {
+    rmSync(baseDir, { recursive: true, force: true });
+  }
+});
+
 test("remove deletes only the named host and errors on unknown ids", () => {
   const baseDir = fixtureDir();
   try {

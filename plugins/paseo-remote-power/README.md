@@ -35,6 +35,9 @@ CLI), then add your first host on the **Remote power** surface. Requirements:
 | `statusCommand` | `{command, args?}?` | Optional probe run on the daemon host; exit 0 = up. Wins over ssh. |
 | `wakeWindowSeconds` | number? | Per-host wake window override (10–3600, default from settings). |
 | `wakeTransports` | array | Ordered wake transports; first success wins, then verification starts. |
+| `inferenceProxy` | `{listenPort, upstreamPort, upstreamHost?, wakeTimeoutSeconds?, pollSeconds?}?` | Local inference proxy (see below). `upstreamHost` defaults to `127.0.0.1`, `wakeTimeoutSeconds` to 60 (10–300), `pollSeconds` to 5 (1–30); defaults apply at use sites, not in the stored record. |
+| `holdCommand` | `{command, args?}?` | Keep-awake hold command run on the daemon host while a matching agent is in a turn (same shape as `statusCommand`). |
+| `agentModels` | string[]? | Model prefixes (max 16); a local agent whose model starts with any prefix holds this host awake. |
 
 Transports:
 
@@ -103,6 +106,46 @@ round-trip.
 5. **Bounded concurrency.** At most `maxConcurrentWakes` jobs run at once;
    a host with a wake in flight returns the existing job instead of stacking
    another.
+
+## Inference proxy (plugin server only)
+
+For each host with `inferenceProxy`, the plugin server runs one HTTP proxy on
+`127.0.0.1:listenPort` forwarding to `upstreamHost:upstreamPort` (method, path,
+headers — minus hop-by-hop headers — buffered body up to 32 MiB, and the
+streamed response are preserved; long generations are not cut by proxy
+timeouts). Point a local inference client at the listen port instead of the
+sleeping host. If the connection fails before any request bytes were flushed
+upstream, the proxy fires one wake through the shared engine (idempotent —
+concurrent requests do not stack wakes), holds the request, and retries every
+`pollSeconds` (default 5s). A forward that succeeds via this wake path also
+runs the host's `holdCommand` once, fire-and-forget. If the host is still
+unreachable when `wakeTimeoutSeconds` (default 60s) elapses, the client gets
+`503 {"error":{"message":"<host name> is asleep and did not wake within <N>s","type":"server_error","code":"host_asleep"}}`.
+A failure *after* the request was flushed is never resent (that could duplicate
+a generation): the client gets `502` with code `host_offline_midrequest`.
+A listen failure (e.g. the port is taken) is logged and that proxy is skipped —
+it never takes the plugin down. Proxies resync whenever hosts are added,
+updated, or removed. The MCP server does not run proxies; this is a
+plugin-server-only feature.
+
+## Agent keep-awake hold (plugin server only)
+
+For each host with `agentModels` (and usually a `holdCommand`), the plugin
+server watches local agent turns. While a local agent whose model starts with
+any configured prefix is in an active turn (status `running`/`initializing`,
+or a non-null active turn), the host is held awake: on the first such agent
+the plugin fires one wake and runs `holdCommand` immediately, then re-runs
+`holdCommand` every 600s until the last matching agent's turn ends. The
+600s cadence is sized for holds like an ssh touch of a registrar wake-hold
+file with a 3600s TTL. A 60s reconcile against the live agent list repairs
+missed turn start/end events. Like the proxy, this lives only in the plugin
+server, not the MCP server.
+
+Both `inferenceProxy`/`holdCommand`/`agentModels` are **file-configured for
+now**: edit `hosts.json` in the plugin state dir (shown above) and reload the
+plugin — the roster UI does not edit them yet. Host updates through the RPC
+path preserve these fields when the update omits them (explicit `null`
+clears them).
 
 ## Agents: power_status / power_wake / power_job_status
 

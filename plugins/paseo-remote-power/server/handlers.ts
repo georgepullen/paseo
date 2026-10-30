@@ -14,6 +14,7 @@ import { addHost, loadHosts, removeHost, updateHost } from "./registry.ts";
 import { probeHost } from "./probe.ts";
 import { readSettings, settingsStore, engineSettingsFrom, type PowerSettings } from "./settings.ts";
 import { createWakeEngine, type WakeEngineDeps } from "./wake-engine.ts";
+import { syncInferenceProxies } from "./inference-proxy.ts";
 
 const log = createPluginLogger("paseo-remote-power", { subsystem: "handlers" });
 
@@ -45,11 +46,15 @@ export function handleHostsAdd(input: {
   statusCommand?: { command: string; args?: string[] };
   wakeWindowSeconds?: number;
   wakeTransports: HostRecord["wakeTransports"];
+  inferenceProxy?: HostRecord["inferenceProxy"];
+  holdCommand?: HostRecord["holdCommand"];
+  agentModels?: string[];
   token?: string;
   tokenRef?: string;
 }): HostMutateResult {
   const result = addHost(input);
   if (!result.saved) log.warn(`hosts.add rejected: ${result.error}`);
+  if (result.saved) void syncInferenceProxies();
   return { ...result, hosts: loadHosts() };
 }
 
@@ -60,17 +65,22 @@ export function handleHostsUpdate(input: {
   statusCommand?: { command: string; args?: string[] } | null;
   wakeWindowSeconds?: number | null;
   wakeTransports?: HostRecord["wakeTransports"];
+  inferenceProxy?: HostRecord["inferenceProxy"] | null;
+  holdCommand?: HostRecord["holdCommand"] | null;
+  agentModels?: string[] | null;
   token?: string;
   tokenRef?: string;
 }): HostMutateResult {
   const result = updateHost(input);
   if (!result.saved) log.warn(`hosts.update rejected: ${result.error}`);
+  if (result.saved) void syncInferenceProxies();
   return { ...result, hosts: loadHosts() };
 }
 
 export function handleHostsRemove(input: { id: string }): HostRemoveResult {
   const result = removeHost(input.id);
   if (!result.saved) log.warn(`hosts.remove rejected: ${result.error}`);
+  if (result.saved) void syncInferenceProxies();
   return { ...result, hosts: loadHosts() };
 }
 

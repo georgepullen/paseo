@@ -87,6 +87,9 @@ export interface AddHostInput {
   statusCommand?: { command: string; args?: string[] };
   wakeWindowSeconds?: number;
   wakeTransports: WakeTransport[];
+  inferenceProxy?: HostRecord["inferenceProxy"];
+  holdCommand?: HostRecord["holdCommand"];
+  agentModels?: string[];
   token?: string;
   tokenRef?: string;
 }
@@ -107,6 +110,9 @@ export function addHost(input: AddHostInput, baseDir?: string): { saved: boolean
     ...(input.statusCommand !== undefined ? { statusCommand: input.statusCommand } : {}),
     ...(input.wakeWindowSeconds !== undefined ? { wakeWindowSeconds: input.wakeWindowSeconds } : {}),
     wakeTransports: input.wakeTransports,
+    ...(input.inferenceProxy !== undefined ? { inferenceProxy: input.inferenceProxy } : {}),
+    ...(input.holdCommand !== undefined ? { holdCommand: input.holdCommand } : {}),
+    ...(input.agentModels !== undefined ? { agentModels: input.agentModels } : {}),
     createdAt: now,
     updatedAt: now,
   };
@@ -133,6 +139,9 @@ export interface UpdateHostInput {
   statusCommand?: { command: string; args?: string[] } | null;
   wakeWindowSeconds?: number | null;
   wakeTransports?: WakeTransport[];
+  inferenceProxy?: HostRecord["inferenceProxy"] | null;
+  holdCommand?: HostRecord["holdCommand"] | null;
+  agentModels?: string[] | null;
   token?: string;
   tokenRef?: string;
 }
@@ -154,11 +163,19 @@ export function updateHost(
     ...(input.statusCommand != null ? { statusCommand: input.statusCommand } : {}),
     ...(input.wakeWindowSeconds != null ? { wakeWindowSeconds: input.wakeWindowSeconds } : {}),
     ...(input.wakeTransports !== undefined ? { wakeTransports: input.wakeTransports } : {}),
+    // inferenceProxy/holdCommand/agentModels are likewise preserved when
+    // omitted; explicit null clears them (see deletes below).
+    ...(input.inferenceProxy != null ? { inferenceProxy: input.inferenceProxy } : {}),
+    ...(input.holdCommand != null ? { holdCommand: input.holdCommand } : {}),
+    ...(input.agentModels != null ? { agentModels: input.agentModels } : {}),
     updatedAt: Date.now(),
   };
   if (input.sshTarget === null) delete draft.sshTarget;
   if (input.statusCommand === null) delete draft.statusCommand;
   if (input.wakeWindowSeconds === null) delete draft.wakeWindowSeconds;
+  if (input.inferenceProxy === null) delete draft.inferenceProxy;
+  if (input.holdCommand === null) delete draft.holdCommand;
+  if (input.agentModels === null) delete draft.agentModels;
   const stored = storeToken(draft, input.token, input.tokenRef, baseDir);
 
   const parsed = HostRecordSchema.safeParse(stored);
