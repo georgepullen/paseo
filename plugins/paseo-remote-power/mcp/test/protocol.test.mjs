@@ -441,5 +441,5 @@ test("power tools: wake runs the transport ladder and the job lands on disk", as
 
 test("server identity is the plugin's", () => {
   assert.equal(SERVER_NAME, "paseo-remote-power");
-  assert.equal(SERVER_VERSION, "0.1.0");
+  assert.equal(SERVER_VERSION, "0.2.0");
 });

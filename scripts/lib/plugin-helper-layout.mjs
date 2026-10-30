@@ -30,6 +30,7 @@ export const PLUGINS = {
   "plugin-updates": ["lifecycle", "core", "ui", "server", "shared"],
   "wellbeing": ["lifecycle", "core", "ui", "server", "shared"],
   "permission-logger": ["lifecycle", "core", "ui", "server", "shared"],
+  "paseo-remote-power": ["lifecycle", "core", "ui", "server", "shared"],
 };
 
 export const TREES = ["lifecycle", "core", "ui", "server", "shared", "mcp"];

@@ -30,7 +30,7 @@ import { randomUUID, createHash, createHmac, randomBytes } from "node:crypto";
 import { pathToFileURL } from "node:url";
 
 export const SERVER_NAME = "paseo-remote-power";
-export const SERVER_VERSION = "0.1.0";
+export const SERVER_VERSION = "0.2.0";
 export const PROTOCOL_VERSION = "2025-06-18";
 
 // Shared vocabulary and constants — must stay identical to the plugin server's

@@ -10,9 +10,10 @@ custom status command that answers by exit code), and a bounded wake window
 (default 110s). Waking is idempotent: if the probe already says up, nothing is
 sent. You get:
 
-- a **roster surface** in the Paseo client — status dots (up / down / waking /
-  unknown, polled), a Wake button per host with live job progress, add/edit/
-  remove forms, and the recent wake-jobs list;
+- a **dashboard** in the Paseo client — one card per host with a Wake button
+  (live progress while a wake runs), a 24h uptime strip, the wake board's
+  reachability for microlink hosts, and CPU/GPU/RAM while the host is up, plus
+  an add/edit host form;
 - an **embedded MCP server** injected into every new agent (interactive or
   scheduled) with three tools: `power_status`, `power_wake`, `power_job_status`
   — so an agent can wake its machine before running work on it;
@@ -76,7 +77,7 @@ repository. Placeholder shapes:
 ```
 
 Bearer tokens are stored **only** in `tokens.json` in the same state dir,
-keyed by `tokenRef`. The roster form's write-only "token" field stores one for
+keyed by `tokenRef`. The host form's write-only "Bearer token" field stores one for
 the host and wires it to every `http` transport without an explicit ref;
 `hosts.json` itself never contains secrets. Microlink hex wake secrets work
 the same way: `secretRef` names a key in `tokens.json`, resolved only when a
@@ -143,7 +144,7 @@ server, not the MCP server.
 
 Both `inferenceProxy`/`holdCommand`/`agentModels` are **file-configured for
 now**: edit `hosts.json` in the plugin state dir (shown above) and reload the
-plugin — the roster UI does not edit them yet. Host updates through the RPC
+plugin — the host form does not edit them. Host updates through the RPC
 path preserve these fields when the update omits them (explicit `null`
 clears them).
 
@@ -163,8 +164,25 @@ works looks like:
    human); `no-transport` means the wake path itself is down.
 
 Jobs are shared state (the plugin server and the MCP server coordinate through
-the same jobs file in the plugin state dir), so a wake started from the roster
-UI is visible to agents and vice versa.
+the same jobs file in the plugin state dir), so a wake started from the
+dashboard is visible to agents and vice versa.
+
+## Dashboard
+
+- **Uptime strip.** While the daemon runs, the plugin server probes every host
+  every 5 minutes with the same probe `power_status` uses (never a wake) and
+  keeps 24 hours of samples in `history.json` in the plugin state dir. The
+  strip shows 96 fifteen-minute segments; time the daemon was not running is a
+  gap, not a guess. A new host's strip fills in over its first day.
+- **Wake board.** For hosts with a microlink transport, each sample also
+  records whether the wake authority's observer answered, and its Wi-Fi signal
+  strength when the device reports `rssi`.
+- **Compute.** While the dashboard is open and the host is up, the server runs
+  one read-only script over the host's `sshTarget` (piped to `sh -s`, so the
+  remote login shell does not matter): CPU, load and memory from Linux
+  `/proc`, plus the first GPU's temperature, power, utilisation, VRAM, fan and
+  process count when `nvidia-smi` is installed. Results are cached for 15s.
+  Missing fields are left out, and hosts without `sshTarget` show no compute.
 
 ## Settings
 
