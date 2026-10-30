@@ -11,9 +11,9 @@ import { powerSettingsContract } from "./shared/registry";
 initClientHelpers({ Icon, Modal, useRpc, useToast, copyText, ScrollView, FlatList, TextInput: HostTextInput });
 
 /**
- * paseo-remote-power client contribution: the hosts roster surface (status
- * dots, wake buttons with live job progress, add/edit/remove forms, jobs list)
- * plus a settings screen rendered from the shared settings contract.
+ * paseo-remote-power client contribution: the dashboard surface (a wake
+ * button and status card per host, with an add/edit host modal) and a
+ * settings screen rendered from the shared settings contract.
  */
 export default function contribute(client: PluginClientContext) {
   const removeSettings = registerHelperSettingsScreen(client, powerSettingsContract, {

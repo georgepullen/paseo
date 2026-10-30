@@ -1,244 +1,108 @@
 import { useRpcMutation, useRpcQuery } from "paseo-plugin-helper/core";
-import { useHostTheme } from "paseo-plugin-helper/lifecycle";
-import {
-  HostBadge,
-  HostButton,
-  HostCard,
-  HostEmptyState,
-  HostFormRow,
-  HostModalContent,
-  HostRow,
-  HostScroll,
-  HostSectionHeader,
-  HostSelect,
-  HostStack,
-  HostStatusDot,
-  HostTextInput,
-} from "paseo-plugin-helper/ui";
+import { useHostLayout, useHostTheme } from "paseo-plugin-helper/lifecycle";
+import { HostButton, HostModalContent, HostScroll, HostStatusDot } from "paseo-plugin-helper/ui";
 import type { StatusVariant } from "paseo-plugin-helper/shared";
 import type { PluginSurfaceProps } from "@getpaseo/plugin/client";
-import { Modal, useToast } from "@getpaseo/plugin/client/react-native";
-import React, { useEffect, useState } from "react";
-import { Text, View } from "react-native";
+import { Icon, Modal, useToast } from "@getpaseo/plugin/client/react-native";
+import React, { useEffect, useState, type ReactNode } from "react";
+import { Pressable, Text, View } from "react-native";
 import {
   ACTIVE_JOB_STATUSES,
-  hostStatusRpc,
+  hostDashboardRpc,
   hostWakeRpc,
-  hostsAddRpc,
   hostsListRpc,
-  hostsRemoveRpc,
-  hostsUpdateRpc,
   jobsListRpc,
+  type Compute,
   type HostRecord,
-  type JobRecord,
-  type JobStatus,
   type HostState,
-  type WakeTransport,
+  type JobRecord,
 } from "../shared/registry";
+import { HostForm } from "./host-form";
 
 /**
- * Hosts roster for remote power control: per-host status dots (up / down /
- * waking / unknown, polled), wake buttons with live job progress, add/edit/
- * remove forms, and the recent wake-jobs list. Built on the helper UI
- * adapters; the host owns theme, scroll, and modal frames.
+ * Remote power dashboard: one card per host with a wake button and its status
+ * — a 24h uptime strip, the wake board's reachability (microlink hosts), and
+ * compute while the host is up. Hosts are added and edited in a modal.
  */
 
-const STATUS_POLL_MS = 15_000;
-const JOBS_POLL_MS = 2_000;
+const DASHBOARD_POLL_MS = 15_000;
+const ACTIVE_JOBS_POLL_MS = 2_000;
+const IDLE_JOBS_POLL_MS = 15_000;
+/** A failed wake stays visible on its host for this long. */
+const RECENT_FAILURE_MS = 10 * 60_000;
 
-interface TransportDraft {
-  type: "http" | "wol" | "command" | "microlink";
-  url: string;
-  tokenRef: string;
-  mac: string;
-  host: string;
-  command: string;
-  args: string;
-  microlinkHost: string;
-  microlinkPort: string;
-  microlinkMode: string;
-  microlinkSecretRef: string;
-  microlinkScheme: string;
-  microlinkHeaderPrefix: string;
-}
-
-function emptyDraft(): TransportDraft {
-  return {
-    type: "http",
-    url: "",
-    tokenRef: "",
-    mac: "",
-    host: "",
-    command: "",
-    args: "",
-    microlinkHost: "",
-    microlinkPort: "",
-    microlinkMode: "http",
-    microlinkSecretRef: "",
-    microlinkScheme: "",
-    microlinkHeaderPrefix: "",
-  };
-}
-
-function draftToTransport(draft: TransportDraft): WakeTransport | null {
-  switch (draft.type) {
-    case "http":
-      return draft.url.trim().length > 0
-        ? { type: "http", url: draft.url.trim(), ...(draft.tokenRef.trim().length > 0 ? { tokenRef: draft.tokenRef.trim() } : {}) }
-        : null;
-    case "wol":
-      if (draft.mac.trim().length === 0) return null;
-      return { type: "wol", mac: draft.mac.trim(), ...(draft.host.trim().length > 0 ? { host: draft.host.trim() } : {}) };
-    case "command":
-      if (draft.command.trim().length === 0) return null;
-      return {
-        type: "command",
-        command: draft.command.trim(),
-        ...(draft.args.trim().length > 0
-          ? { args: draft.args.split(",").map((arg) => arg.trim()).filter((arg) => arg.length > 0) }
-          : {}),
-      };
-    case "microlink": {
-      if (draft.microlinkHost.trim().length === 0) return null;
-      const parsedPort = Number.parseInt(draft.microlinkPort, 10);
-      return {
-        type: "microlink",
-        host: draft.microlinkHost.trim(),
-        ...(draft.microlinkMode === "udp" ? { mode: "udp" as const } : {}),
-        ...(draft.microlinkSecretRef.trim().length > 0 ? { secretRef: draft.microlinkSecretRef.trim() } : {}),
-        ...(Number.isInteger(parsedPort) && parsedPort >= 1 && parsedPort <= 65535 ? { port: parsedPort } : {}),
-        ...(draft.microlinkScheme.trim().length > 0 ? { scheme: draft.microlinkScheme.trim() } : {}),
-        ...(draft.microlinkHeaderPrefix.trim().length > 0 ? { headerPrefix: draft.microlinkHeaderPrefix.trim() } : {}),
-      };
-    }
-  }
-}
-
-function transportToDraft(transport: WakeTransport): TransportDraft {
-  const base = emptyDraft();
-  base.type = transport.type;
-  if (transport.type === "http") {
-    base.url = transport.url;
-    base.tokenRef = transport.tokenRef ?? "";
-  } else if (transport.type === "wol") {
-    base.mac = transport.mac;
-    base.host = transport.host ?? "";
-  } else if (transport.type === "microlink") {
-    base.microlinkHost = transport.host;
-    base.microlinkMode = transport.mode ?? "http";
-    base.microlinkPort = transport.port !== undefined ? String(transport.port) : "";
-    base.microlinkSecretRef = transport.secretRef ?? "";
-    base.microlinkScheme = transport.scheme ?? "";
-    base.microlinkHeaderPrefix = transport.headerPrefix ?? "";
-  } else {
-    base.command = transport.command;
-    base.args = (transport.args ?? []).join(", ");
-  }
-  return base;
-}
-
-function toTransportType(value: string): TransportDraft["type"] {
-  return value === "wol" || value === "command" || value === "http" || value === "microlink" ? value : "http";
-}
-
-function stateVariant(state: HostState, waking: boolean): StatusVariant {
-  if (waking) return "warning";
-  switch (state) {
-    case "up":
-      return "success";
-    case "down":
-      return "danger";
-    case "unknown":
-      return "neutral";
-  }
-}
-
-const STATE_LABEL: Record<HostState, string> = { up: "up", down: "down", unknown: "unknown" };
-
-function formatElapsed(startedAt: number, nowMs: number): string {
-  return `${Math.max(0, Math.round((nowMs - startedAt) / 1000))}s`;
+function isActive(job: JobRecord): boolean {
+  return (ACTIVE_JOB_STATUSES as readonly string[]).includes(job.status);
 }
 
 export function PowerSurface(_props: PluginSurfaceProps) {
   const { colors } = useHostTheme();
+  const { compact } = useHostLayout();
   const toast = useToast();
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<HostRecord | null>(null);
 
-  const hosts = useRpcQuery(hostsListRpc, {}, { refetchInterval: STATUS_POLL_MS });
-  const jobs = useRpcQuery(jobsListRpc, {}, { refetchInterval: JOBS_POLL_MS });
+  const hosts = useRpcQuery(hostsListRpc, {}, { refetchInterval: 60_000 });
+  const jobsList = useRpcQuery(
+    jobsListRpc,
+    {},
+    {
+      refetchInterval: (query) =>
+        (query.state.data?.jobs ?? []).some(isActive) ? ACTIVE_JOBS_POLL_MS : IDLE_JOBS_POLL_MS,
+    },
+  );
+  const jobs = jobsList.data?.jobs ?? [];
 
   const wake = useRpcMutation(hostWakeRpc, {
     onSuccess: (result) => {
-      if (result.alreadyUp) toast.show?.("Host is already up");
+      if (result.alreadyUp) toast.show?.("Already awake");
       else if (result.error) toast.show?.(result.error.message);
-      else toast.show?.(`Wake started (${result.jobId})`);
-      void jobs.refetch();
+      void jobsList.refetch();
     },
     onError: (cause) => toast.show?.(cause.message),
   });
-  const remove = useRpcMutation(hostsRemoveRpc, {
-    onSuccess: () => {
-      toast.show?.("Host removed");
-      void hosts.refetch();
-    },
-  });
 
-  const [pendingRemove, setPendingRemove] = useState<HostRecord | null>(null);
+  const openForm = (host: HostRecord | null) => {
+    setEditing(host);
+    setFormOpen(true);
+  };
 
   return (
     <View style={{ flex: 1, minHeight: 0, width: "100%", backgroundColor: colors.surface0 }}>
-      <HostScroll contentContainerStyle={{ padding: 12, gap: 12 }}>
-        <HostRow align="center" justify="between">
-          <HostSectionHeader title="Hosts" count={hosts.data?.hosts.length} />
-          <HostButton
-            label="Add host"
-            variant="primary"
-            size="sm"
-            icon="Plus"
-            onPress={() => {
-              setEditing(null);
-              setFormOpen(true);
-            }}
-          />
-        </HostRow>
+      <HostScroll contentContainerStyle={{ padding: compact ? 16 : 32, alignItems: "center" }}>
+        <View style={{ width: "100%", maxWidth: 600, gap: 16 }}>
+          {hosts.error ? <Text style={{ color: colors.statusDanger, fontSize: 12 }}>{hosts.error.message}</Text> : null}
 
-        {hosts.isPending ? <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>Loading hosts…</Text> : null}
-        {hosts.error ? <Text style={{ color: colors.statusDanger, fontSize: 12 }}>{hosts.error.message}</Text> : null}
-        {hosts.data !== undefined && hosts.data.hosts.length === 0 ? (
-          <HostCard>
-            <HostEmptyState
-              icon="Power"
-              title="No hosts yet"
-              description="Add a machine to wake it from here, or let agents do it with the power_wake tool."
-            />
-          </HostCard>
-        ) : null}
-
-        <HostStack gap={8}>
           {(hosts.data?.hosts ?? []).map((host) => (
-            <HostRow key={host.id} align="center">
-              <HostEntry
-                host={host}
-                jobs={(jobs.data?.jobs ?? []).filter((job) => job.hostId === host.id)}
-                onEdit={() => {
-                  setEditing(host);
-                  setFormOpen(true);
-                }}
-                onRemove={() => setPendingRemove(host)}
-                onWake={() => wake.mutate({ id: host.id })}
-                wakePending={wake.isPending && wake.variables?.id === host.id}
-              />
-            </HostRow>
+            <HostPanel
+              key={host.id}
+              host={host}
+              jobs={jobs.filter((job) => job.hostId === host.id)}
+              pending={wake.isPending && wake.variables?.id === host.id}
+              onWake={() => wake.mutate({ id: host.id })}
+              onEdit={() => openForm(host)}
+            />
           ))}
-        </HostStack>
 
-        <HostSectionHeader title="Wake jobs" count={(jobs.data?.jobs ?? []).length} />
-        <JobsList jobs={jobs.data?.jobs ?? []} />
+          {hosts.data !== undefined ? (
+            <View style={{ alignItems: hosts.data.hosts.length === 0 ? "center" : "flex-start", gap: 8 }}>
+              {hosts.data.hosts.length === 0 ? (
+                <Text style={{ color: colors.foregroundMuted, fontSize: 13 }}>Add a machine to wake it from here.</Text>
+              ) : null}
+              <HostButton
+                label="Add host"
+                icon="Plus"
+                size="sm"
+                variant={hosts.data.hosts.length === 0 ? "primary" : "ghost"}
+                onPress={() => openForm(null)}
+              />
+            </View>
+          ) : null}
+        </View>
       </HostScroll>
 
       <Modal
-        title={editing !== null ? `Edit host: ${editing.name}` : "Add host"}
+        title={editing !== null ? `Edit ${editing.name}` : "Add host"}
         open={formOpen}
         onOpenChange={(open) => {
           if (!open) setFormOpen(false);
@@ -248,373 +112,338 @@ export function PowerSurface(_props: PluginSurfaceProps) {
           <HostForm
             key={editing?.id ?? "new"}
             editing={editing}
-            onSaved={(saved) => {
+            onSaved={(message) => {
               setFormOpen(false);
-              toast.show?.(saved);
+              toast.show?.(message);
               void hosts.refetch();
             }}
             onCancel={() => setFormOpen(false)}
-            onError={(message) => toast.show?.(message)}
           />
-        </HostModalContent>
-      </Modal>
-
-      <Modal
-        title={`Remove ${pendingRemove?.name ?? ""}`}
-        open={pendingRemove !== null}
-        onOpenChange={(open) => {
-          if (!open) setPendingRemove(null);
-        }}
-      >
-        <HostModalContent>
-          <Text selectable style={{ color: colors.foreground, fontSize: 13 }}>
-            Remove '{pendingRemove?.name}' from the roster? Wake jobs already recorded are kept.
-          </Text>
-          <HostRow gap={8} align="center">
-            <HostButton
-              label="Remove"
-              variant="danger"
-              onPress={() => {
-                if (pendingRemove !== null) remove.mutate({ id: pendingRemove.id });
-                setPendingRemove(null);
-              }}
-            />
-            <HostButton label="Cancel" variant="ghost" onPress={() => setPendingRemove(null)} />
-          </HostRow>
         </HostModalContent>
       </Modal>
     </View>
   );
 }
 
-function HostEntry({
+// --- Host panel --------------------------------------------------------------
+
+const STATE_LABEL: Record<HostState, string> = { up: "Awake", down: "Asleep", unknown: "Unknown" };
+const STATE_VARIANT: Record<HostState, StatusVariant> = { up: "success", down: "neutral", unknown: "warning" };
+
+function HostPanel({
   host,
   jobs,
-  onEdit,
-  onRemove,
+  pending,
   onWake,
-  wakePending,
+  onEdit,
 }: {
   host: HostRecord;
   jobs: JobRecord[];
-  onEdit: () => void;
-  onRemove: () => void;
+  pending: boolean;
   onWake: () => void;
-  wakePending: boolean;
+  onEdit: () => void;
 }) {
   const { colors } = useHostTheme();
-  const status = useRpcQuery(hostStatusRpc, { id: host.id }, { refetchInterval: STATUS_POLL_MS, staleTime: STATUS_POLL_MS });
-  const state: HostState = status.data?.state ?? "unknown";
-  const activeJob = jobs.find((job) => (ACTIVE_JOB_STATUSES as readonly string[]).includes(job.status));
-  // Heartbeat re-render only while a wake is in flight, so the progress line
-  // advances once a second without re-rendering idle rows.
-  const [, setHeartbeat] = useState(0);
+  const dashboard = useRpcQuery(hostDashboardRpc, { id: host.id }, { refetchInterval: DASHBOARD_POLL_MS });
+  const state: HostState = dashboard.data?.state ?? "unknown";
+  const activeJob = jobs.find(isActive);
+  const lastJob = jobs.length > 0 ? jobs[jobs.length - 1] : undefined;
+  const recentFailure =
+    lastJob?.status === "failed" && lastJob.endedAt !== null && Date.now() - lastJob.endedAt < RECENT_FAILURE_MS
+      ? lastJob
+      : undefined;
+
+  // Tick once a second only while a wake is in flight so the elapsed counter advances.
+  const [, setTick] = useState(0);
   useEffect(() => {
     if (!activeJob) return;
-    const timer = setInterval(() => setHeartbeat((value) => value + 1), 1000);
+    const timer = setInterval(() => setTick((value) => value + 1), 1000);
     return () => clearInterval(timer);
   }, [activeJob]);
 
+  // A finished wake changes the host's state; refresh instead of waiting for the next poll.
+  const activeJobId = activeJob?.jobId;
+  useEffect(() => {
+    if (activeJobId === undefined) void dashboard.refetch();
+  }, [activeJobId]);
+
+  const waking = activeJob !== undefined || pending;
   const windowSeconds = host.wakeWindowSeconds ?? 110;
-  const progress =
-    activeJob !== undefined
-      ? `${activeJob.status} · ${formatElapsed(activeJob.startedAt, Date.now())} of ${windowSeconds}s window`
-      : null;
+  const subtitle = activeJob
+    ? `Waking · ${Math.min(windowSeconds, Math.max(0, Math.round((Date.now() - activeJob.startedAt) / 1000)))}s of ${windowSeconds}s`
+    : pending
+      ? "Sending wake…"
+      : dashboard.data === undefined
+        ? "Checking…"
+        : STATE_LABEL[state];
 
   return (
-    <HostCard>
-      <HostRow align="center" gap={8}>
-        <HostStatusDot variant={stateVariant(state, activeJob !== undefined)} pulse={activeJob !== undefined} />
-        <View style={{ flex: 1 }}>
-          <Text style={{ color: colors.foreground, fontSize: 14, fontWeight: "600" }}>{host.name}</Text>
-          <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>
-            {activeJob !== undefined ? progress : `${STATE_LABEL[state]}${status.isFetching ? " · checking…" : ""}`}
+    <View
+      style={{
+        padding: 16,
+        borderRadius: 12,
+        borderWidth: 1,
+        borderColor: colors.border,
+        backgroundColor: colors.surface1,
+      }}
+    >
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
+        <HostStatusDot size="lg" variant={waking ? "warning" : STATE_VARIANT[state]} pulse={waking} />
+        <View style={{ flex: 1, gap: 2 }}>
+          <Text style={{ color: colors.foreground, fontSize: 15, fontWeight: "600" }} numberOfLines={1}>
+            {host.name}
           </Text>
+          <Text style={{ color: colors.foregroundMuted, fontSize: 12 }}>{subtitle}</Text>
         </View>
-        <HostButton label="Wake" variant="primary" size="sm" onPress={onWake} loading={wakePending} disabled={activeJob !== undefined} />
-      </HostRow>
-      {activeJob?.error ? (
-        <Text style={{ color: colors.statusDanger, fontSize: 12 }}>{activeJob.error.message}</Text>
-      ) : null}
-      {jobs.length > 0 ? (
-        <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>
-          last job: {jobs[jobs.length - 1].status}
-          {jobs[jobs.length - 1].endedAt !== null ? " (finished)" : ""}
+        <Pressable
+          accessibilityRole="button"
+          accessibilityLabel={`Edit ${host.name}`}
+          onPress={onEdit}
+          hitSlop={8}
+          style={{ padding: 6 }}
+        >
+          <Icon name="Pencil" size={14} color={colors.foregroundMuted} />
+        </Pressable>
+        <HostButton
+          label={waking ? "Waking…" : "Wake"}
+          icon="Power"
+          variant="primary"
+          onPress={onWake}
+          loading={pending}
+          disabled={waking}
+        />
+      </View>
+      {recentFailure?.error && !waking ? (
+        <Text style={{ color: colors.statusDanger, fontSize: 12, marginTop: 8 }}>
+          Wake failed: {recentFailure.error.message}
         </Text>
       ) : null}
-      <HostRow gap={8}>
-        <HostButton label="Check now" size="sm" variant="ghost" onPress={() => void status.refetch()} />
-        <HostButton label="Edit" size="sm" variant="ghost" onPress={onEdit} />
-        <HostButton label="Remove" size="sm" variant="danger" onPress={onRemove} />
-      </HostRow>
-    </HostCard>
+
+      {dashboard.data ? (
+        <View style={{ marginTop: 16 }}>
+          <UptimeSection state={state} strip={dashboard.data.uptime} />
+          {dashboard.data.wakeBoard ? <WakeBoardSection board={dashboard.data.wakeBoard} /> : null}
+          {dashboard.data.compute ? <ComputeSection compute={dashboard.data.compute} /> : null}
+        </View>
+      ) : null}
+    </View>
   );
 }
 
-const JOB_STATUS_VARIANT: Record<JobStatus, StatusVariant> = {
-  starting: "neutral",
-  waking: "warning",
-  verifying: "warning",
-  up: "success",
-  failed: "danger",
-};
+// --- Status sections -----------------------------------------------------------
 
-function JobsList({ jobs }: { jobs: JobRecord[] }) {
+type Strip = Array<number | null>;
+type Health = "ok" | "warn" | "down" | "idle";
+
+function percent(strip: Strip): number | null {
+  const seen = strip.filter((value): value is number => value !== null);
+  if (seen.length === 0) return null;
+  return Math.round((seen.reduce((sum, value) => sum + value, 0) / seen.length) * 100);
+}
+
+function UptimeSection({ state, strip }: { state: HostState; strip: Strip }) {
   const { colors } = useHostTheme();
-  if (jobs.length === 0) {
-    return (
-      <HostCard>
-        <HostEmptyState icon="History" title="No wake jobs yet" description="Wake requests and their outcomes appear here." />
-      </HostCard>
-    );
-  }
+  const awake = percent(strip);
   return (
-    <HostStack gap={8}>
-      {jobs
-        .slice(-10)
-        .reverse()
-        .map((job) => (
-        <HostCard key={job.jobId}>
-          <HostRow align="center" gap={8}>
-            <HostStatusDot variant={JOB_STATUS_VARIANT[job.status]} />
-            <View style={{ flex: 1 }}>
-              <Text style={{ color: colors.foreground, fontSize: 13 }}>
-                {job.jobId} · {job.status}
-              </Text>
-              <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>
-                started {new Date(job.startedAt).toLocaleTimeString()}
-                {job.endedAt !== null ? ` · finished ${new Date(job.endedAt).toLocaleTimeString()}` : " · running"}
-              </Text>
-            </View>
-            <HostBadge label={job.status} variant={JOB_STATUS_VARIANT[job.status]} />
-          </HostRow>
-          {job.error !== null ? <Text style={{ color: colors.statusDanger, fontSize: 12 }}>{job.error.message}</Text> : null}
-          {job.log.length > 0 ? (
-            <Text selectable style={{ color: colors.foregroundMuted, fontSize: 11 }}>
-              {job.log[job.log.length - 1]}
+    <Section
+      health={state === "up" ? "ok" : state === "down" ? "idle" : "warn"}
+      title="Uptime"
+      stat={awake !== null ? `${awake}% awake · 24h` : "collecting history"}
+      divider={false}
+    >
+      <View style={{ gap: 6 }}>
+        <StripView segments={strip} height={24} />
+        <View style={{ flexDirection: "row", justifyContent: "space-between" }}>
+          {["−24h", "−12h", "now"].map((label) => (
+            <Text key={label} style={{ color: colors.foregroundMuted, fontSize: 10 }}>
+              {label}
             </Text>
-          ) : null}
-        </HostCard>
-      ))}
-    </HostStack>
+          ))}
+        </View>
+      </View>
+    </Section>
   );
 }
 
-function HostForm({
-  editing,
-  onSaved,
-  onCancel,
-  onError,
+function WakeBoardSection({ board }: { board: { online: boolean | null; rssi: number | null; strip: Strip } }) {
+  const { colors } = useHostTheme();
+  const reachable = percent(board.strip);
+  const stat =
+    board.online === false
+      ? "offline"
+      : [reachable !== null ? `${reachable}% reachable` : null, board.rssi !== null ? `${board.rssi} dBm` : null]
+          .filter(Boolean)
+          .join(" · ") || "no data yet";
+  return (
+    <Section
+      health={board.online === true ? "ok" : board.online === false ? "down" : "warn"}
+      title="Wake board"
+      stat={stat}
+    >
+      <StripView segments={board.strip} height={10} downColor={colors.statusDanger} />
+    </Section>
+  );
+}
+
+function gb(mib: number | null): string {
+  return mib === null ? "–" : (mib / 1024).toFixed(1);
+}
+
+function ratio(used: number | null, total: number | null): number {
+  return used !== null && total !== null && total > 0 ? (used / total) * 100 : 0;
+}
+
+function joined(parts: Array<string | null | false>): string {
+  return parts.filter(Boolean).join(" · ");
+}
+
+function ComputeSection({ compute }: { compute: Compute }) {
+  const { colors } = useHostTheme();
+  const gpu = compute.gpu;
+  const stat = gpu
+    ? joined([
+        gpu.temp !== null && `${Math.round(gpu.temp)}°C`,
+        gpu.power !== null && `${Math.round(gpu.power)} W`,
+        gpu.util !== null && `util ${Math.round(gpu.util)}%`,
+      ])
+    : undefined;
+  const footer = joined([
+    gpu?.fan != null && `fan ${Math.round(gpu.fan)}%`,
+    gpu?.procs != null && `${gpu.procs} GPU process${gpu.procs === 1 ? "" : "es"}`,
+    compute.cores !== null && `${compute.cores} threads`,
+  ]);
+  return (
+    <Section health="ok" title="Compute" stat={stat}>
+      <View style={{ gap: 8 }}>
+        {gpu ? (
+          <Meter
+            label="GPU"
+            pct={ratio(gpu.vramUsedMiB, gpu.vramTotalMiB)}
+            stat={`vram ${gb(gpu.vramUsedMiB)} / ${gb(gpu.vramTotalMiB)} GB`}
+            warnHigh={false}
+          />
+        ) : null}
+        {compute.cpu !== null ? (
+          <Meter
+            label="CPU"
+            pct={compute.cpu}
+            stat={joined([`${Math.round(compute.cpu)}%`, compute.load !== null && `load ${compute.load}`])}
+          />
+        ) : null}
+        {compute.memTotalMiB !== null ? (
+          <Meter
+            label="RAM"
+            pct={ratio(compute.memUsedMiB, compute.memTotalMiB)}
+            stat={`${gb(compute.memUsedMiB)} / ${gb(compute.memTotalMiB)} GB`}
+          />
+        ) : null}
+        {footer ? <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>{footer}</Text> : null}
+      </View>
+    </Section>
+  );
+}
+
+const HEALTH_ICON: Record<Health, string> = { ok: "CircleCheck", warn: "CircleAlert", down: "CircleX", idle: "Moon" };
+
+function Section({
+  title,
+  stat,
+  health,
+  divider = true,
+  children,
 }: {
-  editing: HostRecord | null;
-  onSaved: (message: string) => void;
-  onCancel: () => void;
-  onError: (message: string) => void;
+  title: string;
+  stat?: string;
+  health: Health;
+  divider?: boolean;
+  children: ReactNode;
 }) {
   const { colors } = useHostTheme();
-  const [name, setName] = useState(editing?.name ?? "");
-  const [sshTarget, setSshTarget] = useState(editing?.sshTarget ?? "");
-  const [command, setCommand] = useState(editing?.statusCommand?.command ?? "");
-  const [commandArgs, setCommandArgs] = useState((editing?.statusCommand?.args ?? []).join(", "));
-  const [windowText, setWindowText] = useState(
-    editing?.wakeWindowSeconds !== undefined ? String(editing.wakeWindowSeconds) : "",
-  );
-  const [token, setToken] = useState("");
-  const [tokenRef, setTokenRef] = useState("");
-  const [transports, setTransports] = useState<TransportDraft[]>(
-    editing !== null && editing.wakeTransports.length > 0
-      ? editing.wakeTransports.map(transportToDraft)
-      : [emptyDraft()],
-  );
-
-  const add = useRpcMutation(hostsAddRpc, {
-    onSuccess: (result) => {
-      if (!result.saved) {
-        onError(result.error ?? "could not save host");
-        return;
-      }
-      onSaved(`Host '${result.host?.name}' saved`);
-    },
-    onError: (cause) => onError(cause.message),
-  });
-  const update = useRpcMutation(hostsUpdateRpc, {
-    onSuccess: (result) => {
-      if (!result.saved) {
-        onError(result.error ?? "could not save host");
-        return;
-      }
-      onSaved(`Host '${result.host?.name}' updated`);
-    },
-    onError: (cause) => onError(cause.message),
-  });
-
-  const parsedWindow = Number.parseInt(windowText, 10);
-  const buildTransports = (): WakeTransport[] => {
-    const built: WakeTransport[] = [];
-    for (const draft of transports) {
-      const transport = draftToTransport(draft);
-      if (transport !== null) built.push(transport);
-    }
-    return built;
-  };
-
-  const save = () => {
-    const builtTransports = buildTransports();
-    if (name.trim().length === 0) {
-      onError("a host name is required");
-      return;
-    }
-    if (builtTransports.length === 0) {
-      onError("at least one complete wake transport is required");
-      return;
-    }
-    const shared = {
-      name: name.trim(),
-      ...(sshTarget.trim().length > 0 ? { sshTarget: sshTarget.trim() } : {}),
-      ...(command.trim().length > 0
-        ? {
-            statusCommand: {
-              command: command.trim(),
-              ...(commandArgs.trim().length > 0
-                ? { args: commandArgs.split(",").map((arg) => arg.trim()).filter((arg) => arg.length > 0) }
-                : {}),
-            },
-          }
-        : {}),
-      ...(Number.isFinite(parsedWindow) ? { wakeWindowSeconds: parsedWindow } : {}),
-      wakeTransports: builtTransports,
-      ...(token.trim().length > 0 ? { token: token.trim() } : {}),
-      ...(tokenRef.trim().length > 0 ? { tokenRef: tokenRef.trim() } : {}),
-    };
-    if (editing !== null) update.mutate({ id: editing.id, ...shared });
-    else add.mutate(shared);
-  };
-
+  const iconColor = {
+    ok: colors.statusSuccess,
+    warn: colors.statusWarning,
+    down: colors.statusDanger,
+    idle: colors.foregroundMuted,
+  }[health];
   return (
-    <HostStack gap={12}>
-      <HostFormRow label="Name" description="Shown in the roster and to agents.">
-        <HostTextInput value={name} onChangeText={setName} placeholder="build-box" />
-      </HostFormRow>
-      <HostFormRow label="ssh target" description="ssh alias or user@host used for reachability probes (BatchMode key auth).">
-        <HostTextInput value={sshTarget} onChangeText={setSshTarget} placeholder="build.example.net" autoCapitalize="none" />
-      </HostFormRow>
-      <HostFormRow label="status command" description="Optional liveness probe run on this machine; exit 0 means up. Wins over ssh.">
-        <HostTextInput value={command} onChangeText={setCommand} placeholder="systemctl is-active" autoCapitalize="none" />
-        <HostTextInput value={commandArgs} onChangeText={setCommandArgs} placeholder="sshd.service (comma-separated args)" autoCapitalize="none" />
-      </HostFormRow>
-      <HostFormRow label="Wake window (seconds)" description="How long to wait for reachability after a wake. Default 110.">
-        <HostTextInput value={windowText} onChangeText={setWindowText} placeholder="110" keyboardType="number-pad" />
-      </HostFormRow>
-
-      <HostSectionHeader title="Wake transports" />
-      <Text style={{ color: colors.foregroundMuted, fontSize: 11 }}>
-        Tried in order; the first success starts reachability verification.
-      </Text>
-      <HostStack gap={8}>
-        {transports.map((draft, index) => (
-          <HostCard key={index}>
-            <HostFormRow label={`Transport ${index + 1}`}>
-              <HostSelect
-                value={draft.type}
-                onValueChange={(value) =>
-                  setTransports((prev) => prev.map((entry, i) => (i === index ? { ...emptyDraft(), type: toTransportType(value) } : entry)))
-                }
-                options={[
-                  { label: "http POST", value: "http" },
-                  { label: "Wake-on-LAN", value: "wol" },
-                  { label: "Custom command", value: "command" },
-                  { label: "Microlink (ESP32 authority)", value: "microlink" },
-                ]}
-              />
-            </HostFormRow>
-            {draft.type === "http" ? (
-              <>
-                <HostFormRow label="URL" description="Endpoint that receives the POST wake.">
-                  <HostTextInput value={draft.url} onChangeText={(text) => setField(index, "url", text)} placeholder="http://192.0.2.10/wake" autoCapitalize="none" />
-                </HostFormRow>
-                <HostFormRow label="Token ref" description="Names the bearer token in the plugin state dir (sent as Authorization header).">
-                  <HostTextInput value={draft.tokenRef} onChangeText={(text) => setField(index, "tokenRef", text)} placeholder="build-box-wake" autoCapitalize="none" />
-                </HostFormRow>
-              </>
-            ) : null}
-            {draft.type === "wol" ? (
-              <>
-                <HostFormRow label="MAC address">
-                  <HostTextInput value={draft.mac} onChangeText={(text) => setField(index, "mac", text)} placeholder="00:11:22:33:44:55" autoCapitalize="none" />
-                </HostFormRow>
-                <HostFormRow label="Target host" description="Optional subnet-directed or relay address; default is broadcast.">
-                  <HostTextInput value={draft.host} onChangeText={(text) => setField(index, "host", text)} placeholder="192.0.2.255" autoCapitalize="none" />
-                </HostFormRow>
-              </>
-            ) : null}
-            {draft.type === "command" ? (
-              <>
-                <HostFormRow label="Command" description="Runs on this machine (the daemon host). Config is trusted.">
-                  <HostTextInput value={draft.command} onChangeText={(text) => setField(index, "command", text)} placeholder="/usr/local/bin/wake-box" autoCapitalize="none" />
-                </HostFormRow>
-                <HostFormRow label="Arguments" description="Comma-separated.">
-                  <HostTextInput value={draft.args} onChangeText={(text) => setField(index, "args", text)} placeholder="--port 9" autoCapitalize="none" />
-                </HostFormRow>
-              </>
-            ) : null}
-            {draft.type === "microlink" ? (
-              <>
-                <HostFormRow label="Host" description="The wake authority on the device (hostname or IP).">
-                  <HostTextInput value={draft.microlinkHost} onChangeText={(text) => setField(index, "microlinkHost", text)} placeholder="wake.tailnet.net" autoCapitalize="none" />
-                </HostFormRow>
-                <HostFormRow label="Port" description="Optional. Default 48320.">
-                  <HostTextInput value={draft.microlinkPort} onChangeText={(text) => setField(index, "microlinkPort", text)} placeholder="48320" keyboardType="number-pad" />
-                </HostFormRow>
-                <HostFormRow label="Mode" description="http POST, or one signed UDP datagram (tailnet). Default http.">
-                  <HostSelect
-                    value={draft.microlinkMode}
-                    onValueChange={(value) => setField(index, "microlinkMode", value === "udp" ? "udp" : "http")}
-                    options={[
-                      { label: "http", value: "http" },
-                      { label: "udp", value: "udp" },
-                    ]}
-                  />
-                </HostFormRow>
-                <HostFormRow label="Secret ref" description="Names the hex wake secret in the plugin state dir; never stored here.">
-                  <HostTextInput value={draft.microlinkSecretRef} onChangeText={(text) => setField(index, "microlinkSecretRef", text)} placeholder="wake-secret" autoCapitalize="none" />
-                </HostFormRow>
-                <HostFormRow label="Scheme" description="Authorization scheme token. Default Microlink-HMAC; match your authority's configuration.">
-                  <HostTextInput value={draft.microlinkScheme} onChangeText={(text) => setField(index, "microlinkScheme", text)} placeholder="Microlink-HMAC" autoCapitalize="none" />
-                </HostFormRow>
-                <HostFormRow label="Header prefix" description="Prefix for the Timestamp/Nonce/Content-SHA256 headers. Default X-Wake-; match your authority's configuration.">
-                  <HostTextInput value={draft.microlinkHeaderPrefix} onChangeText={(text) => setField(index, "microlinkHeaderPrefix", text)} placeholder="X-Wake-" autoCapitalize="none" />
-                </HostFormRow>
-              </>
-            ) : null}
-            <HostRow>
-              <HostButton
-                label="Remove transport"
-                size="sm"
-                variant="ghost"
-                onPress={() => setTransports((prev) => prev.filter((_, i) => i !== index))}
-              />
-            </HostRow>
-          </HostCard>
-        ))}
-      </HostStack>
-      <HostButton label="Add transport" size="sm" variant="ghost" icon="Plus" onPress={() => setTransports((prev) => [...prev, emptyDraft()])} />
-
-      <HostSectionHeader title="Bearer token" />
-      <HostFormRow label="Token (write-only)" description="Stored only in the plugin state dir and wired to http transports without an explicit ref. Leave blank to keep the stored one.">
-        <HostTextInput value={token} onChangeText={setToken} placeholder="paste token" secureTextEntry autoCapitalize="none" />
-      </HostFormRow>
-      <HostFormRow label="Token ref" description="Key under which the token is stored. Defaults to token-<host id>.">
-        <HostTextInput value={tokenRef} onChangeText={setTokenRef} placeholder="build-box-wake" autoCapitalize="none" />
-      </HostFormRow>
-
-      <HostRow gap={8}>
-        <HostButton label={editing !== null ? "Save changes" : "Add host"} variant="primary" onPress={save} loading={add.isPending || update.isPending} />
-        <HostButton label="Cancel" variant="ghost" onPress={onCancel} />
-      </HostRow>
-    </HostStack>
+    <View
+      style={{
+        gap: 10,
+        paddingTop: divider ? 14 : 0,
+        marginTop: divider ? 14 : 0,
+        borderTopWidth: divider ? 1 : 0,
+        borderTopColor: colors.border,
+      }}
+    >
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+        <Icon name={HEALTH_ICON[health]} size={16} color={iconColor} />
+        <Text style={{ flex: 1, color: colors.foreground, fontSize: 13, fontWeight: "600" }}>{title}</Text>
+        {stat ? (
+          <Text style={{ color: colors.foregroundMuted, fontSize: 12 }} numberOfLines={1}>
+            {stat}
+          </Text>
+        ) : null}
+      </View>
+      {children}
+    </View>
   );
+}
 
-  function setField(index: number, key: keyof TransportDraft, value: string) {
-    setTransports((prev) => prev.map((entry, i) => (i === index ? { ...entry, [key]: value } : entry)));
-  }
+/** 24h strip: green = awake/reachable, muted (or downColor) = down, track = no data. */
+function StripView({ segments, height, downColor }: { segments: Strip; height: number; downColor?: string }) {
+  const { colors, alpha } = useHostTheme();
+  const { compact } = useHostLayout();
+  const down = downColor ?? alpha(colors.foregroundMuted, 0.6);
+  return (
+    <View style={{ flexDirection: "row", gap: compact ? 1 : 2 }}>
+      {segments.map((value, index) => (
+        <View
+          key={index}
+          style={{
+            flex: 1,
+            height,
+            borderRadius: 2,
+            backgroundColor: value === null ? colors.surface2 : value > 0.02 ? colors.statusSuccess : down,
+          }}
+        />
+      ))}
+    </View>
+  );
+}
+
+function Meter({
+  label,
+  pct,
+  stat,
+  warnHigh = true,
+}: {
+  label: string;
+  pct: number;
+  stat: string;
+  warnHigh?: boolean;
+}) {
+  const { colors } = useHostTheme();
+  const { compact } = useHostLayout();
+  const clamped = Math.min(100, Math.max(0, pct));
+  return (
+    <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+      <Text style={{ width: 34, color: colors.foregroundMuted, fontSize: 11, fontWeight: "600" }}>{label}</Text>
+      <View style={{ flex: 1, height: 6, borderRadius: 3, backgroundColor: colors.surface2, overflow: "hidden" }}>
+        <View
+          style={{
+            width: `${clamped}%`,
+            height: "100%",
+            borderRadius: 3,
+            backgroundColor: warnHigh && clamped >= 90 ? colors.statusWarning : colors.statusSuccess,
+          }}
+        />
+      </View>
+      <Text
+        style={{ width: compact ? 120 : 170, textAlign: "right", color: colors.foregroundMuted, fontSize: 11 }}
+        numberOfLines={1}
+      >
+        {stat}
+      </Text>
+    </View>
+  );
 }

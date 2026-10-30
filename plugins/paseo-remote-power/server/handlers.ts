@@ -1,6 +1,8 @@
 import { createPluginLogger } from "paseo-plugin-helper/server";
 import type { RpcOutput } from "paseo-plugin-helper/shared";
 import {
+  STATUS_SEGMENTS,
+  hostDashboardRpc,
   hostStatusRpc,
   hostWakeRpc,
   hostsAddRpc,
@@ -15,6 +17,8 @@ import { probeHost } from "./probe.ts";
 import { readSettings, settingsStore, engineSettingsFrom, type PowerSettings } from "./settings.ts";
 import { createWakeEngine, type WakeEngineDeps } from "./wake-engine.ts";
 import { syncInferenceProxies } from "./inference-proxy.ts";
+import { SAMPLE_INTERVAL_MS, loadHistory, toStrip } from "./history.ts";
+import { readCompute } from "./compute.ts";
 
 const log = createPluginLogger("paseo-remote-power", { subsystem: "handlers" });
 
@@ -25,6 +29,7 @@ export type HostStatusResult = RpcOutput<typeof hostStatusRpc>;
 export type HostWakeResult = RpcOutput<typeof hostWakeRpc>;
 export type JobStatusResult = RpcOutput<typeof jobStatusRpc>;
 export type JobsListResult = RpcOutput<typeof jobsListRpc>;
+export type HostDashboardResult = RpcOutput<typeof hostDashboardRpc>;
 
 /**
  * RPC handlers for the roster surface and the shared engine. The engine is
@@ -82,6 +87,37 @@ export function handleHostsRemove(input: { id: string }): HostRemoveResult {
   if (!result.saved) log.warn(`hosts.remove rejected: ${result.error}`);
   if (result.saved) void syncInferenceProxies();
   return { ...result, hosts: loadHosts() };
+}
+
+/**
+ * Everything the dashboard shows for one host: a live probe, the strips from
+ * the sampler's history, and compute over ssh when the host is up.
+ */
+export async function handleHostDashboard(input: { id: string }): Promise<HostDashboardResult> {
+  const host = loadHosts().find((entry) => entry.id === input.id);
+  if (!host) {
+    return { state: "unknown", uptime: new Array(STATUS_SEGMENTS).fill(null), wakeBoard: null, compute: null };
+  }
+  const now = Date.now();
+  const samples = loadHistory(host.id);
+  const { state } = await probeHost(host, { timeoutSeconds: readSettings().probeTimeoutSeconds }).catch(() => ({
+    state: "unknown" as const,
+  }));
+  const latestBoard = [...samples].reverse().find((sample) => sample.board !== undefined);
+  const boardFresh = latestBoard !== undefined && now - latestBoard.t < 2 * SAMPLE_INTERVAL_MS;
+  const hasBoard = host.wakeTransports.some((transport) => transport.type === "microlink");
+  return {
+    state,
+    uptime: toStrip(samples, "up", now),
+    wakeBoard: hasBoard
+      ? {
+          online: boardFresh ? latestBoard.board === 1 : null,
+          rssi: boardFresh ? (latestBoard.rssi ?? null) : null,
+          strip: toStrip(samples, "board", now),
+        }
+      : null,
+    compute: state === "up" && host.sshTarget ? await readCompute(host.sshTarget) : null,
+  };
 }
 
 export async function handleHostStatus(input: { id: string }): Promise<HostStatusResult> {

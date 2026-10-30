@@ -34,6 +34,7 @@ const STABLE_SERVER_SOURCE = join(PACKAGE_ROOT, "mcp", "paseo-remote-power.mjs")
 
 let scratch: string;
 let previousHome: string | undefined;
+let previousPaseoHome: string | undefined;
 let contribute: (server: unknown) => () => void;
 
 before(async () => {
@@ -47,6 +48,10 @@ before(async () => {
   // touch the developer's real state dir.
   previousHome = process.env.HOME;
   process.env.HOME = home;
+  // Plugin storage prefers PASEO_HOME (set inside Paseo agents) over HOME;
+  // clear it so the entrypoint never reads or writes the real state dir.
+  previousPaseoHome = process.env.PASEO_HOME;
+  delete process.env.PASEO_HOME;
   // Pin the embedded server through the documented override, so the locator
   // never depends on the test runner's working directory.
   process.env.PASEO_REMOTE_POWER_MCP_SERVER = STABLE_SERVER_SOURCE;
@@ -82,6 +87,7 @@ before(async () => {
 after(() => {
   if (previousHome === undefined) delete process.env.HOME;
   else process.env.HOME = previousHome;
+  if (previousPaseoHome !== undefined) process.env.PASEO_HOME = previousPaseoHome;
   delete process.env.PASEO_REMOTE_POWER_MCP_SERVER;
   rmSync(scratch, { recursive: true, force: true });
 });
@@ -159,6 +165,7 @@ describe("plugin entrypoint: registrations are live in production (#689)", () =>
         "host.wake",
         "job.status",
         "jobs.list",
+        "host.dashboard",
         "paseo-remote-power.settings.get",
         "paseo-remote-power.settings.update",
         "paseo-remote-power.settings.reset",

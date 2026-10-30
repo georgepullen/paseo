@@ -39,8 +39,8 @@ const OBSERVER_TARGET = "/v1/observer";
 /** One-line JSON reply to a UDP wake: `{"accepted":true|false, …}`. */
 const WakeReplySchema = z.object({ accepted: z.boolean() });
 
-/** Wake-authority observer payload (schema string not consumed); only `target_awake` is used. */
-const ObserverPayloadSchema = z.object({ target_awake: z.boolean() });
+/** Wake-authority observer payload (schema string not consumed); `target_awake` decides, `rssi` is informational. */
+const ObserverPayloadSchema = z.object({ target_awake: z.boolean(), rssi: z.number().optional().catch(undefined) });
 
 export interface WakeSignature {
   ts: string;
@@ -211,6 +211,8 @@ export async function sendWakeUdp(
 
 export interface ObserverReport {
   targetAwake: boolean;
+  /** Wi-Fi signal strength in dBm, when the authority reports it. */
+  rssi: number | null;
 }
 
 export interface ObserverOptions {
@@ -231,7 +233,7 @@ export async function observeHttp(host: string, port: number, options: ObserverO
     if (!response.ok) return null;
     const report = ObserverPayloadSchema.safeParse(await response.json());
     if (!report.success) return null;
-    return { targetAwake: report.data.target_awake };
+    return { targetAwake: report.data.target_awake, rssi: report.data.rssi ?? null };
   } catch {
     return null;
   }

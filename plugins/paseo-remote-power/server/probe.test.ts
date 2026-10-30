@@ -44,11 +44,12 @@ function fakeSpawn(codes: number[] | ((command: string, args: string[]) => numbe
 }
 
 /** An observer seam that answers from a script; records the host:port it was asked about. */
-function fakeObserver(answers: ({ targetAwake: boolean } | null)[]): ObserveFn & { calls: { host: string; port: number }[] } {
+function fakeObserver(answers: ({ targetAwake: boolean; rssi?: number | null } | null)[]): ObserveFn & { calls: { host: string; port: number }[] } {
   const calls: { host: string; port: number }[] = [];
   const observe: ObserveFn = async (obsHost, obsPort) => {
     calls.push({ host: obsHost, port: obsPort });
-    return answers.shift() ?? null;
+    const answer = answers.shift();
+    return answer ? { rssi: null, ...answer } : null;
   };
   return Object.assign(observe, { calls });
 }

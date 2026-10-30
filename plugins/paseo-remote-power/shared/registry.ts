@@ -255,6 +255,57 @@ export const jobsListRpc = defineRpc({
   }),
 });
 
+/**
+ * Per-host dashboard: the live probe state, a 24h uptime strip from the
+ * plugin's own probe history,
+ * the wake board's reachability strip (hosts with a microlink transport only),
+ * and a compute snapshot read over ssh while the host is up. Strips are
+ * STATUS_SEGMENTS segments of 15 minutes, oldest first; a segment is the
+ * awake/reachable fraction in [0, 1], or null when nothing was sampled.
+ */
+export const STATUS_SEGMENTS = 96;
+
+const StripSchema = z.array(z.number().min(0).max(1).nullable());
+
+export const ComputeSchema = z.object({
+  cores: z.number().nullable(),
+  cpu: z.number().nullable(),
+  load: z.string().nullable(),
+  memUsedMiB: z.number().nullable(),
+  memTotalMiB: z.number().nullable(),
+  gpu: z
+    .object({
+      temp: z.number().nullable(),
+      util: z.number().nullable(),
+      vramUsedMiB: z.number().nullable(),
+      vramTotalMiB: z.number().nullable(),
+      power: z.number().nullable(),
+      fan: z.number().nullable(),
+      procs: z.number().nullable(),
+    })
+    .nullable(),
+});
+export type Compute = z.infer<typeof ComputeSchema>;
+
+export const hostDashboardRpc = defineRpc({
+  name: "host.dashboard",
+  input: z.object({
+    id: z.string().min(1).max(64),
+  }),
+  output: z.object({
+    state: z.enum(HOST_STATES),
+    uptime: StripSchema,
+    wakeBoard: z
+      .object({
+        online: z.boolean().nullable(),
+        rssi: z.number().nullable(),
+        strip: StripSchema,
+      })
+      .nullable(),
+    compute: ComputeSchema.nullable(),
+  }),
+});
+
 // ---------------------------------------------------------------------------
 // Settings
 // ---------------------------------------------------------------------------

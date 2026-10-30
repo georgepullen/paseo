@@ -186,12 +186,17 @@ test("observeHttp exposes targetAwake and answers null when the observer is sile
   const up = await observeHttp("192.0.2.5", 48320, {
     fetchImpl: (async () => jsonResponse('{"target_awake":true,"schema":"microlink-wake-observer-v1"}')) as typeof fetch,
   });
-  assert.deepEqual(up, { targetAwake: true });
+  assert.deepEqual(up, { targetAwake: true, rssi: null });
 
   const down = await observeHttp("192.0.2.5", 48320, {
     fetchImpl: (async () => jsonResponse('{"target_awake":false,"schema":"microlink-wake-observer-v1"}')) as typeof fetch,
   });
-  assert.deepEqual(down, { targetAwake: false });
+  assert.deepEqual(down, { targetAwake: false, rssi: null });
+
+  const withSignal = await observeHttp("192.0.2.5", 48320, {
+    fetchImpl: (async () => jsonResponse('{"target_awake":true,"rssi":-53}')) as typeof fetch,
+  });
+  assert.deepEqual(withSignal, { targetAwake: true, rssi: -53 });
 
   const malformed = await observeHttp("192.0.2.5", 48320, {
     fetchImpl: (async () => jsonResponse("<html>not json</html>")) as typeof fetch,

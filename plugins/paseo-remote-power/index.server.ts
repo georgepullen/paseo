@@ -1,5 +1,6 @@
 import type { PluginServerContext } from "@getpaseo/plugin/server";
 import {
+  hostDashboardRpc,
   hostStatusRpc,
   hostWakeRpc,
   hostsAddRpc,
@@ -13,6 +14,7 @@ import {
 } from "./shared/registry";
 import {
   handleGetSettings,
+  handleHostDashboard,
   handleHostStatus,
   handleHostWake,
   handleHostsAdd,
@@ -24,6 +26,7 @@ import {
   handleResetSettings,
   handleUpdateSettings,
 } from "./server/handlers";
+import { startHistorySampler } from "./server/history";
 import { maybeRegisterInjection, toInjectionServer } from "./server/injection";
 import { readSettings, engineSettingsFrom } from "./server/settings";
 import { createWakeEngine } from "./server/wake-engine";
@@ -35,7 +38,8 @@ import { createAgentHoldTracker, type PaseoAgentsLike } from "./server/agent-hol
  * settings) plus `agent.create` injection of the embedded power MCP server, so
  * every agent the daemon spawns — interactive or scheduled — can wake a host
  * before running work on it. Also supervises the per-host inference proxies
- * and the agent keep-awake hold tracker (plugin-server-only features).
+ * and the agent keep-awake hold tracker (plugin-server-only features), and
+ * samples every host's probe state for the dashboard's 24h strips.
  */
 export default function contribute(server: PluginServerContext) {
   server.handle(hostsListRpc, handleHostsList);
@@ -46,6 +50,7 @@ export default function contribute(server: PluginServerContext) {
   server.handle(hostWakeRpc, handleHostWake);
   server.handle(jobStatusRpc, handleJobStatus);
   server.handle(jobsListRpc, handleJobsList);
+  server.handle(hostDashboardRpc, handleHostDashboard);
   server.handle(powerSettingsContract.get, handleGetSettings);
   server.handle(powerSettingsContract.update, handleUpdateSettings);
   server.handle(powerSettingsContract.reset, handleResetSettings);
@@ -55,6 +60,7 @@ export default function contribute(server: PluginServerContext) {
   const holdTracker = createAgentHoldTracker({ startWake });
 
   void syncInferenceProxies({ startWake });
+  const stopSampler = startHistorySampler();
 
   const removeTurnStarted = server.on("agent.turn_started", (event, ctx) => {
     void holdTracker.turnStarted(event.agent.id, ctx.paseo as unknown as PaseoAgentsLike);
@@ -71,6 +77,7 @@ export default function contribute(server: PluginServerContext) {
     if (typeof removeTurnStarted === "function") removeTurnStarted();
     if (typeof removeTurnEnded === "function") removeTurnEnded();
     holdTracker.stop();
+    stopSampler();
     void stopInferenceProxies();
     removeInjection();
   };
